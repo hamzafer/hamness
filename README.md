@@ -203,6 +203,8 @@ bun run lint        # Biome (bun run format fixes)
 bun src/cli/main.ts # run hamness from the checkout
 ```
 
+Dependencies are pinned to exact versions, and `bunfig.toml` sets `[install] minimumReleaseAge = 259200` (3 days): Bun won't resolve a version published more recently than that, so a hijacked release has time to be caught before it lands here. Every version in `bun.lock` was at least 3 days old when it was locked. Bump a pin only to a version that has been out 3 days.
+
 ## License
 
 MIT
