@@ -160,3 +160,71 @@ describe("url checker safety (S-H3)", () => {
     expect(followed).toHaveLength(1);
   });
 });
+
+describe("url checker: embedded addresses, lookups and redirects (V-L7)", () => {
+  const fetched: string[] = [];
+  const strict = (over: Partial<CheckContext> = {}) =>
+    ctx({
+      allowPrivateUrls: false,
+      fetch: async (u) => {
+        fetched.push(u);
+        return new Response("ok");
+      },
+      ...over,
+    });
+
+  test("IPv6 forms that embed a private IPv4 address are refused", async () => {
+    for (const url of [
+      "http://[::127.0.0.1]/",
+      "http://[::ffff:0:127.0.0.1]/",
+      "http://[0:0:0:0:0:ffff:7f00:1]/",
+      "http://[2002:7f00:1::]/",
+      "http://[2002:c0a8:101::1]/",
+      "http://[64:ff9b::10.0.0.1]/",
+      "http://[64:ff9b:1::1]/",
+      "http://[100::1]/",
+      "http://[fec0::1]/",
+    ]) {
+      const r = await checkUrl({ kind: "url", url }, strict());
+      expect([url, r.status]).toEqual([url, "error"]);
+    }
+    expect(fetched).toEqual([]);
+    const pub = await checkUrl({ kind: "url", url: "http://[2002:5db8:d70e::1]/" }, strict());
+    expect(pub.status).toBe("passed");
+  });
+
+  test("a host that can't be resolved is not fetched", async () => {
+    fetched.length = 0;
+    const r = await checkUrl(
+      { kind: "url", url: "https://nowhere.example/" },
+      strict({
+        lookup: async () => {
+          throw new Error("ENOTFOUND");
+        },
+      }),
+    );
+    expect(r.status).toBe("error");
+    expect(r.summary).toContain("resolve");
+    expect(fetched).toEqual([]);
+  });
+
+  test("a same-host redirect must keep the scheme and port", async () => {
+    for (const location of ["http://example.com:22/", "https://example.com/x"]) {
+      let n = 0;
+      const hops: string[] = [];
+      const r = await checkUrl(
+        { kind: "url", url: "http://example.com/" },
+        strict({
+          lookup: async () => ["93.184.215.14"],
+          fetch: async (u) => {
+            hops.push(u);
+            return n++ === 0
+              ? new Response(null, { status: 302, headers: { location } })
+              : new Response("ok");
+          },
+        }),
+      );
+      expect([location, r.status, hops.length]).toEqual([location, "error", 1]);
+    }
+  });
+});

@@ -18,7 +18,9 @@ type UrlClaim = Extract<EvidenceClaim, { kind: "url" }>;
  *   by default, so the judge or the user decides: a URL can carry data out);
  * - its host must not resolve to a loopback, private, link-local or other internal address,
  *   unless the user config sets `proof.allowPrivateUrls` (a local dev server);
- * - redirects are followed only on the same host, each hop checked the same way.
+ * - IPv6 forms that embed an IPv4 address (mapped, compatible, 6to4, NAT64, Teredo) are judged
+ *   by that IPv4 address; a host that can't be resolved is not fetched (fail closed);
+ * - redirects are followed only on the same host, scheme and port, each hop checked again.
  *
  * The host is resolved here and again by fetch, so a name that changes its answer in between
  * (DNS rebinding) is not caught; `allowPrivateUrls` off still stops the plain cases.
@@ -67,10 +69,12 @@ export async function checkUrl(claim: UrlClaim, ctx: CheckContext): Promise<Chec
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {
         const next = new URL(location, url);
-        if (next.hostname !== host || (next.protocol !== "http:" && next.protocol !== "https:")) {
+        if (next.hostname !== host || next.protocol !== url.protocol || next.port !== url.port) {
+          const where =
+            next.hostname !== host ? "another host" : "another scheme or port on the same host";
           return {
             status: "error",
-            summary: `not followed: HTTP ${res.status} redirects to another host (${next.host})`,
+            summary: `not followed: HTTP ${res.status} redirects to ${where} (${next.protocol}//${next.host})`,
             details: { ...base, statusCode: res.status, redirect: next.origin, durationMs: ms() },
           };
         }
@@ -122,10 +126,11 @@ async function refusedAddress(url: URL, ctx: CheckContext): Promise<string | und
   else {
     try {
       addresses = await (ctx.lookup ?? systemLookup)(host);
-    } catch {
-      // Unresolvable: fetch fails on its own and reports it.
-      return undefined;
+    } catch (err) {
+      // Fail closed: an address hamness could not check is not fetched.
+      return `could not resolve ${url.hostname} to check its address (${(err as Error).message})`;
     }
+    if (addresses.length === 0) return `could not resolve ${url.hostname} to check its address`;
   }
   const internal = addresses.find(isInternalAddress);
   return internal ? `${url.hostname} is a private or local address (${internal})` : undefined;
@@ -160,20 +165,56 @@ export function isInternalAddress(ip: string): boolean {
       x >= 224
     );
   }
-  const s = ip.toLowerCase();
-  if (s === "::" || s === "::1") return true;
-  const mapped = s.match(/^::ffff:(?:0:)?(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped?.[1]) return isInternalAddress(mapped[1]);
-  const hex = s.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (hex?.[1] && hex[2]) {
-    const n = (parseInt(hex[1], 16) << 16) | parseInt(hex[2], 16);
-    return isInternalAddress([n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join("."));
+  const g = v6(ip);
+  if (!g) return true; // not an address hamness can read: refuse
+  const [g0 = 0, g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0] = g;
+  const tail = embedded(g6, g7);
+  // ::/96 (unspecified, loopback, IPv4-compatible), ::ffff:0:0/96 (mapped) and
+  // ::ffff:0:0:0/96 (SIIT): the IPv4 address in the last 32 bits decides.
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0) {
+    if (g4 === 0 && (g5 === 0 || g5 === 0xffff)) return isInternalAddress(tail);
+    if (g4 === 0xffff && g5 === 0) return isInternalAddress(tail);
   }
-  const first = parseInt(s.split(":")[0] || "0", 16);
+  if (g0 === 0x64 && g1 === 0xff9b) {
+    // 64:ff9b::/96 NAT64 reaches the embedded IPv4; 64:ff9b:1::/48 is local-use.
+    return g2 !== 0 || g3 !== 0 || g4 !== 0 || g5 !== 0 || isInternalAddress(tail);
+  }
+  if (g0 === 0x2002) return isInternalAddress(embedded(g1, g2)); // 6to4
+  if (g0 === 0x2001 && g1 === 0) {
+    // Teredo: the client's IPv4, bits inverted, is in the last 32 bits.
+    return isInternalAddress(embedded(~g6 & 0xffff, ~g7 & 0xffff));
+  }
   return (
-    (first & 0xfe00) === 0xfc00 || // fc00::/7 unique local
-    (first & 0xffc0) === 0xfe80 || // fe80::/10 link-local
-    (first & 0xff00) === 0xff00 || // multicast
-    s.startsWith("64:ff9b:") // NAT64 can reach IPv4 internals
+    (g0 & 0xfe00) === 0xfc00 || // fc00::/7 unique local
+    (g0 & 0xffc0) === 0xfe80 || // fe80::/10 link-local
+    (g0 & 0xffc0) === 0xfec0 || // fec0::/10 site-local
+    (g0 & 0xff00) === 0xff00 || // multicast
+    (g0 === 0x100 && g1 === 0 && g2 === 0 && g3 === 0) || // 100::/64 discard
+    (g0 === 0x2001 && g1 === 0xdb8) || // documentation
+    g0 === 0 // anything else in ::/16 is reserved
   );
+}
+
+const embedded = (hi: number, lo: number) => [hi >>> 8, hi & 255, lo >>> 8, lo & 255].join(".");
+
+/** An IPv6 address as its eight 16-bit groups (`::` expanded, a dotted IPv4 tail read). */
+function v6(ip: string): number[] | undefined {
+  let s = ip.toLowerCase().replace(/%.*$/, "");
+  const dotted = s.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted?.[1] && dotted[2]) {
+    const four = v4(dotted[2]);
+    if (!four) return undefined;
+    const [a = 0, b = 0, c = 0, d = 0] = four;
+    s = `${dotted[1]}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = s.split("::");
+  if (halves.length > 2) return undefined;
+  const part = (h: string) => (h === "" ? [] : h.split(":"));
+  const head = part(halves[0] ?? "");
+  const rest = halves.length === 2 ? part(halves[1] ?? "") : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return undefined;
+  const groups = [...head, ...Array(fill).fill("0"), ...rest];
+  if (groups.length !== 8 || !groups.every((x) => /^[0-9a-f]{1,4}$/.test(x))) return undefined;
+  return groups.map((x) => parseInt(x, 16));
 }
