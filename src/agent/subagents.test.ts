@@ -10,7 +10,7 @@ import {
 import { tempHome } from "../../test/support/temp-home.ts";
 import { openDatabase } from "../db/open.ts";
 import type { AgentEvent } from "../events/types.ts";
-import { createSafetyService, type SafetyCheck } from "../safety/index.ts";
+import { createSafetyService } from "../safety/index.ts";
 import { SessionHub, type SessionHubOptions } from "./session-hub.ts";
 
 let home: ReturnType<typeof tempHome>;
@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 function startHub(
-  opts: { safety?: SafetyCheck; maxSubagents?: number; hooks?: SessionHubOptions["hooks"] } = {},
+  opts: Partial<Pick<SessionHubOptions, "safety" | "maxSubagents" | "hooks">> = {},
 ) {
   hub = new SessionHub({
     db,
