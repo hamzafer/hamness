@@ -1,5 +1,36 @@
 import { describe, expect, test } from "bun:test";
-import { resolveDataDir } from "./paths.ts";
+import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { tempHome } from "../../test/support/temp-home.ts";
+import { ensureDataDir, resolveDataDir } from "./paths.ts";
+
+describe("ensureDataDir", () => {
+  const mode = (p: string) => statSync(p).mode & 0o777;
+
+  test("creates the data dir (and parents) owner-only", () => {
+    const h = tempHome();
+    try {
+      const dir = join(h.dir, "a", "hamness");
+      ensureDataDir(dir);
+      expect(mode(dir)).toBe(0o700);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  test("tightens an existing data dir to 0700", () => {
+    const h = tempHome();
+    try {
+      const dir = join(h.dir, "hamness");
+      mkdirSync(dir);
+      chmodSync(dir, 0o755);
+      ensureDataDir(dir);
+      expect(mode(dir)).toBe(0o700);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
 
 const home = "/home/tester";
 

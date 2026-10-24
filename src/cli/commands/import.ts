@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { dataPaths } from "../../config/paths.ts";
+import { dataPaths, ensureDataDir } from "../../config/paths.ts";
 import { openDatabase } from "../../db/open.ts";
 import { importHistory } from "../../import/index.ts";
 import type { CliContext } from "../run.ts";
@@ -62,7 +62,7 @@ export async function importCommand({ args, env, dataDir, io }: CliContext): Pro
     return 0;
   }
 
-  mkdirSync(dataDir, { recursive: true });
+  ensureDataDir(dataDir);
   const db = openDatabase(dataPaths(dataDir).database);
   try {
     const r = await importHistory(db, { claudeDirs, codexDirs });

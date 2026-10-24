@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { LATEST_SCHEMA_VERSION } from "./migrations/index.ts";
@@ -24,6 +25,24 @@ const specTables = [
 ];
 
 describe("openDatabase", () => {
+  test("the database and its WAL files are owner-only, even when they existed 0644", () => {
+    writeFileSync(file, "");
+    chmodSync(file, 0o644);
+    const db = openDatabase(file);
+    db.sqlite.run("CREATE TABLE IF NOT EXISTS t (x)");
+    db.sqlite.run("INSERT INTO t VALUES (1)");
+    for (const p of [file, `${file}-wal`, `${file}-shm`])
+      expect(existsSync(p) ? statSync(p).mode & 0o777 : 0o600).toBe(0o600);
+    expect(existsSync(`${file}-wal`)).toBe(true);
+    db.close();
+  });
+
+  test("a new database file is created owner-only", () => {
+    const db = openDatabase(file);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    db.close();
+  });
+
   test("migrates a fresh file to the latest schema version", () => {
     const db = openDatabase(file);
     expect(db.schemaVersion()).toBe(LATEST_SCHEMA_VERSION);

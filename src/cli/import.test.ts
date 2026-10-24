@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   claudeAssistant,
@@ -64,6 +64,7 @@ describe("hamness import", () => {
     expect(code).toBe(0);
     expect(sessionSources()).toEqual(["claude-code", "codex"]);
     expect(out.join("\n")).toContain("2 sessions");
+    expect(statSync(join(home.dir, "data")).mode & 0o777).toBe(0o700);
   });
 
   test("takes several --claude-dir flags and a --codex-dir", async () => {

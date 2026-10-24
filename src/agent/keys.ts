@@ -1,7 +1,7 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { findEnvKeys } from "@earendil-works/pi-ai/compat";
-import type { Env } from "../config/paths.ts";
+import { type Env, ensureDataDir } from "../config/paths.ts";
 
 /**
  * hamness's key file: `{ "<provider>": "<api key>" }` in `<dataDir>/keys.json`, mode 0600.
@@ -61,7 +61,7 @@ export function saveKey(dataDir: string, provider: string, key: string): void {
   if (!PROVIDER_ID.test(provider)) throw new KeyFileError(`not a provider id: ${provider}`);
   const value = key.trim();
   if (!value) throw new KeyFileError("the key is empty");
-  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  ensureDataDir(dataDir);
   const keys = readKeyFile(dataDir);
   keys[provider] = value;
   const path = keyFilePath(dataDir);

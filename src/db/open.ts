@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { chmodSync, closeSync, existsSync, openSync } from "node:fs";
 import { currentVersion, migrate } from "./migrate.ts";
 import { migrations } from "./migrations/index.ts";
 
@@ -13,6 +14,11 @@ export interface HamnessDb {
 export function openDatabase(path: string): HamnessDb {
   let sqlite: Database;
   try {
+    // Owner-only: SQLite gives the -wal and -shm files the database file's mode.
+    if (path !== ":memory:") {
+      closeSync(openSync(path, "a", 0o600));
+      ownerOnly(path);
+    }
     sqlite = new Database(path, { create: true, strict: true });
   } catch (err) {
     throw new Error(`${path}: ${(err as Error).message}`, { cause: err });
@@ -22,6 +28,8 @@ export function openDatabase(path: string): HamnessDb {
     sqlite.run("PRAGMA foreign_keys = ON");
     sqlite.run("PRAGMA busy_timeout = 5000");
     migrate(sqlite, migrations);
+    // Older installs may have left the WAL files readable by others.
+    if (path !== ":memory:") for (const f of [`${path}-wal`, `${path}-shm`]) ownerOnly(f);
   } catch (err) {
     sqlite.close();
     const message = (err as Error).message;
@@ -39,4 +47,8 @@ export function openDatabase(path: string): HamnessDb {
     schemaVersion: () => currentVersion(sqlite),
     close: () => sqlite.close(),
   };
+}
+
+function ownerOnly(file: string): void {
+  if (existsSync(file)) chmodSync(file, 0o600);
 }

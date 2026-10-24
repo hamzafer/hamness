@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, statSync } from "node:fs";
+import { openSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelInfo } from "../agent/models.ts";
 import type { Env } from "../config/paths.ts";
-import { dataPaths } from "../config/paths.ts";
+import { dataPaths, ensureDataDir } from "../config/paths.ts";
 import { getStatus } from "../daemon/status.ts";
 import type {
   ApprovalDecision,
@@ -47,7 +47,7 @@ export async function ensureDaemon(
   const now = await getStatus(dataDir);
   if (now.running) return { url: now.url, started: false };
 
-  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  ensureDataDir(dataDir);
   const logPath = join(dataDir, "daemon.log");
   const log = openSync(logPath, "a", 0o600);
   const logStart = statSync(logPath).size;

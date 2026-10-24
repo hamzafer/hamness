@@ -1,3 +1,4 @@
+import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -31,3 +32,12 @@ export function dataPaths(dataDir: string) {
 }
 
 export type DataPaths = ReturnType<typeof dataPaths>;
+
+/**
+ * Creates the data dir owner-only (0700), and tightens it if it already exists:
+ * it holds the token, keys and every stored transcript.
+ */
+export function ensureDataDir(dataDir: string): void {
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  chmodSync(dataDir, 0o700);
+}

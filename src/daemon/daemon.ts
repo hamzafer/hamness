@@ -1,4 +1,3 @@
-import { mkdirSync } from "node:fs";
 import type { ModelChoice } from "../agent/models.ts";
 import { resolveModels } from "../agent/models.ts";
 import { SessionHub } from "../agent/session-hub.ts";
@@ -8,7 +7,7 @@ import { sessionRoutes } from "../api/routes.ts";
 import { startApiServer } from "../api/server.ts";
 import { claudePermissionMode, createClaudeHooks } from "../compat/hooks.ts";
 import { claudeConfigDir } from "../compat/paths.ts";
-import { dataPaths } from "../config/paths.ts";
+import { dataPaths, ensureDataDir } from "../config/paths.ts";
 import { type HamnessDb, openDatabase } from "../db/open.ts";
 import type { HamnessEvent } from "../events/types.ts";
 import { createSafetyService, type SafetyCheck } from "../safety/index.ts";
@@ -64,7 +63,7 @@ export class DaemonAlreadyRunningError extends Error {
 export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   const paths = dataPaths(opts.dataDir);
   const pid = process.pid;
-  mkdirSync(paths.dataDir, { recursive: true, mode: 0o700 });
+  ensureDataDir(paths.dataDir);
 
   let claim = claimState(paths.daemonState, pid);
   if (!claim.ok && claim.owner.url && !(await getStatus(opts.dataDir)).running) {
