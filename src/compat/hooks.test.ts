@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fakeWorktree } from "../../test/support/files.ts";
 import { hookFixture } from "../../test/support/hooks.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { type ClaudeHooks, createClaudeHooks, isProjectTrusted, trustProject } from "./hooks.ts";
@@ -179,6 +180,18 @@ describe("project hooks and trust", () => {
     expect(isProjectTrusted(dataDir, work)).toBe(true);
     const config = JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8"));
     expect(config.hooks.trustedProjects).toEqual([work]);
+  });
+
+  test("a subagent's worktree runs the hooks its trusted main repo runs (R-H1)", async () => {
+    mkdirSync(join(work, ".git"));
+    fx.settings(join(work, ".claude"), { PreToolUse: [{}] });
+    trustProject(dataDir, work);
+    const wt = join(work, "..", "work.hamness-worktrees", "helper-abc123");
+    fakeWorktree(work, wt);
+    fx.settings(join(wt, ".claude"), { PreToolUse: [{}] });
+    expect(isProjectTrusted(dataDir, wt)).toBe(true);
+    await hooks.preToolUse({ ...session(), cwd: wt }, bash("ls"));
+    expect(fx.calls()).toHaveLength(1);
   });
 
   test("sessionStart says when project hooks are held back", async () => {

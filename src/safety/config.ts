@@ -1,5 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { projectRoot } from "../compat/paths.ts";
+import { type Json, readJson, writeJsonAtomic } from "../config/json.ts";
+import { userConfigFile } from "../config/paths.ts";
 import type { SafetyMode } from "../events/types.ts";
 import { defaultRules } from "./defaults.ts";
 import { parsePermission, type Rule } from "./rules.ts";
@@ -32,33 +34,14 @@ export interface SafetyConfig {
 export const DEFAULT_MODE: SafetyMode = "auto";
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 15 * 60_000;
 
-export const userConfigPath = (dataDir: string) => join(dataDir, "config.json");
+export const userConfigPath = userConfigFile;
 
-/** The repo root (nearest folder with `.git`) holds `.hamness/`; outside a repo, the cwd does. */
+/**
+ * The project root (`projectRoot`: the repo root, the main repo's for a worktree) holds
+ * `.hamness/`; outside a repo, the cwd does.
+ */
 export function projectConfigPath(cwd: string): string {
-  let dir = cwd;
-  for (;;) {
-    if (existsSync(join(dir, ".git"))) return join(dir, ".hamness", "config.json");
-    const up = dirname(dir);
-    if (up === dir) return join(cwd, ".hamness", "config.json");
-    dir = up;
-  }
-}
-
-type Json = Record<string, unknown>;
-
-function readJson(path: string): Json | undefined {
-  if (!existsSync(path)) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    throw new Error(`${path}: not valid JSON (${(err as Error).message})`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${path}: must hold a JSON object`);
-  }
-  return parsed as Json;
+  return join(projectRoot(cwd), ".hamness", "config.json");
 }
 
 function safetyBlock(path: string, file: Json | undefined): Json {
@@ -124,10 +107,7 @@ export function addProjectRules(cwd: string, rules: Rule[]): string {
   safety.permission = permission;
   file.safety = safety;
 
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`);
-  renameSync(tmp, path);
+  writeJsonAtomic(path, file, 0o644);
   return path;
 }
 

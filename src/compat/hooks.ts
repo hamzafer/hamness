@@ -1,13 +1,8 @@
 import { spawn } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, join } from "node:path";
+import { type Json, readJsonOr, writeJsonAtomic } from "../config/json.ts";
+import { projectRoot } from "./paths.ts";
 import { toClaudeCall, toClaudeResponse } from "./tools.ts";
 
 /**
@@ -23,8 +18,6 @@ import { toClaudeCall, toClaudeResponse } from "./tools.ts";
  * A hook that crashes, prints junk or times out decides nothing (logged), unless it set
  * `onFailure: "block"`. Only `type: "command"` handlers run; other types are skipped.
  */
-
-type Json = Record<string, unknown>;
 
 export type HookEvent = "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "Stop" | "SessionStart";
 
@@ -119,29 +112,10 @@ interface CommandHook {
   label: string;
 }
 
-function readJson(path: string, log: (m: string) => void): Json | undefined {
-  if (!existsSync(path)) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Json)
-      : undefined;
-  } catch (err) {
-    log(`${path}: not valid JSON (${(err as Error).message}); its hooks are skipped`);
-    return undefined;
-  }
-}
+const readJson = (path: string, log: (m: string) => void): Json | undefined =>
+  readJsonOr(path, (m) => log(`${m}; its hooks are skipped`));
 
-/** The repo root (nearest folder with `.git`), or the cwd outside a repo. */
-export function projectRoot(cwd: string): string {
-  let dir = cwd;
-  for (;;) {
-    if (existsSync(join(dir, ".git"))) return dir;
-    const up = dirname(dir);
-    if (up === dir) return cwd;
-    dir = up;
-  }
-}
+export { projectRoot };
 
 function projectSettingsFiles(cwd: string): string[] {
   const files = [
@@ -229,10 +203,7 @@ export function trustProject(dataDir: string, cwd: string): string {
   if (!list.includes(root)) list.push(root);
   hooks.trustedProjects = list;
   config.hooks = hooks;
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`);
-  renameSync(tmp, path);
+  writeJsonAtomic(path, config, 0o600);
   return root;
 }
 

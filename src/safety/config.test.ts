@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fakeWorktree } from "../../test/support/files.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { addProjectRules, loadJudgeConfig, loadSafetyConfig, projectConfigPath } from "./config.ts";
 
@@ -51,6 +52,16 @@ describe("loading safety config", () => {
     const loose = join(home.dir, "loose");
     mkdirSync(loose);
     expect(projectConfigPath(loose)).toBe(join(loose, ".hamness", "config.json"));
+  });
+
+  test("a subagent's worktree reads its main repo's project config (R-H1)", () => {
+    const wt = join(home.dir, "repo.hamness-worktrees", "helper-abc123");
+    fakeWorktree(repo, wt);
+    writeJson(join(repo, ".hamness", "config.json"), {
+      safety: { permission: { bash: { "make deploy *": "ask" } } },
+    });
+    expect(projectConfigPath(wt)).toBe(join(repo, ".hamness", "config.json"));
+    expect(loadSafetyConfig(dataDir, wt).rules.at(-1)?.pattern).toBe("make deploy *");
   });
 
   test("a project config cannot change the mode", () => {

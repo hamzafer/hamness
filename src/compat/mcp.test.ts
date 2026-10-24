@@ -174,7 +174,7 @@ describe("project server approval", () => {
     const fingerprint = load().servers[0]?.fingerprint;
     writeTree(tmp.dir, {
       "repo/.hamness/config.json": json({
-        compat: { mcpApprovals: { [repo]: { team: fingerprint } } },
+        trust: { projects: { [repo]: { mcp: { team: fingerprint } } } },
       }),
     });
     expect(byName(load()).team?.status).toBe("needs-approval");

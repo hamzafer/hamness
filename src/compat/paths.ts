@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Env } from "../config/paths.ts";
 
 /**
@@ -66,6 +66,40 @@ export function repoRoot(cwd: string): string | undefined {
     const up = dirname(dir);
     if (up === dir) return undefined;
     dir = up;
+  }
+}
+
+/**
+ * The project a folder belongs to: its repo root, and for a git worktree the main repo's root
+ * (what `git rev-parse --git-common-dir` names), read from the `.git` file without running git.
+ * Outside a repo, the folder itself. Trust, MCP approvals and `.hamness/config.json` key on it,
+ * so a subagent's worktree shares its repo's settings (ADR 0020).
+ */
+export function projectRoot(cwd: string): string {
+  const top = repoRoot(cwd);
+  if (!top) return resolve(cwd);
+  const dotGit = join(top, ".git");
+  try {
+    if (!statSync(dotGit).isFile()) return top;
+    const gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
+    if (!gitdir) return top;
+    const dir = resolve(top, gitdir);
+    const commondir = join(dir, "commondir");
+    if (!existsSync(commondir)) return top; // a submodule: its own project
+    const common = resolve(dir, readFileSync(commondir, "utf8").trim());
+    return basename(common) === ".git" ? dirname(common) : top;
+  } catch {
+    return top;
+  }
+}
+
+/** `projectRoot` with symlinks resolved: the key a project's trust and approvals live under. */
+export function projectKey(cwd: string): string {
+  const root = projectRoot(cwd);
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
   }
 }
 
