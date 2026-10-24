@@ -39,9 +39,12 @@ export function readJsonOr(path: string, onError?: (message: string) => void): J
   }
 }
 
-/** Writes pretty JSON through a temp file and a rename, so readers never see half a file. */
+/**
+ * Writes pretty JSON through a temp file and a rename, so readers never see half a file.
+ * Folders it has to create are owner-only (0700) when the file is (S-M7: the data dir).
+ */
 export function writeJsonAtomic(path: string, value: unknown, mode: number): void {
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, ...((mode & 0o077) === 0 ? { mode: 0o700 } : {}) });
   const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode });
   chmodSync(tmp, mode);
