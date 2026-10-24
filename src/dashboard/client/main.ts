@@ -29,18 +29,20 @@ interface State {
   verdict: "all" | "allow" | "ask" | "deny";
 }
 
-const RANGES: Range[] = ["24h", "7d", "30d", "90d"];
+const RANGES: Range[] = ["today", "24h", "7d", "30d", "90d"];
 const SOURCE_LABEL: Record<Source, string> = {
   hamness: "hamness",
   "claude-code": "Claude Code",
   codex: "Codex",
 };
 const RANGE_LABEL: Record<Range, string> = {
+  today: "today",
   "24h": "last 24 hours",
   "7d": "last 7 days",
   "30d": "last 30 days",
   "90d": "last 90 days",
 };
+const inRange = (r: Range) => (r === "today" ? "today" : `in the ${RANGE_LABEL[r]}`);
 const OUTCOMES: TaskOutcome[] = ["verified", "unverified", "overridden", "abandoned", "open"];
 
 function pick<T extends string>(v: string | null, allowed: readonly T[], fallback: T): T {
@@ -262,7 +264,7 @@ function overview(r: StatsReport): Node[] {
 
   const m = METRICS[state.metric];
   const points = r.series.buckets.map((b) => ({ start: b.start, value: m.value(b) }));
-  const hourly = r.range === "24h";
+  const hourly = r.range === "24h" || r.range === "today";
   const heroControls = h(
     "div",
     { class: "card-controls" },
@@ -572,7 +574,7 @@ async function tasksView(): Promise<Node[]> {
     : empty(
         state.source === "claude-code" || state.source === "codex"
           ? "Imported history has no tasks: tasks are recorded by hamness sessions."
-          : `No tasks in the ${RANGE_LABEL[state.range]}.`,
+          : `No tasks ${inRange(state.range)}.`,
       );
   return [card("Tasks", filters, table, more)];
 }
@@ -656,7 +658,7 @@ async function decisionsView(): Promise<Node[]> {
           tbody,
         ),
       )
-    : empty(`No safety decisions in the ${RANGE_LABEL[state.range]}.`);
+    : empty(`No safety decisions ${inRange(state.range)}.`);
   return [card("Safety decisions", filters, table, more)];
 }
 

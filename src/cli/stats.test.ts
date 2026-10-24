@@ -108,7 +108,7 @@ function reportsAt(now: number, ranges: StatsQuery["range"][], source?: StatsQue
 describe("renderStats", () => {
   test("today, 7 days and 30 days side by side, details for 7 days", () => {
     seedHistory(NOW);
-    const reports = reportsAt(NOW, ["24h", "7d", "30d"]);
+    const reports = reportsAt(NOW, ["today", "7d", "30d"]);
     const text = renderStats(reports, 1);
     expect(text).toMatchSnapshot();
     expect(text).not.toContain("—");
@@ -142,6 +142,17 @@ describe("hamness stats", () => {
     const text = out.join("\n");
     expect(text).toContain("Top models");
     expect(text).toContain("claude-sonnet-5");
+    const header = text.split("\n").find((l) => l.includes("7 days"));
+    expect(header?.trim().split(/\s{2,}/)).toEqual(["today", "7 days", "30 days"]);
+  });
+
+  test("--range today and --range 24h both work", async () => {
+    seedHistory(Date.now());
+    expect(await runCli(["stats", "--json", "--range", "today"], env(), io)).toBe(0);
+    expect(JSON.parse(out.join("\n")).reports[0].range).toBe("today");
+    out.length = 0;
+    expect(await runCli(["stats", "--json", "--range", "24h"], env(), io)).toBe(0);
+    expect(JSON.parse(out.join("\n")).reports[0].range).toBe("24h");
   });
 
   test("--json prints one report per range", async () => {

@@ -16,14 +16,15 @@ import type { CliContext } from "../run.ts";
 export { count, duration, money };
 
 export const STATS_USAGE = [
-  "Usage: hamness stats [--range 24h|7d|30d|90d] [--source hamness|claude-code|codex] [--json]",
+  "Usage: hamness stats [--range today|24h|7d|30d|90d] [--source hamness|claude-code|codex] [--json]",
   "",
   "Sessions, tasks, verified rate, cost, models, tools and safety decisions.",
-  "With no --range: 24h, 7 days and 30 days side by side, details for 7 days.",
+  "With no --range: today, 7 days and 30 days side by side, details for 7 days.",
   "Day ranges start at local midnight.",
 ].join("\n");
 
 const RANGE_LABEL: Record<Range, string> = {
+  today: "today",
   "24h": "24h",
   "7d": "7 days",
   "30d": "30 days",
@@ -76,7 +77,7 @@ export async function statsCommand({ args, dataDir, io }: CliContext): Promise<n
     io.out("No data yet. Run `hamness import` to bring in Claude Code and Codex history.");
     return 0;
   }
-  const ranges: Range[] = range ? [range as Range] : ["24h", "7d", "30d"];
+  const ranges: Range[] = range ? [range as Range] : ["today", "7d", "30d"];
   const now = Date.now();
   const db = openDatabase(path);
   let reports: StatsReport[];
@@ -131,8 +132,12 @@ export function renderStats(reports: StatsReport[], detail: number): string {
   const lines = [`hamness stats: ${scope}`, ""];
 
   if (reports.every(isEmpty)) {
-    const span = reports.map((r) => RANGE_LABEL[r.range]).at(-1) ?? "";
-    lines.push(`Nothing recorded in the last ${span}.`);
+    const last = reports.at(-1)?.range;
+    lines.push(
+      last === "today"
+        ? "Nothing recorded today."
+        : `Nothing recorded in the last ${last ? RANGE_LABEL[last] : ""}.`,
+    );
     if (!d.source || d.source !== "hamness")
       lines.push("Run `hamness import` to bring in Claude Code and Codex history.");
     return lines.join("\n");

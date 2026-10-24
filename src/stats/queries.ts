@@ -233,7 +233,7 @@ export interface TimeSeries {
 
 type BucketParams = [number, number, string | null, number];
 
-/** One bucket per hour (24h) or local day (7d, 30d, 90d). */
+/** One bucket per hour (today, 24h) or local day (7d, 30d, 90d). */
 export function timeSeries(sqlite: Database, q: StatsQuery): TimeSeries {
   return timeSeriesOf(context(sqlite, q));
 }

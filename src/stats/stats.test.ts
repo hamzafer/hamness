@@ -16,7 +16,7 @@ import {
 
 // 2026-10-24 12:30 UTC. Tests bucket in UTC.
 const NOW = Date.UTC(2026, 9, 24, 12, 30);
-const q = (range: "24h" | "7d" | "30d" | "90d", extra = {}) => ({
+const q = (range: "today" | "24h" | "7d" | "30d" | "90d", extra = {}) => ({
   range,
   now: NOW,
   utcOffsetMinutes: 0,
@@ -160,6 +160,15 @@ describe("windowFor", () => {
     expect(w.from).toBe(Date.UTC(2026, 9, 23, 13));
     expect(w.to).toBe(NOW);
     expect(w.buckets).toBe(24);
+  });
+
+  test("today runs from local midnight to now, by hour", () => {
+    // UTC+2: local now is 14:30, so today began at 22:00 UTC on the 23rd: 15 hourly buckets.
+    const w = windowFor(q("today", { utcOffsetMinutes: 120 }));
+    expect(w.from).toBe(Date.UTC(2026, 9, 23, 22));
+    expect(w.to).toBe(NOW);
+    expect(w.bucketMs).toBe(HOUR);
+    expect(w.buckets).toBe(15);
   });
 
   test("day ranges start at local midnight", () => {

@@ -138,7 +138,7 @@ hamness reads your Claude Code setup as it is and never changes it (ADRs 0008, 0
 
 ```sh
 hamness import       # read Claude Code and Codex history (read-only, incremental)
-hamness stats        # 24h, 7 and 30 days: tasks, verified rate, cost per verified task, models, tools
+hamness stats        # today, 7 and 30 days: tasks, verified rate, cost per verified task, models, tools
 hamness stats --range 7d --source hamness --json
 hamness dashboard    # the same in the browser (--no-open prints the link)
 ```

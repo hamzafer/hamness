@@ -1,4 +1,4 @@
-export const RANGES = ["24h", "7d", "30d", "90d"] as const;
+export const RANGES = ["today", "24h", "7d", "30d", "90d"] as const;
 export type Range = (typeof RANGES)[number];
 
 export const SOURCES = ["hamness", "claude-code", "codex"] as const;
@@ -33,13 +33,24 @@ const DAY = 24 * HOUR;
 /**
  * The time window of a range, aligned to whole buckets: 24h is the current
  * hour plus the 23 before it; 7d, 30d and 90d are today plus the days before
- * it, in local time. DST shifts inside the window are ignored.
+ * it, in local time; today is local midnight to now, by hour. DST shifts inside
+ * the window are ignored.
  */
 export function windowFor(q: StatsQuery): Window {
   const now = q.now ?? Date.now();
   const offsetMs = (q.utcOffsetMinutes ?? -new Date(now).getTimezoneOffset()) * 60_000;
-  const [bucketMs, buckets] = q.range === "24h" ? [HOUR, 24] : [DAY, Number.parseInt(q.range, 10)];
   const local = now + offsetMs;
+  if (q.range === "today") {
+    const midnight = local - (((local % DAY) + DAY) % DAY) - offsetMs;
+    return {
+      from: midnight,
+      to: now,
+      bucketMs: HOUR,
+      buckets: Math.floor((now - midnight) / HOUR) + 1,
+      source: q.source ?? null,
+    };
+  }
+  const [bucketMs, buckets] = q.range === "24h" ? [HOUR, 24] : [DAY, Number.parseInt(q.range, 10)];
   const currentStart = local - (((local % bucketMs) + bucketMs) % bucketMs) - offsetMs;
   return {
     from: currentStart - (buckets - 1) * bucketMs,

@@ -3,7 +3,7 @@
 exports[`renderStats today, 7 days and 30 days side by side, details for 7 days 1`] = `
 "hamness stats: all sources
 
-                        24h  7 days  30 days
+                      today  7 days  30 days
   Sessions                1       2        3
   Tasks                   2       3        3
     verified              1       2        2
