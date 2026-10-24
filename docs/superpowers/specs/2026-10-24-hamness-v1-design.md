@@ -55,7 +55,7 @@ See `GLOSSARY.md` for the terms. The main ones:
 - Approval prompts appear inline when the safety layer says `ask`.
 
 ### 2. The side rail (glass box)
-- One row per agent, background shell and check: status, current tool, current file, elapsed time, tokens, cost.
+- One row per agent, background shell and check: status, current tool, current file, elapsed time, tokens, cost. (Background shells wait for Pi to have them; ADR 0019.)
 - The current Task at the top: goal, outcome state, evidence count.
 - Context gauge (how full the context window is) and session cost.
 - Live: driven by the daemon's event stream.
@@ -67,7 +67,7 @@ See `GLOSSARY.md` for the terms. The main ones:
   - `ci`: a PR or commit. hamness checks CI status itself through `gh`.
   - `file`: an artifact such as a screenshot. hamness checks it exists, is non-empty and was written during the task, and stores its hash.
   - `url`: a live check. hamness fetches it and stores the status code.
-- **Hard gate:** `task_done` only yields `verified` when at least one piece of evidence passed hamness's own check. Otherwise the task closes as `unverified`, shown in red in the TUI and dashboard. Only the user can mark it `overridden` (`/override`).
+- **Hard gate:** `task_done` only yields `verified` when evidence passed hamness's own check (ADR 0019: the latest evidence, after the last file change, not only weak file evidence, and commands on the proof command list or approved by the user). Otherwise the task closes as `unverified`, shown in red in the TUI and dashboard. Only the user can mark it `overridden` (`/override`).
 - Agents cannot write evidence results directly; only hamness's checkers can.
 
 ### 4. Safety: rules, judge, audit log

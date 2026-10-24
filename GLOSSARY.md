@@ -10,7 +10,10 @@
 - **Outcome:** a task's final state: `open`, `verified`, `unverified`, `overridden` (the user accepted it without proof, `/override`), `abandoned` (the user dropped it, `/abandon`).
 - **Evidence:** a claim attached with the `prove` tool (`command`, `ci`, `file`, `url`), checked by a **checker**. Its result is `passed`, `failed` or `error` (could not check: blocked by safety, aborted, `gh` missing); only `passed` counts.
 - **Checker:** hamness code that verifies a piece of evidence on its own. Only checkers write evidence results.
-- **Proof gate:** the rule that a task becomes `verified` only with at least one passing piece of evidence.
+- **Proof gate:** the rule that a task becomes `verified` only when its latest evidence passed after its last file change, and not only on weak evidence (ADR 0019).
+- **Proof command list:** the commands a `prove` re-run may run without asking: built-in test, build, lint and typecheck commands, the user's `proof.commands`, and the project's once trusted. Anything else asks whether it counts as proof.
+- **Weak evidence:** file evidence for a file the agent wrote with its own write / edit tools. It can pass but never verifies a task alone.
+- **Check:** one checker run on a piece of evidence; it has its own row on the side rail while it runs.
 - **Rule:** an allow / ask / deny pattern for a tool call.
 - **Judge:** the small model that decides tool calls no rule decides.
 - **Decision:** a safety verdict on one tool call, with source (`rule`, `judge`, `hook`, `user`, `mode`) and reason.
@@ -18,7 +21,7 @@
 - **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything).
 - **Audit log:** the stored list of decisions.
 - **Hook:** a command from Claude Code's settings that hamness runs on an event (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop). A project's hooks run only as its repo **trusted** them.
-- **Side rail:** the always-on right pane in the TUI showing agents, shells, checks, the current task and gauges.
+- **Side rail:** the always-on right pane in the TUI showing agents, checks, the current task and gauges (background shells once Pi has them).
 - **Source:** where a session came from: `hamness`, `claude-code` or `codex` (imported).
 - **Import:** reading Claude Code or Codex history, read-only and incremental, into the same tables. Each source file has an **import cursor** (byte offset, size, mtime) so a re-run reads only new lines.
 - **Active time:** the time an agent spent working in a session (sum of its turn durations), as opposed to wall time from first to last event.

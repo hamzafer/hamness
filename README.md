@@ -54,7 +54,7 @@ With no key, `hamness` prints a short setup instead of the chat. Ask for somethi
 
 `hamness` opens the chat for the current directory. The session lives in a background daemon: closing the TUI never stops it, reopening it in the same directory reattaches, and after a daemon restart the directory's last session resumes with its transcript.
 
-The **side rail** on the right shows the current task (goal, outcome, evidence passed of checked; unverified in red), one row per agent (status, current tool and file, elapsed time, tokens, cost), the context gauge and the session cost.
+The **side rail** on the right shows the current task (goal, outcome, evidence passed of checked; unverified in red), one row per agent (status, current tool and file, elapsed time, tokens, cost), a row per proof check (what hamness is re-running or reading, then how it ended), the context gauge and the session cost. Background shells have no rows yet: Pi's `bash` has no background mode (ADR 0019).
 
 | Key | Does |
 |---|---|
@@ -75,16 +75,27 @@ The **side rail** on the right shows the current task (goal, outcome, evidence p
 
 ## Tasks and proof
 
-Work happens in **tasks** (ADRs 0004, 0005, 0012). The agent opens one with `task_start`, attaches evidence with `prove` and closes it with `task_done`. hamness checks each piece of evidence itself; the agent can't mark anything passed:
+Work happens in **tasks** (ADRs 0004, 0005, 0012, 0019). The agent opens one with `task_start`, attaches evidence with `prove` and closes it with `task_done`. hamness checks each piece of evidence itself; the agent can't mark anything passed:
 
 | Evidence | Passes when |
 |---|---|
-| `command` | hamness re-runs it in the session's dir (through the same safety rules as `bash`) and it exits 0 |
-| `file` | the file exists, is not empty and was written during the task |
-| `url` | a fetch returns 2xx |
-| `ci` | every check on the PR or commit passed (read through `gh`) |
+| `command` | hamness re-runs it in the session's dir and it exits 0 (and, for a test run, tests ran) |
+| `file` | the file is inside the session's dir, exists, is not empty and was written during the task |
+| `url` | after a safety check, a fetch returns 2xx (same-host redirects only, no private addresses) |
+| `ci` | every check on the PR or commit passed (read through `gh`), for this repo and code in HEAD's history |
 
-A task is **verified** only when at least one piece passed; otherwise it closes **unverified**. Only you can accept it anyway (`/override`) or drop it (`/abandon`). A turn with no task open gets its own task, which is dropped at the end if it had no evidence and no file edits. Cost, tokens and time roll up to the task.
+A task is **verified** only when its latest evidence passed after its last file edit; otherwise it closes **unverified**. Only you can accept it anyway (`/override`) or drop it (`/abandon`). A turn with no task open gets its own task, which is dropped at the end if it had no failed evidence and no file edits. Cost, tokens and time roll up to the task, along with its branch and, from CI evidence, its PR and commit.
+
+**What counts as proof** (ADR 0019):
+- Commands that can't prove anything are refused: `echo`, `true`, `exit 0`, read-only commands like `cat` or `git status`, `|| true`, `;`, `&`, `$VAR`, `--help`. Join steps with `&&`; pipes run with `pipefail`.
+- A re-run goes without asking only when it is on the **proof command list**: built-in test, build, lint and typecheck commands (`bun test`, `npm test`, `npm run build`, `pnpm test`, `cargo test`, `go test`, `pytest`, `make test`, `tsc`, ...), your `proof.commands`, and the project's `proof.commands` once you trust the repo. Anything else asks "count `X` as proof?" in every mode, `yolo` included; "always" adds it to your list. bash's deny and ask rules still apply; bash allow rules don't make a command proof.
+- A file the agent wrote itself with `write` / `edit` is **weak** evidence: it never verifies a task alone.
+
+```json
+{ "proof": { "commands": ["just verify *"], "allowPrivateUrls": false } }
+```
+
+`allowPrivateUrls` (your config only) lets `prove url` reach a local dev server.
 
 ## Safety: rules, modes and the judge
 
@@ -188,8 +199,8 @@ Everything hamness keeps is in its **data dir**: `~/Library/Application Support/
 
 | Path | Holds |
 |---|---|
-| `<data dir>/config.json` | your config: `safety` (mode, rules, judge) and `trust` (what you trusted per repo) |
-| `<repo>/.hamness/config.json` | the project's rules ("allow always" writes here) |
+| `<data dir>/config.json` | your config: `safety` (mode, rules, judge), `proof` (proof commands, private URLs) and `trust` (what you trusted per repo) |
+| `<repo>/.hamness/config.json` | the project's rules ("allow always" writes here) and proof commands |
 | `<data dir>/keys.json` | API keys (mode 0600; env vars win) |
 | `<data dir>/hamness.sqlite` | sessions, tasks, evidence, model calls, decisions, imported history |
 | `<data dir>/pi/` | Pi's logins, model list and session files |
