@@ -4,17 +4,17 @@ import type { AgentTotals, ToolStatus, TranscriptItem } from "../events/types.ts
 import type { TokenUsage } from "../models/prices.ts";
 import type { SubagentStatus } from "./subagent-tools.ts";
 
-/** Which rows a write belongs to. `taskId` tags model calls for the task rollup. */
+/**
+ * The chat rows of the hamness database: sessions, agents, messages, tool calls and model calls.
+ * Rows carry the `task_id` the hub passes in `ids` (ticket #6): the session's current task.
+ */
+
+/** Who a row belongs to. `taskId` is the task it counts toward, if any. */
 export interface RowIds {
   sessionId: string;
   agentId: string;
-  taskId?: string;
+  taskId?: string | undefined;
 }
-
-/**
- * The chat rows of the hamness database: sessions, agents, messages, tool calls and model calls.
- * `task_id` stays NULL until ticket #6 opens tasks.
- */
 export class ChatStore {
   constructor(private readonly db: HamnessDb) {}
 
@@ -119,20 +119,6 @@ export class ChatStore {
       .run(Date.now());
   }
 
-  /**
-   * The session's open task (the newest), for tagging subagent model calls so their cost rolls
-   * up to the parent's task. Undefined until ticket #6 opens tasks.
-   */
-  openTaskId(sessionId: string): string | undefined {
-    const row = this.sql
-      .query<{ id: string }, [string]>(
-        `SELECT id FROM tasks WHERE session_id = ? AND outcome = 'open'
-         ORDER BY started_at DESC, id DESC LIMIT 1`,
-      )
-      .get(sessionId);
-    return row?.id;
-  }
-
   /** The session's current model, on the session and its main agent. */
   setModel(ids: { sessionId: string; agentId: string }, model: string): void {
     const now = Date.now();
@@ -146,19 +132,15 @@ export class ChatStore {
     })();
   }
 
-  addMessage(
-    ids: { sessionId: string; agentId: string },
-    role: "user" | "assistant",
-    content: string | null,
-  ): string {
+  addMessage(ids: RowIds, role: "user" | "assistant", content: string | null): string {
     const id = newId();
     const now = Date.now();
     this.sql
       .query(
-        `INSERT INTO messages (id, session_id, agent_id, role, content, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, session_id, agent_id, task_id, role, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, ids.sessionId, ids.agentId, role, content, now, now);
+      .run(id, ids.sessionId, ids.agentId, ids.taskId ?? null, role, content, now, now);
     return id;
   }
 
@@ -209,21 +191,22 @@ export class ChatStore {
 
   /** `argsJson` must already be redacted. */
   addToolCall(
-    ids: { sessionId: string; agentId: string },
+    ids: RowIds,
     call: { messageId: string | undefined; tool: string; argsJson: string },
   ): string {
     const id = newId();
     const now = Date.now();
     this.sql
       .query(
-        `INSERT INTO tool_calls (id, session_id, agent_id, message_id, tool, args_json, status,
-           started_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+        `INSERT INTO tool_calls (id, session_id, agent_id, task_id, message_id, tool, args_json,
+           status, started_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
       )
       .run(
         id,
         ids.sessionId,
         ids.agentId,
+        ids.taskId ?? null,
         call.messageId ?? null,
         call.tool,
         call.argsJson,

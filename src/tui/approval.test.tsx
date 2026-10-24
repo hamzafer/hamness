@@ -61,6 +61,10 @@ function fakeClient() {
     answerApproval: async (id, decision) => {
       answers.push([id, decision]);
     },
+    resumeJudge: async () => "on",
+    task: async () => {
+      throw new Error("no task actions in this test");
+    },
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};

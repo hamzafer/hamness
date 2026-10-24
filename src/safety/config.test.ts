@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
-import { addProjectRules, loadSafetyConfig, projectConfigPath } from "./config.ts";
+import { addProjectRules, loadJudgeConfig, loadSafetyConfig, projectConfigPath } from "./config.ts";
 
 let home: ReturnType<typeof tempHome>;
 let dataDir: string;
@@ -115,5 +115,36 @@ describe("saving 'allow always' rules to the project config", () => {
       ["ls *", "allow"],
       ["make *", "allow"],
     ]);
+  });
+});
+
+describe("judge config", () => {
+  test("defaults: Haiku 5.5, a $1 daily budget and an 8 second timeout", () => {
+    expect(loadJudgeConfig(dataDir)).toEqual({
+      model: "claude-haiku-5-5",
+      dailyBudgetMicros: 1_000_000,
+      timeoutMs: 8000,
+    });
+  });
+
+  test("the user config sets the model, budget and timeout; the project config cannot", () => {
+    writeJson(join(dataDir, "config.json"), {
+      safety: { judge: { model: "claude-sonnet-5-5", dailyBudgetUsd: 0.25, timeoutSec: 3 } },
+    });
+    writeJson(join(repo, ".hamness", "config.json"), {
+      safety: { judge: { dailyBudgetUsd: 100 } },
+    });
+    expect(loadJudgeConfig(dataDir)).toEqual({
+      model: "claude-sonnet-5-5",
+      dailyBudgetMicros: 250_000,
+      timeoutMs: 3000,
+    });
+  });
+
+  test("bad values are errors that name the file and key", () => {
+    for (const judge of [{ dailyBudgetUsd: -1 }, { model: "" }, { timeoutSec: "8" }, "x"]) {
+      writeJson(join(dataDir, "config.json"), { safety: { judge } });
+      expect(() => loadJudgeConfig(dataDir)).toThrow(/config\.json: safety\.judge/);
+    }
   });
 });

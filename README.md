@@ -56,7 +56,14 @@ Add rules under `safety` in `<data dir>/config.json` (yours) or `.hamness/config
 }
 ```
 
-Modes (user config only): `ask` asks you about anything no rule decides, `auto` (the default) will ask a judge model first (until then it asks you), `yolo` allows everything and says so in a red banner. When a call asks, the TUI shows it above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. With no answer it is denied after the timeout. Every decision is stored with its source and reason; `hamness audit` lists them.
+Modes (user config only): `ask` asks you about anything no rule decides, `auto` (the default) asks a judge model first, `yolo` allows everything and says so in a red banner.
+
+The judge (auto mode) is Claude Haiku 5.5 by default, keyed like chat (`ANTHROPIC_API_KEY` or the key file). It sees the call (secrets redacted) as untrusted data and answers a strict JSON verdict: `allow`, or `ask` with a reason and a risk category (`src/safety/judge/categories.ts`). An error, a timeout (8 s), a refusal or an answer that does not parse means you are asked. Its spend is capped per local day (default $1, from the stored judge decisions); over the cap, undecided calls ask you. After 3 judge asks in a row it pauses for that session until the daemon restarts or you type `/judge resume`. With no API key it is off and undecided calls ask you. The TUI header shows its state (`judge on`, `paused`, `over budget`, `off: no key`). Settings, user config only:
+
+```json
+{ "safety": { "judge": { "model": "claude-haiku-5-5", "dailyBudgetUsd": 1, "timeoutSec": 8 } } }
+```
+ When a call asks, the TUI shows it above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. With no answer it is denied after the timeout. Every decision is stored with its source and reason; `hamness audit` lists them.
 
 ### Subagents
 
@@ -72,7 +79,11 @@ The main agent can start subagents in the background (`agent_start`), check on t
 | Ctrl+R | open the side rail full screen, and back |
 | Ctrl+C | leave the TUI (the session keeps running) |
 
-The side rail on the right shows one row per agent (status, current tool and file, elapsed time, tokens, cost), the context gauge and the session cost.
+The side rail on the right shows the current task (goal, outcome, passing / checked evidence; unverified in red), one row per agent (status, current tool and file, elapsed time, tokens, cost), the context gauge and the session cost.
+
+### Tasks and proof
+
+Work happens in tasks. The agent opens one with `task_start`, attaches evidence with `prove` and closes it with `task_done`; you can open one with `/task <goal>`. hamness checks the evidence itself: it re-runs a command (through the same safety rules as `bash`), checks a file was written during the task, fetches a URL, or reads CI through `gh`. A task is `verified` only when at least one piece passed; otherwise it is `unverified`. Only you can accept it anyway with `/override [reason]`, or drop the open task with `/abandon [reason]`. A turn with no task open gets its own task, which is dropped at the end if it had no evidence and no file edits. Cost, tokens and time roll up to the task (ADRs 0004, 0005, 0012).
 
 ## License
 

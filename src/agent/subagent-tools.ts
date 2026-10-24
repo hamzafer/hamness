@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import type { RunnerTool } from "./runner.ts";
+import type { AgentToolSpec } from "./runner.ts";
 
 /**
  * The tools a main agent uses to run subagents in the background (ADR 0015):
@@ -46,10 +46,11 @@ function unknown(id: string): never {
   throw new Error(`no subagent with id ${JSON.stringify(id)} in this session`);
 }
 
-export function subagentTools(control: SubagentControl): RunnerTool[] {
+export function subagentTools(control: SubagentControl): AgentToolSpec[] {
   return [
     {
       name: "agent_start",
+      label: "Start subagent",
       description:
         "Start a subagent in the background with its own prompt. Returns its id at once; " +
         "collect its final message with agent_wait (or it arrives as a notice on a later turn). " +
@@ -61,27 +62,29 @@ export function subagentTools(control: SubagentControl): RunnerTool[] {
         model: Type.Optional(Type.String({ description: "provider/id" })),
         worktree: Type.Optional(Type.Boolean()),
       }),
-      async execute(args) {
+      async execute(_id, args) {
         const req: SubagentStart = {
           name: String(args.name ?? ""),
           prompt: String(args.prompt ?? ""),
           ...(typeof args.model === "string" && args.model.trim() ? { model: args.model } : {}),
           ...(args.worktree === true ? { worktree: true } : {}),
         };
-        return json(control.start(req));
+        return { text: json(control.start(req)) };
       },
     },
     {
       name: "agent_status",
+      label: "Subagent status",
       description: "The status of a subagent you started, with its final message once done.",
       parameters: Type.Object({ id: Type.String() }),
-      async execute(args) {
+      async execute(_id, args) {
         const id = String(args.id ?? "");
-        return json(control.status(id) ?? unknown(id));
+        return { text: json(control.status(id) ?? unknown(id)) };
       },
     },
     {
       name: "agent_wait",
+      label: "Wait for subagent",
       description:
         `Wait for a subagent to finish and return its final message. timeoutSec defaults to ` +
         `${DEFAULT_WAIT_SEC} (at most ${MAX_WAIT_SEC}); on a timeout the status is still running.`,
@@ -89,11 +92,11 @@ export function subagentTools(control: SubagentControl): RunnerTool[] {
         id: Type.String(),
         timeoutSec: Type.Optional(Type.Number({ minimum: 0 })),
       }),
-      async execute(args, signal) {
+      async execute(_id, args, signal) {
         const id = String(args.id ?? "");
         const sec = typeof args.timeoutSec === "number" ? args.timeoutSec : DEFAULT_WAIT_SEC;
         const timeoutMs = Math.max(0, Math.min(sec, MAX_WAIT_SEC)) * 1000;
-        return json((await control.wait(id, timeoutMs, signal)) ?? unknown(id));
+        return { text: json((await control.wait(id, timeoutMs, signal)) ?? unknown(id)) };
       },
     },
   ];

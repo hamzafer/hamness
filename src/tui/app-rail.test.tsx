@@ -29,6 +29,10 @@ function fakeClient() {
     models: async () => [],
     setModel: async () => snapshot,
     answerApproval: async () => {},
+    resumeJudge: async () => "on",
+    task: async () => {
+      throw new Error("no task actions in this test");
+    },
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};

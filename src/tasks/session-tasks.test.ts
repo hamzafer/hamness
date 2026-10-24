@@ -1,0 +1,369 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tempHome } from "../../test/support/temp-home.ts";
+import { ChatStore } from "../agent/store.ts";
+import { type HamnessDb, openDatabase } from "../db/open.ts";
+import { SessionTasks, type TaskEventBody, TaskStateError } from "./session-tasks.ts";
+
+let home: ReturnType<typeof tempHome>;
+let db: HamnessDb;
+let chat: ChatStore;
+let ids: { sessionId: string; agentId: string };
+let events: TaskEventBody[];
+
+beforeEach(() => {
+  home = tempHome();
+  db = openDatabase(join(home.dir, "h.sqlite"));
+  chat = new ChatStore(db);
+  ids = chat.createSession(home.dir, "fake/m");
+  events = [];
+});
+afterEach(() => {
+  db.close();
+  home.cleanup();
+});
+
+function tasks() {
+  return new SessionTasks({
+    db,
+    sessionId: ids.sessionId,
+    cwd: home.dir,
+    emit: (e) => events.push(e),
+    safety: async () => ({ allow: true }),
+    gh: async () => ({ exitCode: 1, stdout: "", stderr: "no gh in tests" }),
+    fetch: async () => {
+      throw new Error("no network in tests");
+    },
+  });
+}
+
+/** A model call counted toward the current task, as the hub records one. */
+function modelCall(t: SessionTasks, costMicros: number, input = 100, output = 10) {
+  const row = { ...ids, taskId: t.attributionId() };
+  const messageId = chat.addMessage(row, "assistant", "x");
+  chat.addModelCall(row, {
+    messageId,
+    provider: "fake",
+    model: "m",
+    usage: { input, output, cacheRead: 0, cacheWrite: 0 },
+    costMicros,
+  });
+}
+
+const row = (id: string) =>
+  db.sqlite
+    .query<{ outcome: string; implicit: number; goal: string; summary: string | null }, [string]>(
+      "SELECT outcome, implicit, goal, summary FROM tasks WHERE id = ?",
+    )
+    .get(id);
+
+describe("explicit tasks", () => {
+  test("task_done with a passing command is verified", async () => {
+    const t = tasks();
+    const task = t.start("make the tests pass");
+    const proof = await t.prove({ kind: "command", command: "true" });
+    expect(proof.result.status).toBe("passed");
+    const done = t.done("tests pass");
+    expect(done.outcome).toBe("verified");
+    expect(done.evidence).toBe(1);
+    expect(done.passed).toBe(1);
+    expect(row(task.id)).toMatchObject({ outcome: "verified", summary: "tests pass", implicit: 0 });
+  });
+
+  test("task_done without evidence is unverified", () => {
+    const t = tasks();
+    t.start("refactor");
+    expect(t.done("refactored").outcome).toBe("unverified");
+  });
+
+  test("task_done with only failing evidence is unverified", async () => {
+    const t = tasks();
+    t.start("fix the build");
+    const proof = await t.prove({ kind: "command", command: "exit 1" });
+    expect(proof.result.status).toBe("failed");
+    expect(t.done("fixed").outcome).toBe("unverified");
+  });
+
+  test("one passing piece among failures is enough", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: "false" });
+    await t.prove({ kind: "command", command: "true" });
+    const done = t.done("fixed");
+    expect(done.outcome).toBe("verified");
+    expect(done).toMatchObject({ evidence: 2, passed: 1 });
+  });
+
+  test("an explicit task stays open across turns", () => {
+    const t = tasks();
+    const task = t.start("long job");
+    t.beginTurn("keep going");
+    expect(t.attributionId()).toBe(task.id);
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("a second task_start while one is open is refused", () => {
+    const t = tasks();
+    t.start("first");
+    expect(() => t.start("second")).toThrow(TaskStateError);
+  });
+
+  test("task_done and prove need an open task", async () => {
+    const t = tasks();
+    expect(() => t.done("x")).toThrow(TaskStateError);
+    await expect(t.prove({ kind: "command", command: "true" })).rejects.toThrow(TaskStateError);
+  });
+});
+
+describe("the agent cannot set a result", () => {
+  test("a claim that states its own result is refused and nothing is stored", async () => {
+    const t = tasks();
+    t.start("x");
+    await expect(t.prove({ kind: "command", command: "false", status: "passed" })).rejects.toThrow(
+      /only hamness's checker/,
+    );
+    const n = db.sqlite.query<{ n: number }, []>("SELECT count(*) AS n FROM evidence").get();
+    expect(n?.n).toBe(0);
+    expect(t.done("done").outcome).toBe("unverified");
+  });
+
+  test("the stored result is what the checker found, not what the agent claimed", async () => {
+    const t = tasks();
+    t.start("x");
+    await t.prove({ kind: "command", command: "echo all good; exit 2" });
+    const ev = db.sqlite
+      .query<{ status: string; result_json: string; claim_json: string }, []>(
+        "SELECT status, result_json, claim_json FROM evidence",
+      )
+      .get();
+    expect(ev?.status).toBe("failed");
+    expect(JSON.parse(ev?.result_json ?? "{}").exitCode).toBe(2);
+    expect(JSON.parse(ev?.claim_json ?? "{}")).toEqual({
+      kind: "command",
+      command: "echo all good; exit 2",
+    });
+  });
+
+  test("only the proof module writes evidence results (structural)", () => {
+    const writers: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) walk(path);
+        else if (/\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name)) {
+          if (/UPDATE\s+evidence/i.test(readFileSync(path, "utf8"))) writers.push(path);
+        }
+      }
+    };
+    const src = join(import.meta.dir, "..");
+    walk(src);
+    expect(writers.map((p) => p.slice(src.length + 1))).toEqual(["tasks/proof.ts"]);
+  });
+
+  test("the agent's tools are task_start, prove and task_done: no override or abandon", async () => {
+    const { taskTools } = await import("./tools.ts");
+    const names = taskTools({
+      start: () => {
+        throw new Error("unused");
+      },
+      done: () => {
+        throw new Error("unused");
+      },
+      prove: async () => {
+        throw new Error("unused");
+      },
+    }).map((tool) => tool.name);
+    expect(names.sort()).toEqual(["prove", "task_done", "task_start"]);
+  });
+});
+
+describe("user actions", () => {
+  test("/override turns an unverified task overridden, with the reason", () => {
+    const t = tasks();
+    const task = t.start("ship it");
+    t.done("shipped");
+    const over = t.override("checked by hand");
+    expect(over).toMatchObject({ id: task.id, outcome: "overridden", reason: "checked by hand" });
+  });
+
+  test("/override closes an open task as overridden", () => {
+    const t = tasks();
+    t.start("ship it");
+    expect(t.override().outcome).toBe("overridden");
+  });
+
+  test("/override of a verified task is refused", async () => {
+    const t = tasks();
+    t.start("x");
+    await t.prove({ kind: "command", command: "true" });
+    t.done("x");
+    expect(() => t.override()).toThrow(TaskStateError);
+  });
+
+  test("/abandon closes the open task as abandoned", () => {
+    const t = tasks();
+    const task = t.start("dead end");
+    const out = t.abandon("wrong approach");
+    expect(out).toMatchObject({ id: task.id, outcome: "abandoned", reason: "wrong approach" });
+    expect(() => t.abandon()).toThrow(TaskStateError);
+  });
+
+  test("/task opens a task the next turns count toward", () => {
+    const t = tasks();
+    const task = t.start("user goal");
+    t.beginTurn("do it");
+    expect(t.attributionId()).toBe(task.id);
+  });
+});
+
+describe("the implicit task per turn", () => {
+  test("a turn with no open task opens one, named after the prompt", () => {
+    const t = tasks();
+    t.beginTurn("what does this repo do?");
+    const id = t.attributionId();
+    expect(id).toBeDefined();
+    expect(row(id as string)).toMatchObject({
+      outcome: "open",
+      implicit: 1,
+      goal: "what does this repo do?",
+    });
+  });
+
+  test("a turn with no evidence and no edits is dropped at turn end, its rows kept", () => {
+    const t = tasks();
+    t.beginTurn("hi");
+    const id = t.attributionId() as string;
+    modelCall(t, 500);
+    t.endTurn();
+    expect(row(id)).toBeNull();
+    const calls = db.sqlite
+      .query<{ task_id: string | null }, []>("SELECT task_id FROM model_calls")
+      .all();
+    expect(calls).toEqual([{ task_id: null }]);
+    expect(events.at(-1)).toEqual({ type: "task.drop", taskId: id });
+  });
+
+  test("a turn that edited files without proof closes unverified", () => {
+    const t = tasks();
+    t.beginTurn("change it");
+    chat.addToolCall(
+      { ...ids, taskId: t.attributionId() },
+      {
+        messageId: undefined,
+        tool: "edit",
+        argsJson: "{}",
+      },
+    );
+    const id = t.attributionId() as string;
+    t.endTurn();
+    expect(row(id)?.outcome).toBe("unverified");
+  });
+
+  test("a turn with failed evidence closes unverified, with passing evidence verified", async () => {
+    const t = tasks();
+    t.beginTurn("try");
+    const failed = t.attributionId() as string;
+    await t.prove({ kind: "command", command: "false" });
+    t.endTurn();
+    expect(row(failed)?.outcome).toBe("unverified");
+
+    t.beginTurn("again");
+    const passed = t.attributionId() as string;
+    await t.prove({ kind: "command", command: "true" });
+    t.endTurn();
+    expect(row(passed)?.outcome).toBe("verified");
+  });
+
+  test("task_start during a turn promotes the turn's task, so the turn's cost counts", () => {
+    const t = tasks();
+    t.beginTurn("please fix the parser");
+    const id = t.attributionId() as string;
+    modelCall(t, 100);
+    const task = t.start("fix the parser");
+    expect(task.id).toBe(id);
+    expect(row(id)).toMatchObject({ implicit: 0, goal: "fix the parser" });
+    t.endTurn();
+    expect(row(id)?.outcome).toBe("open");
+    expect(t.view()?.costMicros).toBe(100);
+  });
+
+  test("rows after a mid-turn close still count toward that task", () => {
+    const t = tasks();
+    t.beginTurn("go");
+    const task = t.start("goal");
+    t.done("done");
+    modelCall(t, 7);
+    expect(t.attributionId()).toBe(task.id);
+    t.endTurn();
+    t.beginTurn("next");
+    expect(t.attributionId()).not.toBe(task.id);
+  });
+
+  test("a stale implicit task from a crash closes when the session resumes", () => {
+    const first = tasks();
+    first.beginTurn("interrupted");
+    const id = first.attributionId() as string;
+    tasks();
+    expect(row(id)).toBeNull();
+  });
+
+  test("an explicit task survives a resume", () => {
+    const task = tasks().start("multi-day");
+    expect(tasks().view()?.id).toBe(task.id);
+  });
+});
+
+describe("roll-up", () => {
+  test("task cost and tokens equal the sum of its model calls", () => {
+    const t = tasks();
+    const task = t.start("count me");
+    modelCall(t, 1200, 100, 20);
+    modelCall(t, 800, 50, 5);
+    // A call on another task does not count.
+    const other = new ChatStore(db).createSession(home.dir, "fake/m");
+    chat.addModelCall(
+      { ...other },
+      {
+        messageId: chat.addMessage(other, "assistant", "y"),
+        provider: "fake",
+        model: "m",
+        usage: { input: 9, output: 9, cacheRead: 0, cacheWrite: 0 },
+        costMicros: 999,
+      },
+    );
+    const done = t.done("ok");
+    expect(done.id).toBe(task.id);
+    expect(done.costMicros).toBe(2000);
+    expect(done.tokens).toBe(175);
+    expect(done.endedAt).toBeGreaterThanOrEqual(done.startedAt);
+    expect(done.durationMs).toBe((done.endedAt ?? 0) - done.startedAt);
+  });
+});
+
+describe("events", () => {
+  test("start, evidence and end, in order, with the roll-up on end", async () => {
+    const t = tasks();
+    const task = t.start("watch me");
+    await t.prove({ kind: "command", command: "true" });
+    t.done("ok");
+    expect(events.map((e) => e.type)).toEqual(["task.start", "task.evidence", "task.end"]);
+    expect(events[1]).toMatchObject({
+      type: "task.evidence",
+      taskId: task.id,
+      kind: "command",
+      status: "passed",
+    });
+    expect(events[2]).toMatchObject({ type: "task.end", task: { outcome: "verified" } });
+  });
+});
+
+describe("file evidence uses the task window", () => {
+  test("a file written during the task passes", async () => {
+    const t = tasks();
+    t.start("make a report");
+    writeFileSync(join(home.dir, "report.md"), "# report");
+    expect((await t.prove({ kind: "file", path: "report.md" })).result.status).toBe("passed");
+  });
+});

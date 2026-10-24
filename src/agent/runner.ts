@@ -3,7 +3,6 @@ import {
   type AgentSessionEvent,
   createAgentSession,
   DefaultResourceLoader,
-  defineTool,
   type ExtensionFactory,
   SessionManager,
   SettingsManager,
@@ -24,6 +23,24 @@ export interface ToolCallRequest {
   toolCallId: string;
   tool: string;
   args: Record<string, unknown>;
+}
+
+/**
+ * A hamness tool the agent can call (task_start, prove, ...), in hamness's own terms; the
+ * runner turns it into a Pi tool. It passes the same guard as every other tool. Throwing
+ * gives the model an error result with the message.
+ */
+export interface AgentToolSpec {
+  name: string;
+  label: string;
+  description: string;
+  /** A TypeBox object schema. */
+  parameters: TSchema;
+  execute(
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+  ): Promise<{ text: string; details?: Record<string, unknown> }>;
 }
 
 export type ToolVerdict = { allow: true } | { allow: false; reason: string };
@@ -73,18 +90,6 @@ export type RunnerEvent =
   | ({ type: "context" } & ContextFill)
   | { type: "run.settled"; aborted: boolean };
 
-/**
- * A hamness tool the agent can call (the subagent tools, later `prove` and the task tools).
- * Its calls go through the guard like any other. Throwing makes the result an error.
- */
-export interface RunnerTool {
-  name: string;
-  description: string;
-  /** A TypeBox schema for the arguments. */
-  parameters: TSchema;
-  execute(args: Record<string, unknown>, signal: AbortSignal | undefined): Promise<string>;
-}
-
 export interface RunnerOptions {
   cwd: string;
   /** Pi's config dir. Kept under hamness's data dir, never the user's `~/.pi`. */
@@ -98,8 +103,10 @@ export interface RunnerOptions {
   sessionDir?: string;
   /** A Pi session file to continue (its messages become the context). Needs `sessionDir`. */
   resumeFile?: string;
-  /** hamness's own tools, added to Pi's built-in ones. */
-  tools?: RunnerTool[];
+  /** hamness's own tools, next to Pi's built-ins. */
+  tools?: AgentToolSpec[];
+  /** Text added to the end of the system prompt. */
+  systemPromptAppend?: string[];
 }
 
 export interface AgentRunner {
@@ -137,6 +144,21 @@ function summarize(result: unknown): string {
   return text.length > SUMMARY_MAX ? `${text.slice(0, SUMMARY_MAX - 1)}…` : text;
 }
 
+function toPiTool(spec: AgentToolSpec): ToolDefinition {
+  return {
+    name: spec.name,
+    label: spec.label,
+    description: spec.description,
+    parameters: spec.parameters,
+    // Task tools change shared state (the open task); one at a time.
+    executionMode: "sequential",
+    async execute(toolCallId, params, signal) {
+      const out = await spec.execute(toolCallId, (params ?? {}) as Record<string, unknown>, signal);
+      return { content: [{ type: "text", text: out.text }], details: out.details ?? {} };
+    },
+  };
+}
+
 export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner> {
   const guard = opts.guard ?? allowAllTools;
   const emit = opts.onEvent;
@@ -164,21 +186,9 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     noThemes: true,
     noContextFiles: opts.contextFiles === false,
     extensionFactories: [safety],
+    ...(opts.systemPromptAppend?.length ? { appendSystemPrompt: opts.systemPromptAppend } : {}),
   });
   await resourceLoader.reload();
-
-  const customTools: ToolDefinition[] = (opts.tools ?? []).map((t) =>
-    defineTool({
-      name: t.name,
-      label: t.name,
-      description: t.description,
-      parameters: t.parameters,
-      async execute(_id, params, signal) {
-        const text = await t.execute(params as Record<string, unknown>, signal);
-        return { content: [{ type: "text", text }], details: undefined };
-      },
-    }),
-  );
 
   const { session } = await createAgentSession({
     cwd: opts.cwd,
@@ -187,7 +197,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     model: opts.models.model,
     thinkingLevel: "medium",
     resourceLoader,
-    ...(customTools.length ? { customTools } : {}),
+    customTools: (opts.tools ?? []).map(toPiTool),
     sessionManager: !opts.sessionDir
       ? SessionManager.inMemory(opts.cwd)
       : opts.resumeFile

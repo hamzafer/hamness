@@ -293,27 +293,24 @@ describe("subagents", () => {
     const h = startHub();
     const snap = await h.attach(work);
     const id = snap.session.id;
-    // An open task, as ticket #6's task_start writes it.
-    const now = Date.now();
-    db.sqlite
-      .query(
-        `INSERT INTO tasks (id, session_id, goal, started_at, created_at, updated_at)
-         VALUES ('task-1', ?, 'fix it', ?, ?, ?)`,
-      )
-      .run(id, now, now, now);
     h.prompt(id, "go");
     await until(mainIdle(id, snap.session.mainAgentId as string));
 
-    const sub = h.snapshot(id)?.agents?.find((a) => a.kind === "subagent");
+    const agents = h.snapshot(id)?.agents ?? [];
+    const sub = agents.find((a) => a.kind === "subagent");
+    const main = agents.find((a) => a.kind === "main");
     expect(sub).toMatchObject({ name: "costly", status: "done", tokens: 1500 });
     expect(sub?.costMicros).toBeGreaterThan(0);
+    // The turn's task holds the parent's calls and the subagent's, and is kept, not dropped.
     const task = db.sqlite
-      .query<{ cost: number; agent_task: string }, []>(
-        `SELECT (SELECT SUM(cost_micros) FROM model_calls WHERE task_id = 'task-1') AS cost,
-                (SELECT task_id FROM agents WHERE kind = 'subagent') AS agent_task`,
+      .query<{ task: string; cost: number; outcome: string }, []>(
+        `SELECT a.task_id AS task, t.outcome,
+           (SELECT SUM(cost_micros) FROM model_calls WHERE task_id = a.task_id) AS cost
+         FROM agents a JOIN tasks t ON t.id = a.task_id WHERE a.kind = 'subagent'`,
       )
       .get();
-    expect(task).toEqual({ cost: sub?.costMicros as number, agent_task: "task-1" });
+    expect(task?.outcome).toBe("unverified");
+    expect(task?.cost).toBe((sub?.costMicros as number) + (main?.costMicros as number));
   });
 
   const statuses = () =>

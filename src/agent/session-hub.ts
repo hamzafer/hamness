@@ -5,6 +5,7 @@ import type { HamnessDb } from "../db/open.ts";
 import type {
   AgentEvent,
   ApprovalDecision,
+  JudgeState,
   PendingApproval,
   SafetyMode,
   SessionInfo,
@@ -19,6 +20,10 @@ import {
   redactArgs,
   type SafetyCheck,
 } from "../safety/index.ts";
+import { type GhRunner, runGh } from "../tasks/checkers/index.ts";
+import { SessionTasks } from "../tasks/session-tasks.ts";
+import { PROOF_GATE_PROMPT, taskTools } from "../tasks/tools.ts";
+import type { TaskAction, TaskView } from "../tasks/types.ts";
 import { envKeyHint } from "./keys.ts";
 import {
   keyFilePath,
@@ -61,10 +66,15 @@ export interface SessionHubOptions {
   safety?: SafetyCheck;
   /** The safety mode for a cwd, shown to clients (the yolo banner). */
   safetyMode?: (cwd: string) => SafetyMode | undefined;
+  /** The judge's state per session, and `/judge resume` (auto mode only). */
+  judge?: { state(sessionId: string): JudgeState; resume(sessionId: string): boolean };
   publish: (event: AgentEvent) => void;
   contextFiles?: boolean;
   /** How many subagents run at once across the daemon; more wait in a queue. Default 4. */
   maxSubagents?: number;
+  /** How `ci` evidence runs `gh`, and how `url` evidence fetches. Tests pass fakes. */
+  gh?: GhRunner;
+  fetch?: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
 export const DEFAULT_MAX_SUBAGENTS = 4;
@@ -108,7 +118,7 @@ interface AgentState {
   /** The newest finished reply: a subagent's result. */
   lastText?: string;
   lastError?: string;
-  /** Tags this agent's model calls (subagents: the parent's task when started). */
+  /** Subagents: the parent's task when started, which their rows count toward. */
   taskId?: string;
   /** Subagents: the name the parent gave it. */
   name?: string;
@@ -124,6 +134,8 @@ interface LiveSession extends AgentState {
   approvals: Map<string, PendingEntry>;
   /** The main agent's subagents, by agent id. */
   subagents: Map<string, Subagent>;
+  /** The session's tasks: the per-turn task, the agent's task tools, the proof gate. */
+  tasks: SessionTasks;
 }
 
 interface Subagent {
@@ -194,6 +206,7 @@ export class SessionHub {
     if (!live) return undefined;
     if (live.busy) throw new SessionBusyError();
 
+    live.tasks.beginTurn(text);
     const messageId = this.store.addMessage(this.ids(live), "user", text);
     this.emit(live, { type: "agent.message.start", messageId, role: "user" });
     this.emit(live, { type: "agent.message.end", messageId, role: "user", text });
@@ -201,9 +214,41 @@ export class SessionHub {
     live.runner.prompt(text).catch((err: unknown) => {
       const message = (err as Error).message ?? String(err);
       this.emit(live, { type: "agent.error", message: explainError(message, this.opts.dataDir) });
+      live.tasks.endTurn();
       this.setBusy(live, live, false);
     });
     return messageId;
+  }
+
+  /** Announces a session's new judge state to its clients. */
+  judgeChanged(sessionId: string, state: JudgeState, reason: string): void {
+    const live = this.byId.get(sessionId);
+    if (live) this.emit(live, { type: "safety.judge", state, reason });
+  }
+
+  /** Unpauses the session's judge. Undefined when there is no such session or no judge. */
+  resumeJudge(sessionId: string): JudgeState | undefined {
+    const judge = this.opts.judge;
+    if (!this.byId.has(sessionId) || !judge) return undefined;
+    judge.resume(sessionId);
+    return judge.state(sessionId);
+  }
+
+  /**
+   * A user action on the session's task (`/task`, `/override`, `/abandon`). Never reachable
+   * from the agent's tools. Throws `TaskStateError` when the task state doesn't allow it.
+   */
+  taskAction(sessionId: string, action: TaskAction): TaskView | undefined {
+    const live = this.byId.get(sessionId);
+    if (!live) return undefined;
+    switch (action.kind) {
+      case "start":
+        return live.tasks.start(action.goal);
+      case "override":
+        return live.tasks.override(action.reason);
+      case "abandon":
+        return live.tasks.abandon(action.reason);
+    }
   }
 
   /** The models a session can switch to: Pi's catalog, for providers with credentials. */
@@ -295,6 +340,10 @@ export class SessionHub {
     const model = `${models.model.provider}/${models.model.id}`;
     // `live` is filled in before the runner can emit anything: events only follow a prompt.
     let live: LiveSession | undefined;
+    const ready = (): LiveSession => {
+      if (!live) throw new Error("session not ready");
+      return live;
+    };
     const control: SubagentControl = {
       start: (req) => this.startSubagent(live as LiveSession, req),
       status: (id) => {
@@ -313,7 +362,22 @@ export class SessionHub {
       ...(resume ? { resumeFile: resume.file } : {}),
       models,
       contextFiles: this.opts.contextFiles ?? true,
-      tools: subagentTools(control),
+      systemPromptAppend: [PROOF_GATE_PROMPT],
+      tools: [
+        ...taskTools({
+          start: (goal) => ready().tasks.start(goal),
+          done: (summary) => ready().tasks.done(summary),
+          prove: (input, piId, signal) => {
+            const l = ready();
+            const toolCallId = l.tools.get(piId);
+            return l.tasks.prove(input, {
+              ...(toolCallId ? { toolCallId } : {}),
+              ...(signal ? { signal } : {}),
+            });
+          },
+        }),
+        ...subagentTools(control),
+      ],
       onEvent: (e) => live && this.onRunnerEvent(live, live, e),
       guard: (call) =>
         live ? this.guard(live, live, call) : Promise.resolve(notReady("session not ready")),
@@ -321,6 +385,22 @@ export class SessionHub {
     const { sessionId, agentId } = resume
       ? { sessionId: resume.sessionId, agentId: resume.agentId }
       : this.store.createSession(cwd, model, runner.piSessionId);
+    const tasks = new SessionTasks({
+      db: this.opts.db,
+      sessionId,
+      cwd,
+      emit: (e) => live && this.emit(live, e),
+      // A `prove` command re-run is checked like a bash call, approvals included.
+      safety: (call) => {
+        const target = ready();
+        return this.safety(call, {
+          cwd,
+          askUser: (req) => this.requestApproval(target, req),
+        });
+      },
+      gh: this.opts.gh ?? runGh,
+      fetch: this.opts.fetch ?? ((input, init) => fetch(input, init)),
+    });
     live = {
       id: sessionId,
       agentId,
@@ -335,6 +415,7 @@ export class SessionHub {
       denied: new Map(),
       approvals: new Map(),
       subagents: new Map(),
+      tasks,
     };
     this.byId.set(sessionId, live);
     return live;
@@ -372,7 +453,7 @@ export class SessionHub {
     if (!name) throw new Error("a subagent needs a name");
     if (!req.prompt.trim()) throw new Error("a subagent needs a prompt");
     const model = req.model ? this.resolveModel(live, req.model) : live.runner.model;
-    const taskId = this.store.openTaskId(live.id);
+    const taskId = live.tasks.attributionId();
     const id = this.store.createSubagent({
       sessionId: live.id,
       parentAgentId: live.agentId,
@@ -541,11 +622,13 @@ export class SessionHub {
       return partial === undefined ? item : { ...item, text: partial, streaming: true };
     });
     const context = live.runner.contextUsage();
+    const task = live.tasks.view();
     return {
       session: this.info(live),
       seq: live.seq,
       items,
       agents: this.store.agentTotals(live.id),
+      ...(task ? { task } : {}),
       ...(context ? { context } : {}),
       approvals: [...live.approvals.values()].map((e) => e.approval),
     };
@@ -553,6 +636,7 @@ export class SessionHub {
 
   private info(live: LiveSession): SessionInfo {
     const mode = this.opts.safetyMode?.(live.cwd);
+    const judge = mode === "auto" ? this.opts.judge?.state(live.id) : undefined;
     return {
       id: live.id,
       cwd: live.cwd,
@@ -560,6 +644,7 @@ export class SessionHub {
       busy: live.busy,
       mainAgentId: live.agentId,
       ...(mode ? { mode } : {}),
+      ...(judge ? { judge } : {}),
     };
   }
 
@@ -611,12 +696,13 @@ export class SessionHub {
       entry.settle({ decision: "deny", by: "abort" });
   }
 
+  /**
+   * Row ids for what an agent stores now: the main agent's rows count toward the current task,
+   * a subagent's toward the parent's task when it was started (ADR 0015).
+   */
   private ids(live: LiveSession, agent: AgentState = live): RowIds {
-    return {
-      sessionId: live.id,
-      agentId: agent.agentId,
-      ...(agent.taskId ? { taskId: agent.taskId } : {}),
-    };
+    const taskId = agent === live ? live.tasks.attributionId() : agent.taskId;
+    return { sessionId: live.id, agentId: agent.agentId, taskId };
   }
 
   /** Publishes a session event about `agentId` (default: the main agent). */
@@ -763,7 +849,9 @@ export class SessionHub {
       case "run.settled":
         agent.currentReplyRow = undefined;
         // A subagent's last status waits for its result (`finishSubagent`).
-        if (agent === live) this.setBusy(live, live, false);
+        if (agent !== live) return;
+        live.tasks.endTurn();
+        this.setBusy(live, live, false);
         return;
     }
   }

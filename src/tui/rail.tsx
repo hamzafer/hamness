@@ -16,8 +16,23 @@ import {
 const COLORS = {
   text: "#c0caf5",
   muted: "#737aa2",
+  ok: "#9ece6a",
   error: "#f7768e",
 };
+
+/** How the task's outcome line is colored: unverified is red (the proof gate failed). */
+export function taskTone(task: RailTask): keyof typeof COLORS {
+  switch (task.outcome) {
+    case "unverified":
+      return "error";
+    case "verified":
+      return "ok";
+    case "open":
+      return "muted";
+    default:
+      return "text";
+  }
+}
 
 /** Width of the rail beside the chat, border included. */
 export const RAIL_WIDTH = 32;
@@ -27,8 +42,6 @@ export interface RailProps {
   state: RailState;
   /** Clock for elapsed times (ms); the app ticks it once a second. */
   now: number;
-  /** The current task. Ticket #6 feeds it; until then the slot shows a placeholder. */
-  task?: RailTask;
   /** Full screen: the rail takes the whole terminal and rows get one wide line each. */
   full?: boolean;
   /** Text width inside the rail. */
@@ -67,7 +80,12 @@ export function Rail(props: RailProps) {
       {...(props.full ? { flexGrow: 1 } : { width: RAIL_WIDTH })}
       minHeight={0}
     >
-      <Label name="task" value={props.task ? taskLine(props.task) : "none yet"} width={width()} />
+      <Label name="task" value={props.state.task?.goal ?? "none yet"} width={width()} />
+      <Show when={props.state.task}>
+        {(task: () => RailTask) => (
+          <text fg={COLORS[taskTone(task())]}>{clip(`      ${taskStatus(task())}`, width())}</text>
+        )}
+      </Show>
       <Label name="ctx" value={gauge(ctx())} width={width()} />
       <Show when={ctx()?.tokens != null}>
         <text fg={COLORS.muted}>
@@ -84,8 +102,8 @@ export function Rail(props: RailProps) {
   );
 }
 
-function taskLine(task: RailTask): string {
-  return `${task.goal} (${task.outcome}, ${task.evidence} proof)`;
+function taskStatus(task: RailTask): string {
+  return `${task.outcome} · ${task.passed}/${task.evidence} proof`;
 }
 
 function Label(props: { name: string; value: string; width: number }) {
