@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
 import type { DaemonClient } from "../client/client.ts";
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
+import type { TaskAction } from "../tasks/types.ts";
 import { App } from "./app.tsx";
 
 type Setup = Awaited<ReturnType<typeof testRender>>;
@@ -34,6 +35,7 @@ const snapshot: SessionSnapshot = {
 function fakeClient() {
   let listener: (e: HamnessEvent) => void = () => {};
   const prompts: string[] = [];
+  const actions: TaskAction[] = [];
   const client: DaemonClient = {
     ready: Promise.resolve(),
     attach: async () => snapshot,
@@ -44,6 +46,22 @@ function fakeClient() {
     models: async () => [],
     setModel: async () => snapshot,
     answerApproval: async () => {},
+    task: async (_id, action) => {
+      actions.push(action);
+      if (action.kind === "abandon") throw new Error("no open task: nothing to abandon");
+      return {
+        id: "t1",
+        goal: action.kind === "start" ? action.goal : "g",
+        implicit: false,
+        outcome: action.kind === "start" ? "open" : "overridden",
+        evidence: 0,
+        passed: 0,
+        costMicros: 0,
+        tokens: 0,
+        startedAt: 0,
+        durationMs: 0,
+      };
+    },
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};
@@ -52,7 +70,7 @@ function fakeClient() {
   let seq = snapshot.seq;
   const send = (body: Record<string, unknown>) =>
     listener({ sessionId: SID, seq: ++seq, ...body } as AgentEvent);
-  return { client, prompts, send, sendRaw: (e: HamnessEvent) => listener(e) };
+  return { client, prompts, actions, send, sendRaw: (e: HamnessEvent) => listener(e) };
 }
 
 async function render(client: DaemonClient) {
@@ -129,5 +147,32 @@ describe("TUI chat layout (headless)", () => {
     s.mockInput.pressEnter();
     await s.waitFor(() => fake.prompts.length === 1);
     expect(fake.prompts).toEqual(["fix the bug"]);
+  });
+
+  test("/task, /override and /abandon go to the daemon, not to the agent", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    for (const line of ["/task ship the parser", "/override checked by hand", "/abandon"]) {
+      await s.mockInput.typeText(line);
+      s.mockInput.pressEnter();
+    }
+    await s.waitFor(() => fake.actions.length === 3);
+    expect(fake.actions).toEqual([
+      { kind: "start", goal: "ship the parser" },
+      { kind: "override", reason: "checked by hand" },
+      { kind: "abandon" },
+    ]);
+    expect(fake.prompts).toEqual([]);
+    // A refused action shows the daemon's reason.
+    await s.waitFor(() => s.captureCharFrame().includes("no open task"));
+  });
+
+  test("/task without a goal says how to use it", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    await s.mockInput.typeText("/task");
+    s.mockInput.pressEnter();
+    await s.waitFor(() => s.captureCharFrame().includes("/task <goal>"));
+    expect(fake.actions).toEqual([]);
   });
 });

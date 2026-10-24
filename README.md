@@ -67,7 +67,11 @@ Modes (user config only): `ask` asks you about anything no rule decides, `auto` 
 | Ctrl+R | open the side rail full screen, and back |
 | Ctrl+C | leave the TUI (the session keeps running) |
 
-The side rail on the right shows one row per agent (status, current tool and file, elapsed time, tokens, cost), the context gauge and the session cost.
+The side rail on the right shows the current task (goal, outcome, passing / checked evidence; unverified in red), one row per agent (status, current tool and file, elapsed time, tokens, cost), the context gauge and the session cost.
+
+### Tasks and proof
+
+Work happens in tasks. The agent opens one with `task_start`, attaches evidence with `prove` and closes it with `task_done`; you can open one with `/task <goal>`. hamness checks the evidence itself: it re-runs a command (through the same safety rules as `bash`), checks a file was written during the task, fetches a URL, or reads CI through `gh`. A task is `verified` only when at least one piece passed; otherwise it is `unverified`. Only you can accept it anyway with `/override [reason]`, or drop the open task with `/abandon [reason]`. A turn with no task open gets its own task, which is dropped at the end if it had no evidence and no file edits. Cost, tokens and time roll up to the task (ADRs 0004, 0005, 0012).
 
 ## License
 

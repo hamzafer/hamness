@@ -1,4 +1,4 @@
-import type { SafetyCheck } from "../../safety/index.ts";
+import type { GuardedCall, SafetyVerdict } from "../../safety/index.ts";
 
 /** How a checker runs `gh`. Injectable so tests never reach the network. */
 export type GhRunner = (
@@ -14,7 +14,8 @@ export interface CheckContext {
   toolCallId: string;
   /** Task start (ms): a file must be written at or after it. */
   taskStartedAt: number;
-  safety: SafetyCheck;
+  /** The session's safety check, bound to its approval prompt. Throwing counts as a deny. */
+  safety: (call: GuardedCall) => Promise<SafetyVerdict>;
   gh: GhRunner;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
   /** Aborts a running check (the user pressed Esc). */

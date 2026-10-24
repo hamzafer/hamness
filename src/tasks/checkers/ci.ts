@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { redactText } from "../redact.ts";
+import { redactOutput as redactText } from "../redact.ts";
 import type { CheckResult, EvidenceClaim } from "../types.ts";
 import type { CheckContext, GhRunner } from "./context.ts";
 
@@ -41,11 +41,20 @@ export async function checkCi(claim: CiClaim, ctx: CheckContext): Promise<CheckR
   const base = { target, ...(claim.repo ? { repo: claim.repo } : {}) };
   let checks: Array<{ name: string; bucket: Bucket }>;
   try {
-    const got = claim.pr !== undefined ? await prChecks(claim, ctx) : await commitChecks(claim, ctx);
+    const got =
+      claim.pr !== undefined ? await prChecks(claim, ctx) : await commitChecks(claim, ctx);
     if ("error" in got) {
       return got.noChecks
-        ? { status: "failed", summary: `${target}: no checks reported`, details: { ...base, counts: tally([]) } }
-        : { status: "error", summary: `${target}: gh failed: ${got.error}`, details: { ...base, error: got.error } };
+        ? {
+            status: "failed",
+            summary: `${target}: no checks reported`,
+            details: { ...base, counts: tally([]) },
+          }
+        : {
+            status: "error",
+            summary: `${target}: gh failed: ${got.error}`,
+            details: { ...base, error: got.error },
+          };
     }
     checks = got.checks;
   } catch (err) {
@@ -55,15 +64,25 @@ export async function checkCi(claim: CiClaim, ctx: CheckContext): Promise<CheckR
 
   const counts = tally(checks);
   const details = { ...base, counts, checks: checks.slice(0, MAX_LISTED) };
-  if (checks.length === 0) return { status: "failed", summary: `${target}: no checks reported`, details };
+  if (checks.length === 0)
+    return { status: "failed", summary: `${target}: no checks reported`, details };
   if (counts.fail > 0) {
     const names = checks.filter((c) => c.bucket === "fail").map((c) => c.name);
-    return { status: "failed", summary: `${target}: failed: ${names.slice(0, 5).join(", ")}`, details };
+    return {
+      status: "failed",
+      summary: `${target}: failed: ${names.slice(0, 5).join(", ")}`,
+      details,
+    };
   }
   if (counts.pending > 0) {
-    return { status: "failed", summary: `${target}: ${counts.pending} check(s) still pending`, details };
+    return {
+      status: "failed",
+      summary: `${target}: ${counts.pending} check(s) still pending`,
+      details,
+    };
   }
-  if (counts.pass === 0) return { status: "failed", summary: `${target}: no check passed`, details };
+  if (counts.pass === 0)
+    return { status: "failed", summary: `${target}: no check passed`, details };
   return { status: "passed", summary: `${target}: ${counts.pass} check(s) passed`, details };
 }
 
@@ -73,7 +92,9 @@ function tally(checks: Array<{ bucket: Bucket }>): Record<Bucket, number> {
   return counts;
 }
 
-type Got = { checks: Array<{ name: string; bucket: Bucket }> } | { error: string; noChecks?: boolean };
+type Got =
+  | { checks: Array<{ name: string; bucket: Bucket }> }
+  | { error: string; noChecks?: boolean };
 
 function parse<T>(stdout: string): T | undefined {
   try {
@@ -101,7 +122,10 @@ async function prChecks(claim: CiClaim, ctx: CheckContext): Promise<Got> {
   return {
     checks: list.map((c) => ({
       name: String(c.name ?? "?"),
-      bucket: c.bucket === "pass" || c.bucket === "pending" || c.bucket === "skipping" ? c.bucket : "fail",
+      bucket:
+        c.bucket === "pass" || c.bucket === "pending" || c.bucket === "skipping"
+          ? c.bucket
+          : "fail",
     })),
   };
 }
@@ -109,13 +133,19 @@ async function prChecks(claim: CiClaim, ctx: CheckContext): Promise<Got> {
 async function commitChecks(claim: CiClaim, ctx: CheckContext): Promise<Got> {
   const repo = claim.repo ?? "{owner}/{repo}";
   const opts = { cwd: ctx.cwd, timeoutMs: GH_TIMEOUT_MS };
-  const runsRes = await ctx.gh(["api", `repos/${repo}/commits/${claim.commit}/check-runs?per_page=100`], opts);
-  const runs = parse<{ check_runs?: Array<{ name?: string; status?: string; conclusion?: string | null }> }>(
-    runsRes.stdout,
+  const runsRes = await ctx.gh(
+    ["api", `repos/${repo}/commits/${claim.commit}/check-runs?per_page=100`],
+    opts,
   );
-  if (runsRes.exitCode !== 0 || !runs || !Array.isArray(runs.check_runs)) return { error: errorText(runsRes) };
+  const runs = parse<{
+    check_runs?: Array<{ name?: string; status?: string; conclusion?: string | null }>;
+  }>(runsRes.stdout);
+  if (runsRes.exitCode !== 0 || !runs || !Array.isArray(runs.check_runs))
+    return { error: errorText(runsRes) };
   const statusRes = await ctx.gh(["api", `repos/${repo}/commits/${claim.commit}/status`], opts);
-  const combined = parse<{ statuses?: Array<{ context?: string; state?: string }> }>(statusRes.stdout);
+  const combined = parse<{ statuses?: Array<{ context?: string; state?: string }> }>(
+    statusRes.stdout,
+  );
   if (statusRes.exitCode !== 0 || !combined) return { error: errorText(statusRes) };
 
   const checks: Array<{ name: string; bucket: Bucket }> = runs.check_runs.map((run) => ({

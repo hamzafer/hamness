@@ -5,8 +5,15 @@ import type { TokenUsage } from "../models/prices.ts";
 
 /**
  * The chat rows of the hamness database: sessions, agents, messages, tool calls and model calls.
- * `task_id` stays NULL until ticket #6 opens tasks.
+ * Rows carry the `task_id` the hub passes in `ids` (ticket #6): the session's current task.
  */
+
+/** Who a row belongs to. `taskId` is the task it counts toward, if any. */
+export interface RowIds {
+  sessionId: string;
+  agentId: string;
+  taskId?: string | undefined;
+}
 export class ChatStore {
   constructor(private readonly db: HamnessDb) {}
 
@@ -74,19 +81,15 @@ export class ChatStore {
     })();
   }
 
-  addMessage(
-    ids: { sessionId: string; agentId: string },
-    role: "user" | "assistant",
-    content: string | null,
-  ): string {
+  addMessage(ids: RowIds, role: "user" | "assistant", content: string | null): string {
     const id = newId();
     const now = Date.now();
     this.sql
       .query(
-        `INSERT INTO messages (id, session_id, agent_id, role, content, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, session_id, agent_id, task_id, role, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, ids.sessionId, ids.agentId, role, content, now, now);
+      .run(id, ids.sessionId, ids.agentId, ids.taskId ?? null, role, content, now, now);
     return id;
   }
 
@@ -95,7 +98,7 @@ export class ChatStore {
   }
 
   addModelCall(
-    ids: { sessionId: string; agentId: string },
+    ids: RowIds,
     call: {
       messageId: string;
       provider: string;
@@ -109,15 +112,16 @@ export class ChatStore {
     const now = Date.now();
     this.sql
       .query(
-        `INSERT INTO model_calls (id, session_id, agent_id, message_id, provider, model,
+        `INSERT INTO model_calls (id, session_id, agent_id, task_id, message_id, provider, model,
            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micros,
            duration_ms, started_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         ids.sessionId,
         ids.agentId,
+        ids.taskId ?? null,
         call.messageId,
         call.provider,
         call.model,
@@ -136,21 +140,22 @@ export class ChatStore {
 
   /** `argsJson` must already be redacted. */
   addToolCall(
-    ids: { sessionId: string; agentId: string },
+    ids: RowIds,
     call: { messageId: string | undefined; tool: string; argsJson: string },
   ): string {
     const id = newId();
     const now = Date.now();
     this.sql
       .query(
-        `INSERT INTO tool_calls (id, session_id, agent_id, message_id, tool, args_json, status,
-           started_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+        `INSERT INTO tool_calls (id, session_id, agent_id, task_id, message_id, tool, args_json,
+           status, started_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
       )
       .run(
         id,
         ids.sessionId,
         ids.agentId,
+        ids.taskId ?? null,
         call.messageId ?? null,
         call.tool,
         call.argsJson,

@@ -28,7 +28,9 @@ describe("migrate", () => {
     migrate(db, [m(1, "a"), m(3, "c"), m(6, "f")]);
     expect(applied(db)).toEqual([1, 3, 6]);
     expect(currentVersion(db)).toBe(6);
-    expect(db.query("SELECT name FROM sqlite_master WHERE name = 'c'").get()).toEqual({ name: "c" });
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = 'c'").get()).toEqual({
+      name: "c",
+    });
   });
 
   test("refuses migrations that are not in ascending order", () => {

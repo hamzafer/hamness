@@ -14,7 +14,10 @@ afterEach(() => home.cleanup());
 
 describe("command checker", () => {
   test("passes on exit 0, in the session folder, with duration and output tail", async () => {
-    const r = await checkCommand({ kind: "command", command: "pwd; echo ok" }, checkContext(home.dir));
+    const r = await checkCommand(
+      { kind: "command", command: "pwd; echo ok" },
+      checkContext(home.dir),
+    );
     expect(r.status).toBe("passed");
     expect(r.details.exitCode).toBe(0);
     expect(typeof r.details.durationMs).toBe("number");
@@ -70,7 +73,13 @@ describe("command checker", () => {
       }),
     );
     expect(seen).toEqual([
-      { sessionId: "s-test", toolCallId: "tc-9", tool: "bash", args: { command: "touch ran" } },
+      {
+        sessionId: "s-test",
+        toolCallId: "tc-9",
+        tool: "bash",
+        args: { command: "touch ran" },
+        cwd: home.dir,
+      },
     ]);
     expect(r.status).toBe("error");
     expect(r.summary).toContain("no touching");

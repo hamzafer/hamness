@@ -16,10 +16,13 @@ describe("parseClaim", () => {
       ok: true,
     });
     expect(parseClaim({ kind: "ci", pr: "12" })).toMatchObject({ ok: true });
-    expect(parseClaim({ kind: "ci", pr: 12 })).toEqual({ ok: true, claim: { kind: "ci", pr: "12" } });
-    expect(
-      parseClaim({ kind: "ci", pr: "https://github.com/acme/app/pull/7" }),
-    ).toMatchObject({ ok: true });
+    expect(parseClaim({ kind: "ci", pr: 12 })).toEqual({
+      ok: true,
+      claim: { kind: "ci", pr: "12" },
+    });
+    expect(parseClaim({ kind: "ci", pr: "https://github.com/acme/app/pull/7" })).toMatchObject({
+      ok: true,
+    });
     expect(parseClaim({ kind: "ci", commit: "abc1234", repo: "acme/app" })).toMatchObject({
       ok: true,
     });

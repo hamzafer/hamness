@@ -1,4 +1,5 @@
 import type { ContextFill, HamnessEvent, SessionSnapshot } from "../events/types.ts";
+import type { TaskView } from "../tasks/types.ts";
 
 /**
  * What the side rail shows, built only from the session snapshot and the daemon's events.
@@ -31,11 +32,26 @@ export interface RailAgent {
   open: Array<{ id: string; tool: string; file?: string }>;
 }
 
-/** Placeholder for the current task (ticket #6 fills it from task events). */
+/** The session's current (or last) task, from the snapshot and `task.*` events. */
 export interface RailTask {
+  id: string;
   goal: string;
-  outcome: "open" | "verified" | "unverified" | "overridden" | "abandoned";
+  implicit: boolean;
+  outcome: TaskView["outcome"];
+  /** Evidence checked, and how many pieces passed. */
   evidence: number;
+  passed: number;
+}
+
+function railTask(t: TaskView): RailTask {
+  return {
+    id: t.id,
+    goal: t.goal,
+    implicit: t.implicit,
+    outcome: t.outcome,
+    evidence: t.evidence,
+    passed: t.passed,
+  };
 }
 
 export interface RailState {
@@ -44,6 +60,7 @@ export interface RailState {
   seq: number;
   agents: RailAgent[];
   context?: ContextFill;
+  task?: RailTask;
 }
 
 const MAIN_FALLBACK_ID = "main";
@@ -79,6 +96,7 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
     agents,
   };
   if (snapshot.context) state.context = { ...snapshot.context };
+  if (snapshot.task) state.task = railTask(snapshot.task);
 
   const main = agentFor(state, mainAgentId);
   if (snapshot.session.busy) {
@@ -162,6 +180,19 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
       return;
     case "agent.error":
       setError(agent, e.message, now);
+      return;
+    case "task.start":
+    case "task.end":
+      state.task = railTask(e.task);
+      return;
+    case "task.evidence":
+      if (state.task?.id === e.taskId) {
+        state.task.evidence = e.evidence;
+        state.task.passed = e.passed;
+      }
+      return;
+    case "task.drop":
+      if (state.task?.id === e.taskId) delete state.task;
       return;
     default:
       return;

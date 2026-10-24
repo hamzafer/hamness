@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { checkContext } from "../../../test/support/check-context.ts";
-import type { GhRunner } from "./context.ts";
 import { checkCi } from "./ci.ts";
+import type { GhRunner } from "./context.ts";
 
 /** A scripted `gh`: answers by the first argument after `gh`, records every call. */
 function fakeGh(answers: Record<string, { exitCode?: number; stdout?: string; stderr?: string }>) {
@@ -113,16 +113,16 @@ describe("ci checker, a commit", () => {
       "check-runs": { stdout: runs([{ name: "ci", status: "completed", conclusion: "failure" }]) },
       "/status": { stdout: statuses("pending", []) },
     });
-    expect((await checkCi({ kind: "ci", commit: "abc1234" }, checkContext("/w", failed))).status).toBe(
-      "failed",
-    );
+    expect(
+      (await checkCi({ kind: "ci", commit: "abc1234" }, checkContext("/w", failed))).status,
+    ).toBe("failed");
     const running = fakeGh({
       "check-runs": { stdout: runs([{ name: "ci", status: "in_progress", conclusion: null }]) },
       "/status": { stdout: statuses("pending", []) },
     });
-    expect((await checkCi({ kind: "ci", commit: "abc1234" }, checkContext("/w", running))).status).toBe(
-      "failed",
-    );
+    expect(
+      (await checkCi({ kind: "ci", commit: "abc1234" }, checkContext("/w", running))).status,
+    ).toBe("failed");
     const none = fakeGh({
       "check-runs": { stdout: runs([]) },
       "/status": { stdout: statuses("pending", []) },

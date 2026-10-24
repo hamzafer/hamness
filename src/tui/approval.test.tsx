@@ -61,6 +61,9 @@ function fakeClient() {
     answerApproval: async (id, decision) => {
       answers.push([id, decision]);
     },
+    task: async () => {
+      throw new Error("no task actions in this test");
+    },
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};

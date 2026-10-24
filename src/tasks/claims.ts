@@ -31,7 +31,9 @@ export const PROVE_PARAMETERS = Type.Object(
       { description: "What hamness should check." },
     ),
     command: Type.Optional(
-      Type.String({ description: "command: hamness re-runs it in the session folder; exit 0 passes." }),
+      Type.String({
+        description: "command: hamness re-runs it in the session folder; exit 0 passes.",
+      }),
     ),
     timeoutSeconds: Type.Optional(
       Type.Number({ description: "command or url: how long hamness waits (default 300 / 15)." }),
@@ -46,7 +48,9 @@ export const PROVE_PARAMETERS = Type.Object(
       Type.String({ description: "ci: a PR number or URL; every check must pass." }),
     ),
     commit: Type.Optional(Type.String({ description: "ci: a commit sha; every check must pass." })),
-    repo: Type.Optional(Type.String({ description: "ci: owner/name, when not the session's repo." })),
+    repo: Type.Optional(
+      Type.String({ description: "ci: owner/name, when not the session's repo." }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -90,7 +94,10 @@ export function parseClaim(input: unknown): ParsedClaim {
       if (!nonEmpty(raw.command)) return fail("command evidence needs a command");
       const t = timeout(raw.timeoutSeconds, MAX_COMMAND_TIMEOUT_S);
       if (t === null) return fail(`timeoutSeconds must be between 0 and ${MAX_COMMAND_TIMEOUT_S}`);
-      return { ok: true, claim: { kind, command: raw.command, ...(t ? { timeoutSeconds: t } : {}) } };
+      return {
+        ok: true,
+        claim: { kind, command: raw.command, ...(t ? { timeoutSeconds: t } : {}) },
+      };
     }
     case "file":
       if (!nonEmpty(raw.path)) return fail("file evidence needs a path");
@@ -116,7 +123,10 @@ export function parseClaim(input: unknown): ParsedClaim {
       if ((pr === undefined) === (commit === undefined)) {
         return fail("ci evidence needs exactly one of pr or commit");
       }
-      if (pr !== undefined && !(typeof pr === "string" && (PR_NUMBER.test(pr) || PR_URL.test(pr)))) {
+      if (
+        pr !== undefined &&
+        !(typeof pr === "string" && (PR_NUMBER.test(pr) || PR_URL.test(pr)))
+      ) {
         return fail("pr must be a PR number or a github.com pull URL");
       }
       if (commit !== undefined && !(typeof commit === "string" && SHA.test(commit))) {

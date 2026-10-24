@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
 import type { AgentEvent, SessionSnapshot } from "../events/types.ts";
-import { Rail } from "./rail.tsx";
+import { Rail, taskTone } from "./rail.tsx";
 import {
   applyRailEvent,
   formatCost,
@@ -158,5 +158,37 @@ describe("rail number formats", () => {
       "2.5M",
     ]);
     expect([836, 20_000, 1_234_567].map(formatCost)).toEqual(["$0.0008", "$0.020", "$1.23"]);
+  });
+});
+
+describe("the task slot", () => {
+  const withTask = (task: NonNullable<RailState["task"]>) => {
+    const s = stateAfter([]);
+    s.task = task;
+    return s;
+  };
+
+  test("shows the goal, outcome and evidence count", async () => {
+    const frame = await frameOf(
+      withTask({
+        id: "t",
+        goal: "fix parser",
+        implicit: false,
+        outcome: "open",
+        evidence: 2,
+        passed: 1,
+      }),
+      0,
+    );
+    expect(frame).toMatch(/task +fix parser/);
+    expect(frame).toMatch(/open · 1\/2 proof/);
+  });
+
+  test("unverified is red, verified and open are not", () => {
+    const t = { id: "t", goal: "g", implicit: false, evidence: 0, passed: 0 };
+    expect(taskTone({ ...t, outcome: "unverified" })).toBe("error");
+    expect(taskTone({ ...t, outcome: "verified" })).toBe("ok");
+    expect(taskTone({ ...t, outcome: "open" })).toBe("muted");
+    expect(taskTone({ ...t, outcome: "overridden" })).toBe("text");
   });
 });

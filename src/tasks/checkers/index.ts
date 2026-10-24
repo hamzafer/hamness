@@ -5,8 +5,8 @@ import type { CheckContext } from "./context.ts";
 import { checkFile } from "./file.ts";
 import { checkUrl } from "./url.ts";
 
-export type { CheckContext, GhRunner } from "./context.ts";
 export { runGh } from "./ci.ts";
+export type { CheckContext, GhRunner } from "./context.ts";
 
 /** Runs the claim's checker. A checker that throws gives an `error` result, never a pass. */
 export async function runChecker(claim: EvidenceClaim, ctx: CheckContext): Promise<CheckResult> {

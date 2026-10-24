@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { redactText } from "../redact.ts";
+import type { SafetyVerdict } from "../../safety/index.ts";
+import { redactOutput } from "../redact.ts";
 import type { CheckResult, EvidenceClaim } from "../types.ts";
 import type { CheckContext } from "./context.ts";
 
@@ -17,13 +18,14 @@ type CommandClaim = Extract<EvidenceClaim, { kind: "command" }>;
  * redacted output tail.
  */
 export async function checkCommand(claim: CommandClaim, ctx: CheckContext): Promise<CheckResult> {
-  let verdict: Awaited<ReturnType<CheckContext["safety"]>>;
+  let verdict: SafetyVerdict;
   try {
     verdict = await ctx.safety({
       sessionId: ctx.sessionId,
       toolCallId: ctx.toolCallId,
       tool: "bash",
       args: { command: claim.command },
+      cwd: ctx.cwd,
     });
   } catch (err) {
     verdict = { allow: false, reason: `safety check failed: ${(err as Error).message}` };
@@ -40,7 +42,7 @@ export async function checkCommand(claim: CommandClaim, ctx: CheckContext): Prom
   const started = performance.now();
   const run = await runShell(claim.command, ctx.cwd, timeoutMs, ctx.signal);
   const durationMs = Math.round(performance.now() - started);
-  const outputTail = redactText(run.output).slice(-OUTPUT_TAIL);
+  const outputTail = redactOutput(run.output).slice(-OUTPUT_TAIL);
   const details = {
     command: claim.command,
     exitCode: run.exitCode,

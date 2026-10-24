@@ -11,17 +11,33 @@ export async function checkUrl(claim: UrlClaim, ctx: CheckContext): Promise<Chec
   const signals = [AbortSignal.timeout(timeoutS * 1000), ...(ctx.signal ? [ctx.signal] : [])];
   const started = performance.now();
   try {
-    const res = await ctx.fetch(claim.url, { redirect: "follow", signal: AbortSignal.any(signals) });
+    const res = await ctx.fetch(claim.url, {
+      redirect: "follow",
+      signal: AbortSignal.any(signals),
+    });
     await res.body?.cancel().catch(() => {});
     const durationMs = Math.round(performance.now() - started);
-    const details = { url: claim.url, statusCode: res.status, finalUrl: res.url || claim.url, durationMs };
+    const details = {
+      url: claim.url,
+      statusCode: res.status,
+      finalUrl: res.url || claim.url,
+      durationMs,
+    };
     const ok = res.status >= 200 && res.status < 300;
-    return { status: ok ? "passed" : "failed", summary: `HTTP ${res.status} in ${durationMs}ms`, details };
+    return {
+      status: ok ? "passed" : "failed",
+      summary: `HTTP ${res.status} in ${durationMs}ms`,
+      details,
+    };
   } catch (err) {
     const durationMs = Math.round(performance.now() - started);
     const e = err as Error;
     if (ctx.signal?.aborted) {
-      return { status: "error", summary: "aborted before it finished", details: { url: claim.url, durationMs } };
+      return {
+        status: "error",
+        summary: "aborted before it finished",
+        details: { url: claim.url, durationMs },
+      };
     }
     const timedOut = e.name === "TimeoutError" || e.name === "AbortError";
     return {

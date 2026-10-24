@@ -19,6 +19,10 @@ import {
   redactArgs,
   type SafetyCheck,
 } from "../safety/index.ts";
+import { type GhRunner, runGh } from "../tasks/checkers/index.ts";
+import { SessionTasks } from "../tasks/session-tasks.ts";
+import { PROOF_GATE_PROMPT, taskTools } from "../tasks/tools.ts";
+import type { TaskAction, TaskView } from "../tasks/types.ts";
 import { envKeyHint } from "./keys.ts";
 import {
   keyFilePath,
@@ -48,6 +52,9 @@ export interface SessionHubOptions {
   safetyMode?: (cwd: string) => SafetyMode | undefined;
   publish: (event: AgentEvent) => void;
   contextFiles?: boolean;
+  /** How `ci` evidence runs `gh`, and how `url` evidence fetches. Tests pass fakes. */
+  gh?: GhRunner;
+  fetch?: (input: string, init?: RequestInit) => Promise<Response>;
 }
 
 /** Pi's "No API key" error points at its own `/login`; say what works in hamness instead. */
@@ -91,6 +98,8 @@ interface LiveSession {
   denied: Map<string, string>;
   /** Tool calls waiting for the user, by approval id. */
   approvals: Map<string, PendingEntry>;
+  /** The session's tasks: the per-turn task, the agent's task tools, the proof gate. */
+  tasks: SessionTasks;
 }
 
 interface PendingEntry {
@@ -135,6 +144,7 @@ export class SessionHub {
     if (!live) return undefined;
     if (live.busy) throw new SessionBusyError();
 
+    live.tasks.beginTurn(text);
     const messageId = this.store.addMessage(this.ids(live), "user", text);
     this.emit(live, { type: "agent.message.start", messageId, role: "user" });
     this.emit(live, { type: "agent.message.end", messageId, role: "user", text });
@@ -142,9 +152,27 @@ export class SessionHub {
     live.runner.prompt(text).catch((err: unknown) => {
       const message = (err as Error).message ?? String(err);
       this.emit(live, { type: "agent.error", message: explainError(message, this.opts.dataDir) });
+      live.tasks.endTurn();
       this.setBusy(live, false);
     });
     return messageId;
+  }
+
+  /**
+   * A user action on the session's task (`/task`, `/override`, `/abandon`). Never reachable
+   * from the agent's tools. Throws `TaskStateError` when the task state doesn't allow it.
+   */
+  taskAction(sessionId: string, action: TaskAction): TaskView | undefined {
+    const live = this.byId.get(sessionId);
+    if (!live) return undefined;
+    switch (action.kind) {
+      case "start":
+        return live.tasks.start(action.goal);
+      case "override":
+        return live.tasks.override(action.reason);
+      case "abandon":
+        return live.tasks.abandon(action.reason);
+    }
   }
 
   /** The models a session can switch to: Pi's catalog, for providers with credentials. */
@@ -226,6 +254,10 @@ export class SessionHub {
     const model = `${models.model.provider}/${models.model.id}`;
     // `live` is filled in before the runner can emit anything: events only follow a prompt.
     let live: LiveSession | undefined;
+    const ready = (): LiveSession => {
+      if (!live) throw new Error("session not ready");
+      return live;
+    };
     const runner = await startAgentRunner({
       cwd,
       agentDir: join(this.opts.dataDir, "pi"),
@@ -233,6 +265,19 @@ export class SessionHub {
       ...(resume ? { resumeFile: resume.file } : {}),
       models,
       contextFiles: this.opts.contextFiles ?? true,
+      systemPromptAppend: [PROOF_GATE_PROMPT],
+      tools: taskTools({
+        start: (goal) => ready().tasks.start(goal),
+        done: (summary) => ready().tasks.done(summary),
+        prove: (input, piId, signal) => {
+          const l = ready();
+          const toolCallId = l.tools.get(piId);
+          return l.tasks.prove(input, {
+            ...(toolCallId ? { toolCallId } : {}),
+            ...(signal ? { signal } : {}),
+          });
+        },
+      }),
       onEvent: (e) => live && this.onRunnerEvent(live, e),
       guard: async (call) => {
         if (!live) return { allow: false, reason: "session not ready" };
@@ -252,6 +297,22 @@ export class SessionHub {
     const { sessionId, agentId } = resume
       ? { sessionId: resume.sessionId, agentId: resume.agentId }
       : this.store.createSession(cwd, model, runner.piSessionId);
+    const tasks = new SessionTasks({
+      db: this.opts.db,
+      sessionId,
+      cwd,
+      emit: (e) => live && this.emit(live, e),
+      // A `prove` command re-run is checked like a bash call, approvals included.
+      safety: (call) => {
+        const target = ready();
+        return this.safety(call, {
+          cwd,
+          askUser: (req) => this.requestApproval(target, req),
+        });
+      },
+      gh: this.opts.gh ?? runGh,
+      fetch: this.opts.fetch ?? ((input, init) => fetch(input, init)),
+    });
     live = {
       id: sessionId,
       agentId,
@@ -265,6 +326,7 @@ export class SessionHub {
       tools: new Map(),
       denied: new Map(),
       approvals: new Map(),
+      tasks,
     };
     this.byId.set(sessionId, live);
     return live;
@@ -280,11 +342,13 @@ export class SessionHub {
       return partial === undefined ? item : { ...item, text: partial, streaming: true };
     });
     const context = live.runner.contextUsage();
+    const task = live.tasks.view();
     return {
       session: this.info(live),
       seq: live.seq,
       items,
       agents: this.store.agentTotals(live.id),
+      ...(task ? { task } : {}),
       ...(context ? { context } : {}),
       approvals: [...live.approvals.values()].map((e) => e.approval),
     };
@@ -339,8 +403,9 @@ export class SessionHub {
       entry.settle({ decision: "deny", by: "abort" });
   }
 
+  /** Row ids for what the session stores now: its rows count toward the current task. */
   private ids(live: LiveSession) {
-    return { sessionId: live.id, agentId: live.agentId };
+    return { sessionId: live.id, agentId: live.agentId, taskId: live.tasks.attributionId() };
   }
 
   private emit(live: LiveSession, body: EventBody): void {
@@ -475,6 +540,7 @@ export class SessionHub {
       }
       case "run.settled":
         live.currentReplyRow = undefined;
+        live.tasks.endTurn();
         this.setBusy(live, false);
         return;
     }

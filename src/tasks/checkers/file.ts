@@ -1,5 +1,5 @@
-import { createReadStream, statSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { createReadStream, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CheckResult, EvidenceClaim } from "../types.ts";
 import type { CheckContext } from "./context.ts";
@@ -17,7 +17,11 @@ export async function checkFile(claim: FileClaim, ctx: CheckContext): Promise<Ch
   try {
     st = statSync(path);
   } catch {
-    return { status: "failed", summary: `${claim.path} does not exist`, details: { ...base, exists: false } };
+    return {
+      status: "failed",
+      summary: `${claim.path} does not exist`,
+      details: { ...base, exists: false },
+    };
   }
   const details = { ...base, exists: true, size: st.size, mtimeMs: Math.round(st.mtimeMs) };
   if (!st.isFile()) return { status: "failed", summary: `${claim.path} is not a file`, details };
@@ -35,7 +39,11 @@ export async function checkFile(claim: FileClaim, ctx: CheckContext): Promise<Ch
   try {
     sha256 = await hashFile(path);
   } catch (err) {
-    return { status: "error", summary: `could not read ${claim.path}: ${(err as Error).message}`, details };
+    return {
+      status: "error",
+      summary: `could not read ${claim.path}: ${(err as Error).message}`,
+      details,
+    };
   }
   return {
     status: "passed",
