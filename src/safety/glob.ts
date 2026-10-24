@@ -12,8 +12,8 @@ const cache = new Map<string, RegExp>();
 
 const escapeRe = (c: string) => c.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
-function compile(pattern: string, kind: "command" | "path"): RegExp {
-  const key = `${kind}\0${pattern}`;
+function compile(pattern: string, kind: "command" | "path", nocase = false): RegExp {
+  const key = `${kind}\0${nocase ? "i" : ""}\0${pattern}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
@@ -59,7 +59,7 @@ function compile(pattern: string, kind: "command" | "path"): RegExp {
   re += ")".repeat(depth);
   if (optionalTail) re += "(?: [\\s\\S]*)?";
 
-  const compiled = new RegExp(`^${re}$`);
+  const compiled = new RegExp(`^${re}$`, nocase ? "i" : "");
   cache.set(key, compiled);
   return compiled;
 }
@@ -68,6 +68,7 @@ export function matchCommand(pattern: string, command: string): boolean {
   return compile(pattern, "command").test(command);
 }
 
-export function matchPath(pattern: string, path: string): boolean {
-  return compile(pattern, "path").test(path);
+/** `nocase`: the filesystem is case-insensitive (macOS by default), so `.ENV` is `.env`. */
+export function matchPath(pattern: string, path: string, nocase = false): boolean {
+  return compile(pattern, "path", nocase).test(path);
 }

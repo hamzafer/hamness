@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { ChatStore } from "../agent/store.ts";
 import { openDatabase } from "../db/open.ts";
-import { createSafetyService } from "./service.ts";
+import { caseInsensitiveAt, createSafetyService } from "./service.ts";
 
 let tmp: ReturnType<typeof tempHome>;
 let home: string;
@@ -171,5 +171,18 @@ describe("a proof re-run gets the same run decision as bash, plus the proof list
     expect(user.proof.commands).toEqual(["mkdir *"]);
     const project = JSON.parse(readFileSync(join(cwd, ".hamness", "config.json"), "utf8"));
     expect(project.safety.permission.bash).toEqual({ "mkdir *": "allow" });
+  });
+});
+
+describe("the service detects a case-insensitive filesystem (V-M4)", () => {
+  test("detection agrees with the disk, and protected paths follow it", async () => {
+    writeFileSync(join(cwd, "probe.txt"), "x");
+    let insensitive = false;
+    try {
+      insensitive = realpathSync(join(cwd, "PROBE.TXT")) !== "";
+    } catch {}
+    expect(caseInsensitiveAt(cwd)).toBe(insensitive);
+    expect(await call("write", { path: ".MCP.json", content: "{}" })).toBe(!insensitive);
+    expect(await call("write", { path: ".mcp.json", content: "{}" })).toBe(false);
   });
 });

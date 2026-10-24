@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { HamnessDb } from "../db/open.ts";
@@ -100,6 +100,43 @@ function realpathNearest(path: string): string {
   }
 }
 
+const caseCache = new Map<string, boolean>();
+
+/**
+ * Whether the filesystem under `dir` ignores case (V-M4; macOS and Windows by default), found
+ * once per folder: the folder (or the nearest one above it with a letter in its name) is also
+ * there, as the same inode, under its name in another case.
+ */
+export function caseInsensitiveAt(dir: string): boolean {
+  const start = realpathNearest(dir);
+  const hit = caseCache.get(start);
+  if (hit !== undefined) return hit;
+  let found = false;
+  for (let cur = start; ; cur = dirname(cur)) {
+    const name = basename(cur);
+    const flipped = [...name]
+      .map((c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()))
+      .join("");
+    if (flipped !== name) {
+      try {
+        const a = statSync(cur);
+        const b = statSync(join(dirname(cur), flipped));
+        found = a.ino === b.ino && a.dev === b.dev;
+      } catch {
+        found = false;
+      }
+      break;
+    }
+    if (dirname(cur) === cur) {
+      // No letters anywhere in the path: the platform's default.
+      found = process.platform === "darwin" || process.platform === "win32";
+      break;
+    }
+  }
+  caseCache.set(start, found);
+  return found;
+}
+
 /** More matches than this and a glob is not checked (the command is not allowed outright). */
 const GLOB_LIMIT = 500;
 
@@ -194,6 +231,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       dataDir: opts.dataDir,
       realpath: realpathNearest,
       glob: expandGlob,
+      caseInsensitive: caseInsensitiveAt(cwd),
     };
     // A proof re-run may run exactly when the same bash command could (V-H1); the proof list
     // only decides whether it counts as evidence.

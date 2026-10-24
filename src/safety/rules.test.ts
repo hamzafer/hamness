@@ -506,3 +506,35 @@ describe("a session in the home folder or / (S-L5)", () => {
     expect(broadWorkspace("/home/u/proj", "/home/u")).toBe(false);
   });
 });
+
+describe("on a case-insensitive filesystem, paths match in any case (V-M4)", () => {
+  const nocase: EvalContext = { ...ctx, caseInsensitive: true };
+  const write = (path: string, c: EvalContext) =>
+    evaluate({ tool: "write", args: { path, content: "{}" } }, defaults, c).verdict;
+  const read = (path: string, c: EvalContext) =>
+    evaluate({ tool: "read", args: { path } }, defaults, c).verdict;
+
+  test("protected config files ask, whatever their case, existing or not", () => {
+    for (const p of [
+      ".MCP.json",
+      ".claude/Settings.local.json",
+      ".CLAUDE/settings.json",
+      ".HAMNESS/config.json",
+      "sub/.CLAUDE/SETTINGS.JSON",
+    ]) {
+      expect([p, write(p, nocase)]).toEqual([p, "ask"]);
+    }
+  });
+
+  test("secrets are denied whatever their case", () => {
+    expect(read(".ENV", nocase)).toBe("deny");
+    expect(read("~/.SSH/id_rsa", nocase)).toBe("deny");
+    expect(read("certs/Server.PEM", nocase)).toBe("deny");
+    expect(verdict(bash("cat .Env", defaults, nocase))).toBe("deny");
+  });
+
+  test("a case-sensitive filesystem keeps exact matching", () => {
+    expect(write(".MCP.json", ctx)).toBe("allow");
+    expect(read(".ENV", ctx)).toBe("allow");
+  });
+});

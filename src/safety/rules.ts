@@ -43,6 +43,11 @@ export interface EvalContext {
    * can't (too many matches). Without it, a command with a glob is never allowed outright.
    */
   glob?: (pattern: string) => string[] | undefined;
+  /**
+   * The session's filesystem ignores case (macOS by default), so `.MCP.json` is `.mcp.json`:
+   * path rules match in any case (V-M4).
+   */
+  caseInsensitive?: boolean;
 }
 
 export interface Evaluation {
@@ -261,12 +266,22 @@ function checkResolved(tool: string, lexical: string, rules: Rule[], ctx: EvalCo
   if (real && ctx.realpath && real !== lexical) {
     // The real path is compared with the real workspace (on macOS /var is /private/var).
     const rp = ctx.realpath;
-    candidates.push([real, { cwd: rp(ctx.cwd), home: rp(ctx.home), dataDir: rp(ctx.dataDir) }]);
+    candidates.push([
+      real,
+      {
+        cwd: rp(ctx.cwd),
+        home: rp(ctx.home),
+        dataDir: rp(ctx.dataDir),
+        ...(ctx.caseInsensitive ? { caseInsensitive: true } : {}),
+      },
+    ]);
   }
 
   let worst: Part | undefined;
   for (const [path, c] of candidates) {
-    const rule = lookup(rules, tool, (p) => matchPath(expandPathPattern(p, c), path));
+    const rule = lookup(rules, tool, (p) =>
+      matchPath(expandPathPattern(p, c), path, c.caseInsensitive === true),
+    );
     const part: Part =
       rule?.verdict === "allow" && rule.pattern.startsWith("$CWD") && broadWorkspace(c.cwd, c.home)
         ? {
@@ -568,12 +583,15 @@ function deniedInside(
   const roots = [root];
   const real = ctx.realpath?.(root);
   if (real && real !== root) roots.push(real);
+  const fold = (p: string) => (ctx.caseInsensitive ? p.toLowerCase() : p);
   for (const rule of rules) {
     if (rule.verdict !== "deny" || !matchCommand(rule.tool, tool)) continue;
     const prefix = fixedPrefix(expandPathPattern(rule.pattern, ctx));
     if (!prefix.startsWith("/")) continue; // `**/.env`: anywhere, checked file by file
-    for (const r of roots) {
-      if (r === "/" || prefix === r || prefix.startsWith(`${r}/`)) return prefix;
+    const p = fold(prefix);
+    for (const raw of roots) {
+      const r = fold(raw);
+      if (r === "/" || p === r || p.startsWith(`${r}/`)) return prefix;
     }
   }
   return undefined;
