@@ -40,6 +40,10 @@ function findTool(state: ChatState, id: string) {
 export function applyEvent(state: ChatState, e: HamnessEvent): void {
   if (!("sessionId" in e) || e.sessionId !== state.session.id || e.seq <= state.seq) return;
   state.seq = e.seq;
+  // A subagent's run shows in the side rail, not the chat; only its approvals need the user.
+  const main = state.session.mainAgentId;
+  const fromSubagent = e.agentId !== undefined && main !== undefined && e.agentId !== main;
+  if (fromSubagent && !e.type.startsWith("safety.approval.")) return;
   switch (e.type) {
     case "agent.status":
       state.session.busy = e.busy;
@@ -97,6 +101,7 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       state.approvals = state.approvals.filter((a) => a.id !== e.approvalId);
       return;
     case "agent.error":
+    case "agent.notice":
       state.notice = e.message;
       return;
     case "agent.model":

@@ -165,6 +165,17 @@ describe("approval prompt (headless)", () => {
     expect(fake.answers).toEqual([]);
   });
 
+  test("a subagent's approval says which subagent asks", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    fake.send({
+      type: "safety.approval.request",
+      agentId: "a-sub",
+      approval: pending({ agentId: "a-sub", agentName: "scout" }),
+    });
+    await s.waitForFrame((f) => f.includes("from subagent scout"));
+  });
+
   test("approvals pending at attach time show at once", async () => {
     const fake = fakeClient();
     const s = await render(fake.client, snapshotWith({ approvals: [pending()] }));

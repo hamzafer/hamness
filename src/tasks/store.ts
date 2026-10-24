@@ -125,6 +125,16 @@ export class TaskStore {
     return { evidence: r?.evidence ?? 0, passed: r?.passed ?? 0 };
   }
 
+  /** Whether the task started subagents (ADR 0015): their rows keep counting toward it. */
+  hasSubagents(taskId: string): boolean {
+    const r = this.sql
+      .query<{ n: number }, [string]>(
+        "SELECT count(*) AS n FROM agents WHERE task_id = ? AND kind = 'subagent'",
+      )
+      .get(taskId);
+    return (r?.n ?? 0) > 0;
+  }
+
   changedFiles(taskId: string): boolean {
     const r = this.sql
       .query<{ n: number }, [string]>(

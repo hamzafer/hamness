@@ -84,6 +84,11 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
     const row = newAgent(a.id, a.kind, a.kind === "main" ? "main" : (a.name ?? shortId(a.id)));
     row.tokens = a.tokens;
     row.costMicros = a.costMicros;
+    if (a.status === "running") {
+      row.status = "running";
+      row.startedAt = now;
+    } else if (a.status === "done") row.status = "done";
+    else if (a.status === "error" || a.status === "aborted") row.status = "error";
     return row;
   });
   if (!agents.some((a) => a.id === mainAgentId)) {
@@ -143,6 +148,9 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
   state.seq = e.seq;
   const agent = agentFor(state, e.agentId);
   switch (e.type) {
+    case "agent.start":
+      agent.name = e.name;
+      return;
     case "agent.status":
       if (e.busy) {
         agent.status = "running";

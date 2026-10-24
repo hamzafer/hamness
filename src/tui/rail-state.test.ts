@@ -149,6 +149,80 @@ describe("rail state", () => {
     applyRailEvent(f.state, { sessionId: SID, seq: 1, type: "agent.status", busy: true }, 2);
     expect(main(f.state)?.status).toBe("idle");
   });
+
+  test("a started subagent gets a named row that runs, then ends done or with its error", () => {
+    const f = feed();
+    f.send(1000, {
+      type: "agent.start",
+      agentId: "sub-a",
+      name: "scout",
+      parentAgentId: MAIN,
+      model: "m",
+    });
+    f.send(1000, {
+      type: "agent.start",
+      agentId: "sub-b",
+      name: "fixer",
+      parentAgentId: MAIN,
+      model: "m",
+    });
+    expect(f.state.agents.map((a) => [a.name, a.kind, a.status])).toEqual([
+      ["main", "main", "idle"],
+      ["scout", "subagent", "idle"],
+      ["fixer", "subagent", "idle"],
+    ]);
+    f.send(1100, { type: "agent.status", agentId: "sub-a", busy: true });
+    f.send(1100, { type: "agent.status", agentId: "sub-b", busy: true });
+    f.send(1500, { type: "agent.status", agentId: "sub-a", busy: false });
+    f.send(1600, { type: "agent.error", agentId: "sub-b", message: "stopped" });
+    f.send(1600, { type: "agent.status", agentId: "sub-b", busy: false });
+    expect(f.state.agents.slice(1).map((a) => [a.name, a.status, a.error])).toEqual([
+      ["scout", "done", undefined],
+      ["fixer", "error", "stopped"],
+    ]);
+  });
+
+  test("subagents in the snapshot keep their names and where they got to", () => {
+    const s = initialRail(
+      snap({
+        agents: [
+          { id: MAIN, kind: "main", tokens: 0, costMicros: 0 },
+          {
+            id: "sub-a",
+            kind: "subagent",
+            name: "scout",
+            status: "running",
+            tokens: 10,
+            costMicros: 7,
+          },
+          {
+            id: "sub-b",
+            kind: "subagent",
+            name: "fixer",
+            status: "done",
+            tokens: 0,
+            costMicros: 0,
+          },
+          {
+            id: "sub-c",
+            kind: "subagent",
+            name: "lost",
+            status: "aborted",
+            tokens: 0,
+            costMicros: 0,
+          },
+        ],
+      }),
+      1000,
+    );
+    expect(s.agents.map((a) => [a.name, a.status])).toEqual([
+      ["main", "idle"],
+      ["scout", "running"],
+      ["fixer", "done"],
+      ["lost", "error"],
+    ]);
+    expect(sessionCostMicros(s)).toBe(7);
+  });
 });
 
 describe("the current task", () => {

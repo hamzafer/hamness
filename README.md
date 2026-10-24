@@ -29,6 +29,9 @@ bun src/cli/main.ts login openai         # sign in with a ChatGPT plan (through 
 bun src/cli/main.ts audit    # recent safety decisions and why (--session, --limit, --json)
 bun src/cli/main.ts stats    # sessions, tasks, cost, models and decisions (--range, --source, --json)
 bun src/cli/main.ts dashboard   # open the web dashboard (--no-open prints the link)
+bun src/cli/main.ts hooks    # Claude Code hooks found for this dir (`hooks trust` runs project ones)
+bun src/cli/main.ts compat   # Claude Code instructions, skills and MCP servers found here (approve, revoke)
+bun src/cli/main.ts worktrees # subagent worktrees (--prune: remove finished ones)
 ```
 
 Data lives in `~/Library/Application Support/hamness` on macOS and `$XDG_DATA_HOME/hamness` (default `~/.local/share/hamness`) on Linux. Set `HAMNESS_HOME` to use another dir and `HAMNESS_PORT` to change the API port (default 7357).
@@ -37,9 +40,19 @@ Chat uses Claude (`anthropic/claude-opus-5-5`; `HAMNESS_MODEL=provider/id` sets 
 
 Sessions keep running when the TUI closes; reopening it in the same dir reattaches. After a daemon restart, the dir's last session resumes with its transcript and context (from Pi's session file in `<data dir>/pi/sessions`).
 
+### Claude Code setup
+
+Sessions read your Claude Code setup as it is and never change it (ADR 0008, ADR 0016). `CLAUDE_CONFIG_DIR` picks another config dir, as in Claude Code.
+
+- **Instructions:** managed `CLAUDE.md`, `~/.claude/CLAUDE.md` and `~/.claude/rules/`, then `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/` and `CLAUDE.local.md` in each folder from `/` down to the session's dir. `AGENTS.md` loads when none of those CLAUDE files exist (or always, with Claude Code's `claude-md-and-agents-md` setting). `@path` imports expand; a repo file can't import from outside the repo.
+- **Skills:** `<name>/SKILL.md` in `~/.claude/skills`, `<data dir>/skills`, `.claude/skills` up to the repo root and `.hamness/skills`. The prompt lists names and descriptions; the `skill` tool loads a body with its arguments filled in. Fields that would loosen safety or switch models (`allowed-tools`, `model`, ...) are not honored.
+- **MCP servers:** user and local servers from `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`) start; a repo's `.mcp.json` servers wait until you run `hamness compat approve` in that repo (stored in `<data dir>/config.json`; an edited entry asks again). Tools are `mcp__<server>__<tool>` and go through the safety rules. stdio and HTTP only.
+
+`hamness compat` shows what was found and what happens to each file, skill and server.
+
 ### Safety
 
-Every tool call passes allow / ask / deny rules before it runs (ADR 0006). Defaults: reads are allowed except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys), writes inside the session's dir are allowed, bash asks except for a small read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...), `rm -rf` and force pushes ask, `sudo` and `curl | sh` are denied. Compound commands (`&&`, `;`, `|`, subshells, `$(...)`) are checked part by part, and the strictest part wins.
+Every tool call passes allow / ask / deny rules before it runs (ADR 0006). Defaults: reads are allowed except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys), writes inside the session's dir are allowed, bash asks except for a small read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...), `rm -rf` and force pushes ask, `sudo` and `curl | sh` are denied. Loading a skill and listing or reading MCP resources are allowed; MCP server tools are undecided until a rule says otherwise. Compound commands (`&&`, `;`, `|`, subshells, `$(...)`) are checked part by part, and the strictest part wins.
 
 Add rules under `safety` in `<data dir>/config.json` (yours) or `.hamness/config.json` at the repo root (the project's). Patterns are globs, the last matching rule wins, and a project rule can allow what nothing else decides but never loosens an `ask` or `deny`:
 
@@ -65,6 +78,14 @@ The judge (auto mode) is Claude Haiku 5.5 by default, keyed like chat (`ANTHROPI
 { "safety": { "judge": { "model": "claude-haiku-5-5", "dailyBudgetUsd": 1, "timeoutSec": 8 } } }
 ```
  When a call asks, the TUI shows it above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. With no answer it is denied after the timeout. Every decision is stored with its source and reason; `hamness audit` lists them.
+
+### Claude Code hooks
+
+hamness runs the `command` hooks in your Claude Code settings for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse and Stop, with the same matchers, JSON input and output, exit code 2 and timeouts (ADR 0017). Hooks see Claude Code's tool names and inputs (`Bash`, `Read` with `file_path`, ...). A PreToolUse deny is final and shows in `hamness audit` with source `hook`; an allow skips the ask but never beats a rule deny. Hooks in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) always run; a project's `.claude/settings.json` and `settings.local.json` hooks run once you trust the repo with `hamness hooks trust`. A hook that crashes or hangs is logged and skipped. hamness never edits Claude Code's files.
+
+### Subagents
+
+The main agent can start subagents in the background (`agent_start`), check on them (`agent_status`) and collect their final message (`agent_wait`); one it didn't wait for reports back as a notice on its next turn (ADR 0015). A subagent can use another model, and with `worktree: true` it runs in a new git worktree on its own branch, `hamness/<name>-<id>`, in `<repo>.hamness-worktrees/` next to the repo, so parallel agents don't edit the same checkout. Each subagent passes the same safety rules in its own dir, shows as a named row in the side rail, and its cost counts toward the session and the parent's task. Up to 4 run at once; more wait. Stopping the main agent stops its subagents. `hamness worktrees` lists the worktrees, and `--prune` removes finished ones (branches and uncommitted work are kept).
 
 ### TUI keys
 

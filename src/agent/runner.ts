@@ -9,6 +9,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
+import { type CompatSetup, compatExtensions, compatPrompt } from "../compat/index.ts";
 import type { ContextFill } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
 import type { ModelChoice } from "./models.ts";
@@ -54,6 +55,14 @@ export type ToolGuard = (call: ToolCallRequest) => Promise<ToolVerdict>;
 
 export const allowAllTools: ToolGuard = async () => ({ allow: true });
 
+/**
+ * Runs after a tool call finished (Claude Code's PostToolUse hooks). Text it returns is added
+ * to the tool's result, so the model reads it next to the output.
+ */
+export type AfterTool = (
+  call: ToolCallRequest & { output: string; isError: boolean },
+) => Promise<string | undefined>;
+
 export type RunnerEvent =
   | { type: "assistant.start"; key: string }
   | { type: "assistant.delta"; key: string; text: string }
@@ -97,8 +106,15 @@ export interface RunnerOptions {
   models: ModelChoice;
   onEvent: (event: RunnerEvent) => void;
   guard?: ToolGuard;
-  /** Load AGENTS.md / CLAUDE.md into the system prompt (Pi's loader). Default true. */
+  afterTool?: AfterTool;
+  /** Load instruction files into the system prompt. Default true. */
   contextFiles?: boolean;
+  /**
+   * Claude Code's instructions, skills and MCP servers for this cwd (`loadCompat`). Replaces Pi's
+   * own context file lookup with Claude Code's, adds the `skill` tool and starts the MCP servers
+   * marked to start. Without it, Pi's lookup applies and there are no skills or MCP servers.
+   */
+  compat?: CompatSetup;
   /** Where Pi writes its session JSONL. In memory when unset. */
   sessionDir?: string;
   /** A Pi session file to continue (its messages become the context). Needs `sessionDir`. */
@@ -117,10 +133,17 @@ export interface AgentRunner {
   readonly model: string;
   /** Pi's session id: the name of its JSONL file, used to resume after a restart. */
   readonly piSessionId: string;
+  /** Pi's session file, when it keeps one on disk. */
+  readonly sessionFile: string | undefined;
   /** Switches the model for the next call. Throws when the provider has no credentials. */
   setModel(model: Model<Api>): Promise<void>;
   /** How full the context window is now (Pi's estimate), or undefined when Pi can't tell. */
   contextUsage(): ContextFill | undefined;
+  /**
+   * Puts a note in the context without starting a turn: during a run it lands after the
+   * current turn, otherwise the next prompt's model call sees it.
+   */
+  notify(text: string): Promise<void>;
   dispose(): void;
 }
 
@@ -169,7 +192,38 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       emit({ type: "tool.denied", toolCallId: event.toolCallId, reason: verdict.reason });
       return { block: true, reason: verdict.reason };
     });
+    const after = opts.afterTool;
+    if (after) {
+      pi.on("tool_result", async (event) => {
+        const extra = await after({
+          toolCallId: event.toolCallId,
+          tool: event.toolName,
+          args: (event.input ?? {}) as Record<string, unknown>,
+          output: textOf(event.content),
+          isError: event.isError,
+        });
+        return extra ? { content: [...event.content, { type: "text", text: extra }] } : undefined;
+      });
+    }
   };
+
+  const compat = opts.compat;
+  const appendSystemPrompt = [
+    ...(opts.systemPromptAppend ?? []),
+    ...(compat ? compatPrompt(compat) : []),
+  ];
+  let sessionId: string | undefined;
+  const compatFactories = compat
+    ? compatExtensions(compat, {
+        cwd: opts.cwd,
+        agentDir: opts.agentDir,
+        sessionId: () => sessionId,
+      })
+    : [];
+  if (compat?.mcp.servers.some((s) => s.status === "start")) {
+    // Pi's MCP client keeps OAuth tokens in its agent dir, found through this variable.
+    process.env.PI_CODING_AGENT_DIR = opts.agentDir;
+  }
 
   const resourceLoader = new DefaultResourceLoader({
     cwd: opts.cwd,
@@ -180,8 +234,19 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: opts.contextFiles === false,
-    extensionFactories: [safety],
-    ...(opts.systemPromptAppend?.length ? { appendSystemPrompt: opts.systemPromptAppend } : {}),
+    ...(compat
+      ? {
+          agentsFilesOverride: () => ({
+            agentsFiles: compat.instructions.files.map((f) => ({
+              path: f.path,
+              content: f.content,
+            })),
+          }),
+        }
+      : {}),
+    // Safety first, so its tool_call handler sees every tool the others add.
+    extensionFactories: [safety, ...compatFactories],
+    ...(appendSystemPrompt.length ? { appendSystemPrompt } : {}),
   });
   await resourceLoader.reload();
 
@@ -203,6 +268,10 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       retry: { enabled: false },
     }),
   });
+
+  sessionId = session.sessionId;
+  // Emits session_start: extensions start (the MCP servers connect in the background).
+  await session.bindExtensions({});
 
   const contextFill = (): ContextFill | undefined => {
     const u = session.getContextUsage();
@@ -296,6 +365,9 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     get piSessionId() {
       return session.sessionId;
     },
+    get sessionFile() {
+      return session.sessionFile;
+    },
     async setModel(next) {
       await session.setModel(next);
       model = next;
@@ -310,6 +382,11 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     },
     abort: () => session.abort(),
     contextUsage: contextFill,
+    notify: (text) =>
+      session.sendCustomMessage(
+        { customType: "hamness.notice", content: text, display: true },
+        { triggerTurn: false },
+      ),
     dispose() {
       unsubscribe();
       session.dispose();

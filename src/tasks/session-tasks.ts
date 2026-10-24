@@ -45,7 +45,7 @@ function goalOf(text: string): string {
  * - `/override` (user only): an open or unverified task becomes `overridden`.
  * - `/abandon` (user only): the open task becomes `abandoned`.
  * - At turn end an implicit task still open closes: `verified` with passing evidence,
- *   `unverified` with failed evidence or file edits, and is dropped when it had neither.
+ *   `unverified` with failed evidence, file edits or subagents, and is dropped when it had none.
  *
  * Rows the hub stores count toward `attributionId()`: the open task, or the one closed
  * earlier in this turn, so the wrap-up of a task still counts toward it.
@@ -87,7 +87,7 @@ export class SessionTasks {
     if (open?.implicit) {
       const { evidence, passed } = this.store.evidenceCounts(open.id);
       if (passed > 0) this.closeAs(open.id, "verified");
-      else if (evidence > 0 || this.store.changedFiles(open.id))
+      else if (evidence > 0 || this.store.changedFiles(open.id) || this.store.hasSubagents(open.id))
         this.closeAs(open.id, "unverified");
       else {
         this.store.drop(open.id);

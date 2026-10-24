@@ -17,9 +17,13 @@
 - **Approval:** a tool call that asks, waiting for the user's answer: allow once, allow always (saves a rule to the project config) or deny. No answer before the timeout is a deny.
 - **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything).
 - **Audit log:** the stored list of decisions.
+- **Hook:** a command from Claude Code's settings that hamness runs on an event (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop). A project's hooks run only once its repo is **trusted**.
 - **Side rail:** the always-on right pane in the TUI showing agents, shells, checks, the current task and gauges.
 - **Source:** where a session came from: `hamness`, `claude-code` or `codex` (imported).
 - **Import:** reading Claude Code or Codex history, read-only and incremental, into the same tables. Each source file has an **import cursor** (byte offset, size, mtime) so a re-run reads only new lines.
 - **Active time:** the time an agent spent working in a session (sum of its turn durations), as opposed to wall time from first to last event.
 - **Verified rate:** verified tasks over closed tasks (every outcome but `open`) in a range. hamness only: imported history has no tasks.
 - **Cost per verified task:** all hamness spend in a range divided by its verified tasks, so failed and abandoned work counts against it.
+- **Instruction file:** a `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/*.md` or `AGENTS.md` that goes into the system prompt, found the way Claude Code finds it.
+- **Skill:** a folder with a `SKILL.md` (frontmatter plus instructions). Its name and description are in the prompt; the `skill` tool loads the body.
+- **Project MCP server:** an MCP server from a repo's `.mcp.json`. It starts only after the user approves it for that repo (`hamness compat approve`).

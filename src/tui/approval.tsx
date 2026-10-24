@@ -33,8 +33,11 @@ export function ApprovalPrompt(props: ApprovalPromptProps) {
     props.onAnswer(decision);
   });
 
-  const title = () =>
-    props.queued > 1 ? `approve this tool call? (1 of ${props.queued})` : "approve this tool call?";
+  const title = () => {
+    const from = props.approval.agentName ? ` from subagent ${props.approval.agentName}` : "";
+    const of = props.queued > 1 ? ` (1 of ${props.queued})` : "";
+    return `approve this tool call${from}?${of}`;
+  };
   const patterns = () =>
     always()
       .map((s) => `${s.tool} "${s.pattern}"`)

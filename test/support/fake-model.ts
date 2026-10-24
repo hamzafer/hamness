@@ -19,9 +19,23 @@ export interface FakeReply {
   usage?: TokenUsage;
 }
 
+/** What a routed model call is sent: the system prompt and the messages so far. */
+export interface FakeContext {
+  systemPrompt?: string;
+  messages: Array<{ role: string; content: unknown }>;
+}
+
+/** Picks a reply from the call's context; may wait (to hold a call open). */
+export type FakeRouter = (context: FakeContext) => FakeReply | Promise<FakeReply>;
+
 export interface FakeModel extends ModelChoice {
   /** Queue replies; each model call takes the next one. */
   script(replies: FakeReply[]): void;
+  /**
+   * Answer every call from its context instead of a queue, so agents running in parallel
+   * (a parent and its subagents) each get their own replies whatever order they call in.
+   */
+  route(router: FakeRouter): void;
   readonly calls: number;
   /** The context (system prompt and messages) each model call was sent, in order. */
   readonly contexts: Array<{ messages: unknown[] }>;
@@ -45,12 +59,24 @@ export async function fakeModel(
   });
   const usages: TokenUsage[] = [];
   const contexts: Array<{ messages: unknown[] }> = [];
+  let router: FakeRouter | undefined;
 
   const fixUsage =
     (fn: typeof core.stream) =>
     (...args: Parameters<typeof core.stream>): AssistantMessageEventStream => {
-      const usage = usages.shift() ?? DEFAULT_USAGE;
+      let usage = router ? DEFAULT_USAGE : (usages.shift() ?? DEFAULT_USAGE);
       contexts.push(structuredClone(args[1]) as { messages: unknown[] });
+      if (router) {
+        const route = router;
+        // The faux core takes its next step synchronously, so this call gets this factory.
+        core.setResponses([
+          async (context) => {
+            const reply = await route(context as unknown as FakeContext);
+            usage = reply.usage ?? DEFAULT_USAGE;
+            return message(reply);
+          },
+        ]);
+      }
       const inner = fn(...args);
       const out = createAssistantMessageEventStream();
       void (async () => {
@@ -99,15 +125,22 @@ export async function fakeModel(
       core.appendResponses(
         replies.map((r) => {
           usages.push(r.usage ?? DEFAULT_USAGE);
-          const blocks = [
-            ...(r.text ? [fauxText(r.text)] : []),
-            ...(r.tools ?? []).map((t) =>
-              fauxToolCall(t.name, t.args as Parameters<typeof fauxToolCall>[1]),
-            ),
-          ];
-          return fauxAssistantMessage(blocks, { stopReason: r.tools?.length ? "toolUse" : "stop" });
+          return message(r);
         }),
       );
     },
+    route(next) {
+      router = next;
+    },
   };
+}
+
+function message(r: FakeReply) {
+  const blocks = [
+    ...(r.text ? [fauxText(r.text)] : []),
+    ...(r.tools ?? []).map((t) =>
+      fauxToolCall(t.name, t.args as Parameters<typeof fauxToolCall>[1]),
+    ),
+  ];
+  return fauxAssistantMessage(blocks, { stopReason: r.tools?.length ? "toolUse" : "stop" });
 }
