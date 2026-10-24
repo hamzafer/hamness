@@ -12,19 +12,22 @@ Runs on Bun. Multi-model (Claude by default). Reads your Claude Code setup (CLAU
 
 ## Development
 
-Needs [Bun](https://bun.sh) 1.2.23 or newer.
+Needs [Bun](https://bun.sh) 1.4.4 or newer.
 
 ```sh
 bun install
 bun test            # unit + integration tests
 bun run typecheck   # strict TypeScript
 bun run lint        # Biome (bun run format to fix)
+bun src/cli/main.ts          # chat TUI for this dir (starts the daemon if needed)
 bun src/cli/main.ts daemon   # run the daemon in the foreground
 bun src/cli/main.ts status   # is it running?
 bun src/cli/main.ts import   # read Claude Code and Codex history (read-only)
 ```
 
 Data lives in `~/Library/Application Support/hamness` on macOS and `$XDG_DATA_HOME/hamness` (default `~/.local/share/hamness`) on Linux. Set `HAMNESS_HOME` to use another dir and `HAMNESS_PORT` to change the API port (default 7357).
+
+Chat uses Claude (`anthropic/claude-opus-5-5`; `HAMNESS_MODEL=provider/id` picks another) with an API key from `ANTHROPIC_API_KEY` or `keys.json` in the data dir (`{"anthropic": "..."}`, mode 0600). Sessions keep running when the TUI closes; reopening it in the same dir reattaches.
 
 ## License
 

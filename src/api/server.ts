@@ -14,6 +14,8 @@ export interface ApiOptions {
   health: () => Record<string, unknown>;
   /** First event a new WebSocket client receives. */
   hello: () => HamnessEvent;
+  /** Feature routes, called after the token check. Return undefined for "not mine". */
+  routes?: (req: Request, url: URL) => Promise<Response | undefined>;
 }
 
 export interface ApiServer {
@@ -38,7 +40,7 @@ export function startApiServer(opts: ApiOptions): ApiServer {
   const server: Server<undefined> = Bun.serve({
     hostname: API_HOSTNAME,
     port: opts.port,
-    fetch(req, srv) {
+    async fetch(req, srv) {
       const url = new URL(req.url);
       if (!isLocalHost(req)) return json({ error: "forbidden host" }, 403);
 
@@ -52,6 +54,12 @@ export function startApiServer(opts: ApiOptions): ApiServer {
         return json({ error: "expected a WebSocket upgrade" }, 426);
       }
       if (req.method === "GET" && url.pathname === "/v1/health") return json(opts.health());
+      try {
+        const res = await opts.routes?.(req, url);
+        if (res) return res;
+      } catch (err) {
+        return json({ error: (err as Error).message }, 500);
+      }
       return json({ error: "not found" }, 404);
     },
     websocket: {
