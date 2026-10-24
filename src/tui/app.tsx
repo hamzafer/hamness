@@ -1,6 +1,7 @@
-import type { KeyBinding, TextareaRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
-import { createSignal, For, onCleanup, Show } from "solid-js";
+import { homedir } from "node:os";
+import type { KeyBinding, SyntaxStyle, TextareaRenderable } from "@opentui/core";
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
+import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient } from "../client/client.ts";
@@ -11,8 +12,16 @@ import type {
   TranscriptItem,
 } from "../events/types.ts";
 import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
-import { applyEvent, argSummary, initialState, STATUS_GLYPH } from "./chat-state.ts";
+import {
+  applyEvent,
+  argSummary,
+  initialState,
+  STATUS_GLYPH,
+  waitingForModel,
+} from "./chat-state.ts";
 import { COMMAND_WORDS, HelpPanel } from "./help.tsx";
+import { promptHint, shortPath } from "./layout.ts";
+import { markdownStyle } from "./markdown.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
 import { applyRailEvent, initialRail } from "./rail-state.ts";
@@ -44,6 +53,8 @@ export interface AppProps {
   onExit?: () => void;
   /** Clock for the rail's elapsed times; tests pass a fake one. */
   now?: () => number;
+  /** The home folder, shown as `~` in the header. Default: the user's. */
+  home?: string;
 }
 
 export function App(props: AppProps) {
@@ -58,12 +69,34 @@ export function App(props: AppProps) {
     setRail(produce((r) => applyRailEvent(r, e, now())));
     setClock(now());
   });
+  const md = markdownStyle(useRenderer().nativeScene);
   onCleanup(() => {
     off();
     clearInterval(tick);
+    md.destroy();
   });
+  /** When the current wait for the model began (`waitingForModel`), for its elapsed seconds. */
+  const [waitingSince, setWaitingSince] = createSignal<number | undefined>();
+  createEffect(
+    on(
+      () => waitingForModel(state),
+      (waiting) => setWaitingSince(waiting ? now() : undefined),
+    ),
+  );
 
   const dims = useTerminalDimensions();
+  /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
+  const chatWidth = () => Math.max(20, dims().width - RAIL_WIDTH - 2);
+  const home = props.home ?? homedir();
+  /** The cwd in the header's room left after its other parts. */
+  const headerPath = () => {
+    const judge = state.session.mode === "auto" && state.session.judge;
+    const rest =
+      `hamness ·  · ${state.session.model}`.length +
+      (judge ? ` · ${JUDGE_LABEL[judge]}`.length : 0) +
+      (state.session.busy ? " · working…".length : 0);
+    return shortPath(state.session.cwd, home, chatWidth() - rest);
+  };
   let input: TextareaRenderable | undefined;
   /** Rows the prompt box shows: it grows with its lines, up to `PROMPT_MAX_ROWS`. */
   const [promptRows, setPromptRows] = createSignal(1);
@@ -157,7 +190,7 @@ export function App(props: AppProps) {
         </Show>
         <box flexDirection="row" height={1}>
           <text fg={COLORS.muted}>
-            hamness · {state.session.cwd} · {state.session.model}
+            hamness · {headerPath()} · {state.session.model}
           </text>
           <Show when={state.session.mode === "auto" && state.session.judge}>
             {(judge: () => JudgeState) => (
@@ -173,9 +206,18 @@ export function App(props: AppProps) {
         <scrollbox stickyScroll stickyStart="bottom" flexGrow={1} minHeight={0}>
           <For each={state.items}>
             {(item) =>
-              item.kind === "message" ? <MessageView message={item} /> : <ToolLine tool={item} />
+              item.kind === "message" ? (
+                <MessageView message={item} markdown={md} />
+              ) : (
+                <ToolLine tool={item} />
+              )
             }
           </For>
+          <Show when={waitingSince() !== undefined}>
+            <text fg={COLORS.muted}>
+              {`  thinking… ${Math.max(0, Math.floor((clock() - (waitingSince() ?? 0)) / 1000))}s`}
+            </text>
+          </Show>
         </scrollbox>
         <Show when={state.notice}>
           <text fg={COLORS.error}>{state.notice}</text>
@@ -211,7 +253,7 @@ export function App(props: AppProps) {
             ref={(r: TextareaRenderable) => {
               input = r;
             }}
-            placeholder="Ask hamness… (Enter sends, Shift+Enter or Ctrl+J new line, Esc stops, /help lists commands, Ctrl+C leaves)"
+            placeholder={promptHint(chatWidth() - 2)}
             focused={!picker() && state.approvals.length === 0}
             keyBindings={PROMPT_KEYS}
             height={promptRows()}
@@ -246,14 +288,23 @@ const PROMPT_KEYS: KeyBinding[] = [
 type MessageItem = Extract<TranscriptItem, { kind: "message" }>;
 type ToolItem = Extract<TranscriptItem, { kind: "tool" }>;
 
-function MessageView(props: { message: MessageItem }) {
+/** A user prompt as typed; an assistant reply as Markdown, re-rendered as it streams. */
+function MessageView(props: { message: MessageItem; markdown: SyntaxStyle }) {
   const m = () => props.message;
   return (
     <box paddingTop={m().role === "user" ? 1 : 0} flexDirection="column">
       <Show when={m().text || m().streaming}>
-        <text fg={m().role === "user" ? COLORS.user : COLORS.assistant}>
-          {m().role === "user" ? `› ${m().text}` : m().text}
-        </text>
+        <Show
+          when={m().role === "assistant"}
+          fallback={<text fg={COLORS.user}>{`› ${m().text}`}</text>}
+        >
+          <markdown
+            content={m().text}
+            syntaxStyle={props.markdown}
+            fg={COLORS.assistant}
+            streaming={m().streaming === true}
+          />
+        </Show>
       </Show>
       <Show when={m().error}>
         <text fg={COLORS.error}>error: {m().error}</text>

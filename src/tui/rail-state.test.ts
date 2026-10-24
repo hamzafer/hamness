@@ -89,7 +89,9 @@ describe("rail state", () => {
     expect(sessionCostMicros(f.state)).toBe(5836);
 
     f.send(3100, { type: "agent.tool.end", toolCallId: "t1", status: "ok", summary: "" });
-    expect(main(f.state)).toMatchObject({ tool: "read", file: "app.tsx", toolRunning: false });
+    expect(main(f.state)).toMatchObject({ toolRunning: false });
+    expect(main(f.state)?.tool).toBeUndefined();
+    expect(main(f.state)?.file).toBeUndefined();
 
     f.send(9000, { type: "agent.context", tokens: 64_000, contextWindow: 128_000, percent: 50 });
     expect(f.state.context?.percent).toBe(50);
@@ -113,6 +115,16 @@ describe("rail state", () => {
     // The older call finishing does not hide the one still running.
     f.send(4, { type: "agent.tool.end", toolCallId: "t1", status: "ok", summary: "" });
     expect(main(f.state)).toMatchObject({ tool: "bash", toolRunning: true });
+  });
+
+  test("the run ending clears the current tool, even one that never reported its end", () => {
+    const f = feed();
+    f.send(1, { type: "agent.status", busy: true });
+    f.send(2, { type: "agent.tool.start", toolCallId: "t1", tool: "edit", args: { path: "a.ts" } });
+    f.send(3, { type: "agent.status", busy: false });
+    expect(main(f.state)).toMatchObject({ status: "done", toolRunning: false, open: [] });
+    expect(main(f.state)?.tool).toBeUndefined();
+    expect(main(f.state)?.file).toBeUndefined();
   });
 
   test("an error marks the agent until its next run", () => {

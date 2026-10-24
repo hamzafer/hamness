@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent, SessionSnapshot } from "../events/types.ts";
-import { applyEvent, initialState } from "./chat-state.ts";
+import { applyEvent, initialState, waitingForModel } from "./chat-state.ts";
 
 const SID = "s-1";
 const MAIN = "a-main";
@@ -52,5 +52,51 @@ describe("chat state", () => {
 
     send({ type: "agent.status", agentId: MAIN, busy: false });
     expect(state.session.busy).toBe(false);
+  });
+
+  test("waiting for the model: from the prompt to the first token, and between tool calls", () => {
+    const state = initialState({ ...snapshot, session: { ...snapshot.session, busy: false } });
+    let seq = 0;
+    const send = (body: Record<string, unknown>) =>
+      applyEvent(state, { sessionId: SID, seq: ++seq, agentId: MAIN, ...body } as AgentEvent);
+
+    expect(waitingForModel(state)).toBe(false);
+    send({ type: "agent.message.start", messageId: "u1", role: "user" });
+    send({ type: "agent.message.end", messageId: "u1", role: "user", text: "hi" });
+    send({ type: "agent.status", busy: true });
+    expect(waitingForModel(state)).toBe(true);
+    // A reply that has started but has no text yet still shows nothing.
+    send({ type: "agent.message.start", messageId: "m1", role: "assistant" });
+    expect(waitingForModel(state)).toBe(true);
+    send({ type: "agent.message.delta", messageId: "m1", text: "Let me look." });
+    expect(waitingForModel(state)).toBe(false);
+    send({ type: "agent.message.end", messageId: "m1", role: "assistant", text: "Let me look." });
+    expect(waitingForModel(state)).toBe(true);
+    send({ type: "agent.tool.start", toolCallId: "t1", tool: "read", args: { path: "a" } });
+    expect(waitingForModel(state)).toBe(false);
+    send({ type: "agent.tool.end", toolCallId: "t1", status: "ok", summary: "" });
+    expect(waitingForModel(state)).toBe(true);
+    send({ type: "agent.status", busy: false });
+    expect(waitingForModel(state)).toBe(false);
+  });
+
+  test("not waiting while an approval is open: the prompt for it shows instead", () => {
+    const state = initialState(snapshot);
+    applyEvent(state, {
+      sessionId: SID,
+      seq: 1,
+      agentId: MAIN,
+      type: "safety.approval.request",
+      approval: {
+        id: "ap1",
+        toolCallId: "t1",
+        tool: "write",
+        args: {},
+        reason: "outside",
+        suggestions: [],
+        expiresAt: 0,
+      },
+    } as AgentEvent);
+    expect(waitingForModel(state)).toBe(false);
   });
 });

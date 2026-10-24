@@ -75,6 +75,38 @@ describe("sessions API", () => {
     expect(third.session.id).not.toBe(first.session.id);
   });
 
+  test("attaching stores nothing until the first prompt, so a TUI opened and closed leaves no session", async () => {
+    // Regression (#25): a TUI opened in / and quit right away left an empty session there
+    // whose main agent stayed `running`.
+    fake.script([{ text: "hello" }]);
+    const { d, call, log } = await start();
+    const rows = () =>
+      d.db.sqlite
+        .query<{ id: string; cwd: string; status: string }, []>(
+          `SELECT s.id, s.cwd, a.status FROM sessions s JOIN agents a ON a.session_id = s.id
+           WHERE s.source = 'hamness'`,
+        )
+        .all();
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    await call("POST", "/v1/sessions", { cwd: work });
+    expect(rows()).toEqual([]);
+
+    await call("POST", `/v1/sessions/${s.session.id}/prompt`, { text: "hi" });
+    await log.waitFor(settled(s.session.id));
+    expect(rows()).toEqual([{ id: s.session.id, cwd: work, status: "running" }]);
+  });
+
+  test("a refused /override or /abandon on an unused session stores nothing", async () => {
+    const { d, call } = await start();
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    expect((await call("POST", `/v1/sessions/${s.session.id}/override`, {})).status).toBe(409);
+    expect((await call("POST", `/v1/sessions/${s.session.id}/abandon`, {})).status).toBe(409);
+    const n = d.db.sqlite
+      .query<{ n: number }, []>(`SELECT count(*) AS n FROM sessions WHERE source = 'hamness'`)
+      .get();
+    expect(n?.n).toBe(0);
+  });
+
   test("a cwd that is not an existing absolute directory is a 400", async () => {
     const { call } = await start();
     expect((await call("POST", "/v1/sessions", { cwd: "relative/dir" })).status).toBe(400);
