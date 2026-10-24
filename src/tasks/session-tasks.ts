@@ -1,11 +1,12 @@
 import type { HamnessDb } from "../db/open.ts";
 import type { TaskEvent } from "../events/types.ts";
 import type { GuardedCall, SafetyVerdict } from "../safety/index.ts";
-import type { GhRunner } from "./checkers/index.ts";
+import { type GhRunner, type GitRunner, runGit } from "./checkers/index.ts";
 import { parseClaim } from "./claims.ts";
+import { decideGate, type GateResult } from "./gate.ts";
 import { proveClaim } from "./proof.ts";
 import { TaskStore } from "./store.ts";
-import type { CheckResult, TaskView } from "./types.ts";
+import type { CheckResult, EvidenceClaim, TaskView } from "./types.ts";
 
 /** A task event before the hub stamps it with the session and its sequence number. */
 export type TaskEventBody = TaskEvent;
@@ -26,10 +27,45 @@ export interface SessionTasksOptions {
   /** The session's safety check; a `prove` command re-run passes it as a `bash` call. */
   safety: (call: GuardedCall) => Promise<SafetyVerdict>;
   gh: GhRunner;
+  /** `git` for CI evidence (is the commit in HEAD's history?). Default: the real one. */
+  git?: GitRunner;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  /** The git branch checked out in `cwd`, recorded when a task opens. Default: asks git. */
+  branchOf?: (cwd: string) => string | undefined;
+  /** The user config's `proof.allowPrivateUrls`, read on each `prove url`. Default false. */
+  allowPrivateUrls?: () => boolean;
 }
 
 const GOAL_MAX = 200;
+
+/** A claim in one line, for the rail: the command, path, URL or PR / commit. */
+function claimLabel(claim: EvidenceClaim): string {
+  switch (claim.kind) {
+    case "command":
+      return claim.command;
+    case "file":
+      return claim.path;
+    case "url":
+      return claim.url;
+    case "ci":
+      return claim.pr !== undefined ? `PR ${claim.pr}` : `commit ${claim.commit}`;
+  }
+}
+
+/** The branch checked out in `cwd`; undefined outside a repo or on a detached HEAD. */
+export function gitBranch(cwd: string): string | undefined {
+  try {
+    const r = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const name = r.stdout.toString().trim();
+    return r.exitCode === 0 && name && name !== "HEAD" ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function goalOf(text: string): string {
   const line = text.replace(/\s+/g, " ").trim();
@@ -78,16 +114,25 @@ export class SessionTasks {
   beginTurn(prompt: string): void {
     const open = this.openTask();
     if (open) return;
-    this.current = this.store.open(this.opts.sessionId, goalOf(prompt), true);
+    this.current = this.store.open(this.opts.sessionId, goalOf(prompt), true, this.branch());
     this.emitStart(this.current);
+  }
+
+  /** Whether the open (or last) task would be verified now, and why (`gate.ts`). */
+  gate(taskId = this.current ?? this.store.latestFor(this.opts.sessionId)): GateResult {
+    if (!taskId) return { verified: false, reason: "there is no task" };
+    return decideGate(this.store.gateEvidence(taskId), this.store.lastFileChange(taskId));
   }
 
   endTurn(): void {
     const open = this.openTask();
     if (open?.implicit) {
-      const { evidence, passed } = this.store.evidenceCounts(open.id);
-      if (passed > 0) this.closeAs(open.id, "verified");
-      else if (evidence > 0 || this.store.changedFiles(open.id) || this.store.hasSubagents(open.id))
+      if (this.gate(open.id).verified) this.closeAs(open.id, "verified");
+      else if (
+        this.store.failedCount(open.id) > 0 ||
+        this.store.changedFiles(open.id) ||
+        this.store.hasSubagents(open.id)
+      )
         this.closeAs(open.id, "unverified");
       else {
         this.store.drop(open.id);
@@ -114,7 +159,7 @@ export class SessionTasks {
       id = open.id;
       this.store.promote(id, goalOf(text));
     } else {
-      id = this.store.open(this.opts.sessionId, goalOf(text), false);
+      id = this.store.open(this.opts.sessionId, goalOf(text), false, this.branch());
     }
     this.current = id;
     return this.emitStart(id);
@@ -123,10 +168,11 @@ export class SessionTasks {
   /** `task_done(summary)`: the proof gate. */
   done(summary: string): TaskView {
     const open = this.requireOpen("call task_start first");
-    const { passed } = this.store.evidenceCounts(open.id);
-    return this.closeAs(open.id, passed > 0 ? "verified" : "unverified", {
+    const gate = this.gate(open.id);
+    const task = this.closeAs(open.id, gate.verified ? "verified" : "unverified", {
       summary: summary.trim() || undefined,
     });
+    return gate.verified ? task : { ...task, unverifiedReason: gate.reason };
   }
 
   /** `/override [reason]`: the user accepts a task without proof. */
@@ -174,12 +220,39 @@ export class SessionTasks {
         cwd: this.opts.cwd,
         toolCallId: opts.toolCallId ?? "",
         taskStartedAt: this.store.startedAt(open.id),
+        writtenByAgent: (path) => this.store.writtenPaths(open.id, this.opts.cwd).has(path),
         safety: this.opts.safety,
         gh: this.opts.gh,
+        git: this.opts.git ?? runGit,
         fetch: this.opts.fetch,
+        allowPrivateUrls: this.opts.allowPrivateUrls?.() ?? false,
         ...(opts.signal ? { signal: opts.signal } : {}),
       },
+      {
+        onStart: (id) =>
+          this.opts.emit({
+            type: "check.start",
+            taskId: open.id,
+            evidenceId: id,
+            kind: parsed.claim.kind,
+            label: claimLabel(parsed.claim),
+          }),
+      },
     );
+    this.opts.emit({
+      type: "check.end",
+      taskId: open.id,
+      evidenceId,
+      status: result.status,
+      summary: result.summary,
+    });
+    if (parsed.claim.kind === "ci" && result.status === "passed") {
+      const { prUrl, commitSha } = result.details;
+      this.store.setLinks(open.id, {
+        ...(typeof prUrl === "string" ? { prUrl } : {}),
+        ...(typeof commitSha === "string" ? { commitSha } : {}),
+      });
+    }
     const counts = this.store.evidenceCounts(open.id);
     this.opts.emit({
       type: "task.evidence",
@@ -191,6 +264,10 @@ export class SessionTasks {
       ...counts,
     });
     return { evidenceId, result, task: this.store.view(open.id) as TaskView };
+  }
+
+  private branch(): string | undefined {
+    return (this.opts.branchOf ?? gitBranch)(this.opts.cwd);
   }
 
   private openTask() {

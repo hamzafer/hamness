@@ -94,6 +94,14 @@ function prompt(req: JudgeRequest): string {
   return `<tool_call>\n${inert(call)}\n</tool_call>\n\nMay this call run without asking the user?`;
 }
 
+/**
+ * A generous guess at a judge call's input tokens (about 3 characters a token), for budget
+ * reservations and for calls that time out before the usage comes back.
+ */
+export function judgeInputTokens(req: JudgeRequest): number {
+  return Math.ceil((SYSTEM.length + prompt(req).length) / 3);
+}
+
 const notValid = "the judge's answer was not a valid verdict, so it asks";
 
 /** Strict: exactly `{verdict, reason, category}` with known values, or nothing. */

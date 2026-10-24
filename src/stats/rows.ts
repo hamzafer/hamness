@@ -73,6 +73,10 @@ export interface TaskListRow {
   durationMs: number;
   /** Checked evidence, how many of it passed, and claims not checked yet. */
   evidence: { checked: number; passed: number; pending: number };
+  /** The branch the task started on, and the PR and commit its passing CI evidence named. */
+  branch: string | null;
+  commitSha: string | null;
+  prUrl: string | null;
 }
 
 interface TaskSqlRow {
@@ -91,6 +95,9 @@ interface TaskSqlRow {
   checked: number;
   passed: number;
   pending: number;
+  branch: string | null;
+  commitSha: string | null;
+  prUrl: string | null;
 }
 
 /** Tasks that started in the range, newest first. Dropped turn tasks are gone from the table. */
@@ -108,7 +115,8 @@ export function listTasks(sqlite: Database, q: TaskListQuery): Page<TaskListRow>
          t.ended_at AS endedAt,
          coalesce(mc.cost, 0) AS cost, coalesce(mc.tokens, 0) AS tokens,
          coalesce(ev.checked, 0) AS checked, coalesce(ev.passed, 0) AS passed,
-         coalesce(ev.pending, 0) AS pending
+         coalesce(ev.pending, 0) AS pending,
+         t.branch, t.commit_sha AS commitSha, t.pr_url AS prUrl
        FROM tasks t JOIN sessions s ON s.id = t.session_id
        LEFT JOIN (
          SELECT task_id, sum(cost_micros) AS cost,
@@ -155,6 +163,9 @@ export function listTasks(sqlite: Database, q: TaskListQuery): Page<TaskListRow>
       endedAt: r.endedAt,
       durationMs: Math.max(0, (r.endedAt ?? w.to) - r.at),
       evidence: { checked: r.checked, passed: r.passed, pending: r.pending },
+      branch: r.branch,
+      commitSha: r.commitSha,
+      prUrl: r.prUrl,
     })),
     limit,
     (r) => r.startedAt,

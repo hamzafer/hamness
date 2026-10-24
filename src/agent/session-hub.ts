@@ -24,6 +24,7 @@ import {
   redactText,
   type SafetyCheck,
 } from "../safety/index.ts";
+import { loadProofConfig } from "../safety/proof.ts";
 import { broadWorkspace } from "../safety/rules.ts";
 import { type GhRunner, runGh } from "../tasks/checkers/index.ts";
 import { SessionTasks } from "../tasks/session-tasks.ts";
@@ -520,6 +521,13 @@ export class SessionHub {
       },
       gh: this.opts.gh ?? runGh,
       fetch: this.opts.fetch ?? ((input, init) => fetch(input, init)),
+      allowPrivateUrls: () => {
+        try {
+          return loadProofConfig(this.opts.dataDir, cwd).allowPrivateUrls;
+        } catch {
+          return false;
+        }
+      },
     });
     live = {
       id: sessionId,

@@ -67,3 +67,54 @@ describe("parseClaim", () => {
     expect(parseClaim({ kind: "command", command: "x", timeoutSeconds: 99_999 }).ok).toBe(false);
   });
 });
+
+describe("command evidence must be able to prove something (ADR 0019)", () => {
+  const refused = (command: string) => {
+    const parsed = parseClaim({ kind: "command", command });
+    return parsed.ok ? undefined : parsed.error;
+  };
+
+  test("commands that prove nothing are refused, with the reason", () => {
+    for (const c of ["true", ":", "exit 0", "echo tests pass", "printf ok", "pwd", "ls -la"]) {
+      expect(refused(c)).toContain("proves nothing");
+    }
+    for (const c of ["cat out.log", "git status", "grep -q PASS log.txt", "cd src && ls"]) {
+      expect(refused(c)).toContain("proves nothing");
+    }
+    // A shell's -c string is looked into.
+    expect(refused("sh -c 'exit 0'")).toContain("proves nothing");
+  });
+
+  test("operators that hide a failing exit code are refused", () => {
+    expect(refused("bun test || true")).toContain("||");
+    expect(refused("bun test; echo done")).toContain(";");
+    expect(refused("bun test\necho done")).toContain(";");
+    expect(refused("bun test &")).toContain("&");
+    expect(refused("! bun test")).toContain("!");
+    expect(refused("(bun test || exit 0)")).toContain("||");
+    expect(refused("bun test && true")).toContain("true");
+    expect(refused("set +e && bun test")).toContain("set");
+  });
+
+  test("words known only at run time, and info-only flags, are refused", () => {
+    expect(refused("bun test $(cat files)")).toContain("run time");
+    expect(refused("$RUNNER test")).toContain("run time");
+    expect(refused("bun test --help")).toContain("--help");
+    expect(refused("pytest --collect-only")).toContain("--collect-only");
+    expect(refused("tsc --version")).toContain("--version");
+    expect(refused("bun test <<EOF")).toBeDefined();
+  });
+
+  test("real checks pass the shape test, including && chains and pipes", () => {
+    for (const c of [
+      "bun test",
+      "cd web && npm test",
+      "CI=1 bun test src/tasks",
+      "bun test 2>&1 | tail -50",
+      "make test && bun run build",
+      "cargo test --all",
+    ]) {
+      expect(refused(c)).toBeUndefined();
+    }
+  });
+});

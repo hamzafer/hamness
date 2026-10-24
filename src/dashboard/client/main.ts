@@ -439,6 +439,22 @@ function evidenceCell(t: TaskListRow): string {
   return `${e.passed}/${e.checked} passed${e.pending ? `, ${e.pending} pending` : ""}`;
 }
 
+/** The task's branch, commit and PR (P-L4), as detail lines. A PR links only to an https URL. */
+function links(t: TaskListRow): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  const line = (label: string, ...value: Array<Node | string>) =>
+    out.push(h("p", { class: "link" }, h("strong", {}, `${label}: `), ...value));
+  if (t.branch) line("Branch", h("code", {}, t.branch));
+  if (t.commitSha) line("Commit", h("code", {}, t.commitSha.slice(0, 12)));
+  if (t.prUrl?.startsWith("https://")) {
+    line(
+      "PR",
+      h("a", { class: "pr", href: t.prUrl, target: "_blank", rel: "noopener noreferrer" }, t.prUrl),
+    );
+  }
+  return out;
+}
+
 function taskRows(t: TaskListRow): HTMLTableRowElement[] {
   const detailId = `task-${t.id}`;
   const detail = h("tr", { class: "detail", id: detailId, hidden: true }, h("td", { colspan: 6 }));
@@ -462,6 +478,7 @@ function taskRows(t: TaskListRow): HTMLTableRowElement[] {
       cell.replaceChildren(
         ...(t.reason ? [h("p", {}, h("strong", {}, "Reason: "), t.reason)] : []),
         ...(t.summary ? [h("p", {}, h("strong", {}, "Summary: "), t.summary)] : []),
+        ...links(t),
         evidence.length
           ? h(
               "ul",

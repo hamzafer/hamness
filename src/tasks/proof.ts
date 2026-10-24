@@ -13,8 +13,10 @@ export async function proveClaim(
   store: TaskStore,
   req: { taskId: string; claim: EvidenceClaim; toolCallId?: string },
   ctx: CheckContext,
+  hooks: { onStart?: (evidenceId: string) => void } = {},
 ): Promise<{ evidenceId: string; result: CheckResult }> {
   const evidenceId = store.addClaim(req.taskId, req.claim, req.toolCallId);
+  hooks.onStart?.(evidenceId);
   const result = await runChecker(req.claim, ctx);
   const now = Date.now();
   db.sqlite

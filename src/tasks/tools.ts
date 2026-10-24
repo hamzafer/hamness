@@ -19,7 +19,7 @@ export interface TaskToolHandle {
 export const PROOF_GATE_PROMPT = `## Tasks and proof (hamness)
 Work happens in tasks. Call task_start(goal) when you begin a piece of work, and task_done(summary) when it is finished.
 Before task_done, attach evidence with prove: a command hamness re-runs itself (tests, build, lint), a file you produced, a URL to fetch, or a PR/commit whose CI hamness reads. hamness checks the evidence; you cannot mark it passed.
-A task is verified only if at least one piece of evidence passed. Otherwise it closes as unverified, shown in red to the user. Only the user can override that. If a check fails, fix the problem and prove again.`;
+A task is verified only if its latest check passed after your last file change. Commands that prove nothing (echo, true, cat, ls, \`|| true\`) are refused; tests, builds, linters and typecheckers count. A file you wrote yourself is weak evidence and does not verify alone. Otherwise the task closes as unverified, shown in red to the user. Only the user can override that. If a check fails, fix the problem and prove again.`;
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -47,7 +47,7 @@ export function taskTools(handle: TaskToolHandle): AgentToolSpec[] {
       name: "prove",
       label: "Prove",
       description:
-        "Attach evidence to the open task. hamness checks it itself: command (re-run in the session folder, exit 0 passes), file (exists, non-empty, written during the task), url (fetched, 2xx passes) or ci (a PR or commit; every check must pass).",
+        "Attach evidence to the open task. hamness checks it itself: command (re-run in the session folder, exit 0 passes), file (exists, non-empty, written during the task, inside the session folder; weak if you wrote it yourself), url (fetched, 2xx passes) or ci (a PR or commit; every check must pass).",
       parameters: PROVE_PARAMETERS,
       async execute(id, params, signal) {
         const { result, task } = await handle.prove(params, id, signal);
@@ -65,7 +65,7 @@ export function taskTools(handle: TaskToolHandle): AgentToolSpec[] {
       name: "task_done",
       label: "Finish task",
       description:
-        "Close the open task. It is verified only if at least one piece of evidence passed hamness's check; otherwise unverified.",
+        "Close the open task. It is verified only if the latest evidence passed hamness's check after your last file change; otherwise unverified.",
       parameters: Type.Object(
         { summary: Type.String({ description: "What was done, in a sentence or two." }) },
         { additionalProperties: false },
@@ -75,7 +75,7 @@ export function taskTools(handle: TaskToolHandle): AgentToolSpec[] {
         const why =
           task.outcome === "verified"
             ? `${plural(task.passed, "piece")} of evidence passed`
-            : "no evidence passed; only the user can override it";
+            : `${task.unverifiedReason ?? "no evidence passed"}; only the user can override it`;
         return {
           text: `Task closed as ${task.outcome} (${why}).`,
           details: { taskId: task.id, outcome: task.outcome },

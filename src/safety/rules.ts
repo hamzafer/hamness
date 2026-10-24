@@ -15,6 +15,10 @@ import { parseCommand, type Segment } from "./shell.ts";
  */
 
 export type RuleVerdict = "allow" | "ask" | "deny";
+
+/** The proof gate's own checks (ADR 0019): a `prove` command re-run and a `prove` URL fetch. */
+export const PROVE_COMMAND = "prove_command";
+export const PROVE_URL = "prove_url";
 export type RuleLayer = "default" | "user" | "project";
 
 export interface Rule {
@@ -301,7 +305,7 @@ const verbFor = (v: RuleVerdict) => (v === "allow" ? "allowed" : v === "deny" ? 
 // bash
 
 /** Strips env assignments and wrapper commands (`env`, `timeout 5`, `xargs -0`, ...). */
-function unwrap(words: string[]): { words: string[]; wrapped: boolean } {
+export function unwrap(words: string[]): { words: string[]; wrapped: boolean } {
   let w = [...words];
   let wrapped = false;
   for (;;) {
@@ -583,6 +587,38 @@ const recursivePart = (what: string, denied: string): Part => ({
 
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * A `prove` URL fetch: patterns are command globs on the URL without user info
+ * (`https://example.com/*`). "Allow always" offers the URL's origin.
+ */
+function checkUrl(raw: string, rules: Rule[]): Part {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { verdict: "ask", reason: "not a valid URL", suggestion: null };
+  }
+  const text = `${url.origin}${url.pathname}${url.search}`;
+  const rule = lookup(rules, PROVE_URL, (p) => matchCommand(p, text));
+  if (rule) {
+    return {
+      verdict: rule.verdict,
+      rule,
+      reason: `${verbFor(rule.verdict)} by ${describeRule(rule)} for ${text}`,
+    };
+  }
+  return {
+    verdict: "undecided",
+    reason: `no rule allows fetching ${text}`,
+    suggestion: {
+      tool: PROVE_URL,
+      pattern: `${escapeGlob(url.origin)}/*`,
+      verdict: "allow",
+      layer: "project",
+    },
+  };
+}
+
 function subjectPath(args: Record<string, unknown>): string | undefined {
   const p = args.path ?? args.file_path;
   return typeof p === "string" && p.trim() ? p : undefined;
@@ -599,6 +635,8 @@ export function evaluate(
     parts = command.trim()
       ? checkBash(command, rules, ctx)
       : [{ verdict: "ask", reason: "bash without a command", suggestion: null }];
+  } else if (call.tool === PROVE_URL) {
+    parts = [checkUrl(typeof call.args.url === "string" ? call.args.url : "", rules)];
   } else if (READ_TOOLS.has(call.tool) || WRITE_TOOLS.has(call.tool)) {
     const path = subjectPath(call.args) ?? (READ_TOOLS.has(call.tool) ? ctx.cwd : undefined);
     parts = path

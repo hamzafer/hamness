@@ -179,7 +179,8 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
 /**
  * Task events (ticket #6). `task.start` also announces a promotion (the turn's implicit task
  * got a goal: same id, `implicit: false`). `task.drop`: an implicit turn task that held no
- * evidence and no edits was removed; it never counts as a task.
+ * evidence and no edits was removed; it never counts as a task. `check.start` / `check.end`
+ * frame one checker run (a command re-run can take minutes), before its `task.evidence`.
  */
 export type TaskEvent =
   | { type: "task.start"; task: TaskView }
@@ -195,7 +196,16 @@ export type TaskEvent =
       passed: number;
     }
   | { type: "task.end"; task: TaskView }
-  | { type: "task.drop"; taskId: string };
+  | { type: "task.drop"; taskId: string }
+  /** A checker started on a piece of evidence (P-M3); `label` is the command, path, URL or PR. */
+  | { type: "check.start"; taskId: string; evidenceId: string; kind: EvidenceKind; label: string }
+  | {
+      type: "check.end";
+      taskId: string;
+      evidenceId: string;
+      status: Exclude<EvidenceStatus, "pending">;
+      summary: string;
+    };
 
 export type HamnessEvent =
   | { type: "daemon.hello"; version: string; pid: number; schemaVersion: number }

@@ -7,6 +7,7 @@ import {
   formatTokens,
   RAIL_GLYPH,
   type RailAgent,
+  type RailCheck,
   type RailState,
   type RailTask,
   sessionCostMicros,
@@ -98,6 +99,33 @@ export function Rail(props: RailProps) {
           <AgentRow agent={agent} now={props.now} width={width()} full={props.full ?? false} />
         )}
       </For>
+      <For each={props.state.checks}>
+        {(check) => <CheckRow check={check} now={props.now} width={width()} />}
+      </For>
+    </box>
+  );
+}
+
+const CHECK_GLYPH: Record<RailCheck["status"], string> = {
+  running: "●",
+  passed: "✓",
+  failed: "✗",
+  error: "✗",
+};
+
+/** A proof check (P-M3): what hamness is re-running or reading, and how it ended. */
+function CheckRow(props: { check: RailCheck; now: number; width: number }) {
+  const c = () => props.check;
+  const bad = () => c().status === "failed" || c().status === "error";
+  const elapsed = () => formatElapsed(Math.max(0, (c().endedAt ?? props.now) - c().startedAt));
+  return (
+    <box flexDirection="column" paddingTop={1}>
+      <text fg={bad() ? COLORS.error : c().status === "passed" ? COLORS.ok : COLORS.text}>
+        {spread(`${CHECK_GLYPH[c().status]} check  ${c().label}`, elapsed(), props.width)}
+      </text>
+      <Show when={c().summary}>
+        <text fg={COLORS.muted}>{clip(`  ${c().status}: ${c().summary}`, props.width)}</text>
+      </Show>
     </box>
   );
 }

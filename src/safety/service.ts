@@ -7,6 +7,12 @@ import { stableJson } from "../trust/index.ts";
 import { addProjectRules, loadSafetyConfig } from "./config.ts";
 import { type DecisionRecord, DecisionStore } from "./decisions.ts";
 import type { GuardedCall, SafetyCheck, SafetyVerdict } from "./index.ts";
+import {
+  addUserProofCommands,
+  evaluateProofCommand,
+  loadProofConfig,
+  PROVE_COMMAND,
+} from "./proof.ts";
 import { redactArgs, redactText } from "./redact.ts";
 import { type Evaluation, evaluate, type Rule } from "./rules.ts";
 
@@ -149,6 +155,9 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
 
     const config = loadSafetyConfig(opts.dataDir, cwd);
     const mode = config.mode;
+    // A `prove` command re-run (ADR 0019): bash's deny and ask rules, the proof list for allow.
+    const proving = call.tool === PROVE_COMMAND;
+    const command = typeof call.args.command === "string" ? call.args.command : "";
     const record = (
       d: Omit<DecisionRecord, keyof typeof base | "mode" | "latencyMs">,
       since = t0,
@@ -159,7 +168,8 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
     if (opts.preToolHook) {
       const th = performance.now();
       try {
-        hook = await opts.preToolHook(call, mode);
+        // Hooks know the re-run as the shell command it is.
+        hook = await opts.preToolHook(proving ? { ...call, tool: "bash" } : call, mode);
       } catch {
         hook = undefined;
       }
@@ -171,19 +181,28 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       }
     }
 
-    if (mode === "yolo" && hook?.verdict !== "ask") {
+    // yolo skips safety questions, not the proof gate's.
+    if (mode === "yolo" && hook?.verdict !== "ask" && !proving) {
       if (hook?.verdict === "allow") return { allow: true };
       record({ verdict: "allow", source: "mode", reason: "yolo mode allows every call" });
       return { allow: true };
     }
 
-    const evaluation = evaluate({ tool: call.tool, args: call.args }, config.rules, {
+    const evalCtx = {
       cwd,
       home,
       dataDir: opts.dataDir,
       realpath: realpathNearest,
       glob: expandGlob,
-    });
+    };
+    const evaluation = proving
+      ? evaluateProofCommand(
+          command,
+          config.rules,
+          loadProofConfig(opts.dataDir, cwd).commands,
+          evalCtx,
+        )
+      : evaluate({ tool: call.tool, args: call.args }, config.rules, evalCtx);
     const ruleOf = evaluation.rule ? { rule: ruleLabel(evaluation.rule) } : {};
     // Reasons quote the command, so they are redacted like the args.
     const because = redactText(evaluation.reason);
@@ -193,7 +212,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       record({ verdict: "deny", source: "rule", reason: because, ...ruleOf });
       return { allow: false, reason: because };
     }
-    if (hook?.verdict === "allow" && evaluation.verdict !== "ask" && !looping) {
+    if (hook?.verdict === "allow" && evaluation.verdict !== "ask" && !looping && !proving) {
       return { allow: true };
     }
     if (evaluation.verdict === "allow" && !looping && hook?.verdict !== "ask") {
@@ -213,6 +232,9 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       // The hook's ask is already recorded; like an explicit ask rule, it offers no "always".
       reason = hook.reason;
       suggestions = [];
+    } else if (proving) {
+      // Whether a command counts as proof is the user's call, never the judge's.
+      record({ verdict: "ask", source: "rule", reason, rule: "proof command list" });
     } else {
       // Undecided: the judge's turn in auto mode.
       if (mode === "auto" && opts.judge) {
@@ -298,6 +320,20 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       return { allow: false, reason };
     }
     recent.delete(sessionId);
+    const proofSaves = suggestions.filter((s) => s.tool === PROVE_COMMAND);
+    if (answer.decision === "allow-always" && proofSaves.length > 0) {
+      addUserProofCommands(
+        opts.dataDir,
+        proofSaves.map((s) => s.pattern),
+      );
+      const saved = proofSaves.map((s) => `"${s.pattern}"`).join(", ");
+      record({
+        verdict: "allow",
+        source: "user",
+        reason: `allowed always: saved ${saved} to the user's proof command list`,
+      });
+      return { allow: true };
+    }
     if (answer.decision === "allow-always" && suggestions.length > 0) {
       addProjectRules(opts.dataDir, cwd, suggestions);
       const saved = suggestions.map((s) => `${s.tool} "${s.pattern}"`).join(", ");

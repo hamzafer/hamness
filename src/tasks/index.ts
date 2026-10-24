@@ -4,8 +4,8 @@
  * checkers that alone write evidence results (`proof.ts`, enforced again by migration 0006).
  */
 
-export type { CheckContext, GhRunner } from "./checkers/index.ts";
-export { runGh } from "./checkers/index.ts";
+export type { CheckContext, GhRunner, GitRunner } from "./checkers/index.ts";
+export { runGh, runGit } from "./checkers/index.ts";
 export { PROVE_PARAMETERS, parseClaim } from "./claims.ts";
 export { SessionTasks, TaskStateError } from "./session-tasks.ts";
 export { PROOF_GATE_PROMPT, taskTools } from "./tools.ts";

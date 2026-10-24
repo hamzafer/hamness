@@ -35,13 +35,16 @@ export function seeder(sqlite: Database) {
     implicit?: boolean;
     endAt?: number | null;
     reason?: string | null;
+    branch?: string;
+    commitSha?: string;
+    prUrl?: string;
   }) => {
     const id = newId();
     sqlite
       .query(
         `INSERT INTO tasks (id, session_id, goal, implicit, outcome, outcome_reason, started_at,
-           ended_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ended_at, branch, commit_sha, pr_url, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -52,6 +55,9 @@ export function seeder(sqlite: Database) {
         o.reason ?? null,
         o.at,
         o.endAt ?? null,
+        o.branch ?? null,
+        o.commitSha ?? null,
+        o.prUrl ?? null,
         o.at,
         o.at,
       );

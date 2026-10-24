@@ -1,5 +1,5 @@
 import type { ContextFill, HamnessEvent, SessionSnapshot } from "../events/types.ts";
-import type { TaskView } from "../tasks/types.ts";
+import type { EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
 
 /**
  * What the side rail shows, built only from the session snapshot and the daemon's events.
@@ -12,7 +12,7 @@ export type RailStatus = "idle" | "running" | "done" | "error";
 
 export interface RailAgent {
   id: string;
-  /** Background shells and checks get their own kinds when they have events (later tickets). */
+  /** Checks have their own rows (`RailCheck`). Pi's bash has no background shells (ADR 0019). */
   kind: "main" | "subagent";
   name: string;
   status: RailStatus;
@@ -54,11 +54,26 @@ function railTask(t: TaskView): RailTask {
   };
 }
 
+/** One checker run of the proof gate (P-M3): a command re-run, a fetch, a file, a CI read. */
+export interface RailCheck {
+  id: string;
+  kind: EvidenceKind;
+  label: string;
+  status: "running" | Exclude<EvidenceStatus, "pending">;
+  summary?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+/** Checks kept on the rail: the newest few. */
+export const RAIL_CHECKS = 3;
+
 export interface RailState {
   sessionId: string;
   mainAgentId: string;
   seq: number;
   agents: RailAgent[];
+  checks: RailCheck[];
   context?: ContextFill;
   task?: RailTask;
 }
@@ -99,6 +114,7 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
     mainAgentId,
     seq: snapshot.seq,
     agents,
+    checks: [],
   };
   if (snapshot.context) state.context = { ...snapshot.context };
   if (snapshot.task) state.task = railTask(snapshot.task);
@@ -202,6 +218,26 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
     case "task.drop":
       if (state.task?.id === e.taskId) delete state.task;
       return;
+    case "check.start":
+      state.checks.push({
+        id: e.evidenceId,
+        kind: e.kind,
+        label: e.label,
+        status: "running",
+        startedAt: now,
+      });
+      if (state.checks.length > RAIL_CHECKS)
+        state.checks.splice(0, state.checks.length - RAIL_CHECKS);
+      return;
+    case "check.end": {
+      const check = state.checks.find((c) => c.id === e.evidenceId);
+      if (check) {
+        check.status = e.status;
+        check.summary = e.summary;
+        check.endedAt = now;
+      }
+      return;
+    }
     default:
       return;
   }

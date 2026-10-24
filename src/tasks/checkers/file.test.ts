@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkContext } from "../../../test/support/check-context.ts";
 import { tempHome } from "../../../test/support/temp-home.ts";
@@ -61,5 +61,23 @@ describe("file checker", () => {
     const r = await checkFile({ kind: "file", path: "old.txt" }, ctx(Date.now() - 60_000));
     expect(r.status).toBe("failed");
     expect(r.summary).toContain("before the task");
+  });
+
+  test("refuses a file outside the session folder: absolute, ../ or through a symlink (C-2)", async () => {
+    const work = join(home.dir, "work");
+    mkdirSync(work);
+    writeFileSync(join(home.dir, "outside.txt"), "secret-ish");
+    const inWork = (path: string) =>
+      checkFile({ kind: "file", path }, checkContext(work, { taskStartedAt: Date.now() - 1000 }));
+    for (const path of [join(home.dir, "outside.txt"), "../outside.txt"]) {
+      const r = await inWork(path);
+      expect(r.status).toBe("error");
+      expect(r.summary).toContain("outside the session folder");
+      expect(r.details.sha256).toBeUndefined();
+    }
+    symlinkSync(join(home.dir, "outside.txt"), join(work, "link.txt"));
+    const linked = await inWork("link.txt");
+    expect(linked.status).toBe("error");
+    expect(linked.summary).toContain("outside the session folder");
   });
 });

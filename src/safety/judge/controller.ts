@@ -1,8 +1,9 @@
 import type { HamnessDb } from "../../db/open.ts";
 import type { JudgeState } from "../../events/types.ts";
+import { costMicros, priceFor } from "../../models/prices.ts";
 import { loadJudgeConfig } from "../config.ts";
 import type { Judge, JudgeRequest, JudgeVerdict } from "../service.ts";
-import type { BackendJudge } from "./anthropic.ts";
+import { type BackendJudge, judgeInputTokens } from "./anthropic.ts";
 
 /** This many judge asks in a row in a session pause its judge (ADR 0006). */
 export const BACK_OFF = 3;
@@ -48,6 +49,13 @@ const STATE_REASON: Record<JudgeState, string> = {
 export function createJudgeController(opts: JudgeControllerOptions): JudgeController {
   const now = opts.now ?? Date.now;
   const asksInARow = new Map<string, number>();
+  /**
+   * Estimated cost of calls in flight (S-L2): counted against the budget until their decision
+   * row is stored, so calls running at once can't each spend the last of it.
+   */
+  let reserved = 0;
+  /** Why the state is what it is, when that is more than the fixed reason (an unpriced model). */
+  let unpricedReason: string | undefined;
   const paused = new Set<string>();
   const shown = new Map<string, JudgeState>();
 
@@ -62,18 +70,44 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
     if (!opts.backend) return "no-key";
     if (paused.has(sessionId)) return "paused";
     let budget: number;
+    let model: string;
     try {
-      budget = loadJudgeConfig(opts.dataDir).dailyBudgetMicros;
+      const config = loadJudgeConfig(opts.dataDir);
+      budget = config.dailyBudgetMicros;
+      model = config.model;
     } catch {
       return "on"; // the judge call reports the config error
     }
-    return spentToday() >= budget ? "over-budget" : "on";
+    // With no price hamness can't know what the judge spends, so it can't keep the budget.
+    if (!priceFor(model)) {
+      unpricedReason = `the judge model ${model} has no price, so hamness can't keep its daily budget; set safety.judge.model to a priced model`;
+      return "over-budget";
+    }
+    unpricedReason = undefined;
+    return spentToday() + reserved >= budget ? "over-budget" : "on";
+  }
+
+  function estimate(req: JudgeRequest): number {
+    let model: string;
+    try {
+      model = loadJudgeConfig(opts.dataDir).model;
+    } catch {
+      return 0;
+    }
+    return (
+      costMicros(model, { input: judgeInputTokens(req), output: 0, cacheRead: 0, cacheWrite: 0 }) ??
+      0
+    );
   }
 
   function show(sessionId: string, s: JudgeState) {
     if ((shown.get(sessionId) ?? "on") === s) return;
     shown.set(sessionId, s);
-    opts.onState?.(sessionId, s, STATE_REASON[s]);
+    opts.onState?.(
+      sessionId,
+      s,
+      s === "over-budget" && unpricedReason ? unpricedReason : STATE_REASON[s],
+    );
   }
 
   async function call(backend: BackendJudge, req: JudgeRequest): Promise<JudgeVerdict> {
@@ -94,10 +128,16 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
         timedOut,
       ]);
     } catch (err) {
-      const reason = ac.signal.aborted
-        ? `the judge did not answer within ${timeoutMs / 1000}s`
-        : `the judge failed: ${(err as Error).message}`;
-      return { verdict: "ask", reason };
+      if (ac.signal.aborted) {
+        // The request was sent and likely billed: count its estimated input cost (S-L2).
+        const cost = estimate(req);
+        return {
+          verdict: "ask",
+          reason: `the judge did not answer within ${timeoutMs / 1000}s`,
+          ...(cost > 0 ? { costMicros: cost } : {}),
+        };
+      }
+      return { verdict: "ask", reason: `the judge failed: ${(err as Error).message}` };
     } finally {
       clearTimeout(timer);
     }
@@ -108,11 +148,20 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
     show(req.sessionId, s);
     const backend = opts.backend;
     if (s !== "on" || !backend) {
-      const reason = s === "over-budget" ? BUDGET_REACHED : STATE_REASON[s];
+      const reason = s === "over-budget" ? (unpricedReason ?? BUDGET_REACHED) : STATE_REASON[s];
       return { verdict: "ask", reason, skipped: true };
     }
 
-    const v = await call(backend, req);
+    const hold = estimate(req);
+    reserved += hold;
+    let v: JudgeVerdict;
+    try {
+      v = await call(backend, req);
+    } finally {
+      // The safety service stores this call's decision row (with its cost) as soon as it
+      // returns, so the reservation can go now.
+      reserved -= hold;
+    }
     if (v.verdict === "allow") {
       asksInARow.delete(req.sessionId);
       return v;

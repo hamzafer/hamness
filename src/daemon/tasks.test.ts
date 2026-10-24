@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { eventLog } from "../../test/support/events.ts";
 import { type FakeModel, type FakeReply, fakeModel } from "../../test/support/fake-model.ts";
@@ -31,6 +31,30 @@ afterEach(async () => {
   daemon = undefined;
   home.cleanup();
 });
+
+/** A bun test file in the work folder that passes (or fails), so `bun test` is real proof. */
+function testFile(passes = true) {
+  writeFileSync(
+    join(work, "ok.test.ts"),
+    `import { expect, test } from "bun:test";\ntest("works", () => expect(${passes ? 1 : 2}).toBe(1));\n`,
+  );
+}
+
+function userConfig(value: Record<string, unknown>) {
+  const dataDir = join(home.dir, "data");
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify(value));
+}
+
+const approvalOf = async (l: NonNullable<typeof log>, n = 1) => {
+  await l.waitFor(() => l.ofType("safety.approval.request").length >= n);
+  return (
+    l.ofType("safety.approval.request")[n - 1] as Extract<
+      HamnessEvent,
+      { type: "safety.approval.request" }
+    >
+  ).approval;
+};
 
 async function start() {
   const dataDir = join(home.dir, "data");
@@ -74,9 +98,10 @@ const toolEnds = (l: NonNullable<typeof log>) => l.ofType("agent.tool.end");
 
 describe("the agent's task tools", () => {
   test("task_start, a passing prove and task_done: verified, with every model call on the task", async () => {
+    testFile();
     fake.script([
       tool("task_start", { goal: "say hello" }, usage(100, 10)),
-      tool("prove", { kind: "command", command: "echo hello" }, usage(200, 20)),
+      tool("prove", { kind: "command", command: "bun test" }, usage(200, 20)),
       tool("task_done", { summary: "said hello" }, usage(300, 30)),
       { text: "Done, and verified.", usage: usage(400, 40) },
     ]);
@@ -139,9 +164,10 @@ describe("the agent's task tools", () => {
   });
 
   test("a failing command is stored as failed, with its exit code", async () => {
+    testFile(false);
     fake.script([
       tool("task_start", { goal: "read a file" }),
-      tool("prove", { kind: "command", command: "cat missing.txt" }),
+      tool("prove", { kind: "command", command: "bun test" }),
       tool("task_done", { summary: "read it" }),
       { text: "ok" },
     ]);
@@ -170,13 +196,13 @@ describe("the agent's task tools", () => {
     expect(existsSync(join(work, "owned"))).toBe(false);
     const d = sql
       .query<{ tool: string; verdict: string }, []>(
-        "SELECT tool, verdict FROM decisions WHERE tool = 'bash'",
+        "SELECT tool, verdict FROM decisions WHERE tool = 'prove_command'",
       )
       .all();
-    expect(d).toEqual([{ tool: "bash", verdict: "deny" }]);
+    expect(d).toEqual([{ tool: "prove_command", verdict: "deny" }]);
   });
 
-  test("a command re-run the rules don't decide asks the user", async () => {
+  test("a command not on the proof list asks the user whether it counts as proof", async () => {
     fake.script([
       tool("task_start", { goal: "make a dir" }),
       tool("prove", { kind: "command", command: "mkdir made" }),
@@ -184,15 +210,87 @@ describe("the agent's task tools", () => {
     ]);
     const { call, id, log } = await start();
     await call("POST", `/v1/sessions/${id}/prompt`, { text: "go" });
-    const req = (await log.waitFor((e) => e.type === "safety.approval.request")) as Extract<
-      HamnessEvent,
-      { type: "safety.approval.request" }
-    >;
-    expect(req.approval).toMatchObject({ tool: "bash", args: { command: "mkdir made" } });
-    await call("POST", `/v1/approvals/${req.approval.id}`, { decision: "allow-once" });
+    const approval = await approvalOf(log);
+    expect(approval).toMatchObject({ tool: "prove_command", args: { command: "mkdir made" } });
+    expect(approval.reason).toContain("count `mkdir made` as proof?");
+    await call("POST", `/v1/approvals/${approval.id}`, { decision: "allow-once" });
     await log.waitFor((e) => e.type === "task.evidence");
     expect(log.ofType("task.evidence")[0]).toMatchObject({ status: "passed" });
     expect(existsSync(join(work, "made"))).toBe(true);
+  });
+});
+
+describe("the proof command list (ADR 0019)", () => {
+  test("a command on the default list runs without asking, even in ask mode", async () => {
+    userConfig({ safety: { mode: "ask" } });
+    testFile();
+    fake.script([tool("prove", { kind: "command", command: "bun test" }), { text: "ok" }]);
+    const { run, log } = await start();
+    await run("check it");
+    expect(log.ofType("safety.approval.request")).toHaveLength(0);
+    expect(log.ofType("task.evidence")[0]).toMatchObject({ status: "passed" });
+  });
+
+  test("a command that proves nothing is refused before anything runs", async () => {
+    fake.script([
+      tool("task_start", { goal: "pretend" }),
+      tool("prove", { kind: "command", command: "echo tests pass" }),
+      tool("task_done", { summary: "done" }),
+      { text: "ok" },
+    ]);
+    const { run, log, sql } = await start();
+    await run("go");
+    const ends = toolEnds(log);
+    expect(ends[1]).toMatchObject({ status: "error" });
+    expect(ends[1]?.summary).toContain("proves nothing");
+    expect(sql.query("SELECT count(*) AS n FROM evidence").get()).toEqual({ n: 0 });
+    expect(log.ofType("task.end")[0]?.task.outcome).toBe("unverified");
+  });
+
+  test("a bash allow rule does not make a command proof; yolo mode still asks", async () => {
+    userConfig({ safety: { mode: "yolo", permission: { bash: { "mkdir *": "allow" } } } });
+    fake.script([tool("prove", { kind: "command", command: "mkdir made" }), { text: "ok" }]);
+    const { call, id, log } = await start();
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: "go" });
+    const approval = await approvalOf(log);
+    expect(approval.tool).toBe("prove_command");
+    await call("POST", `/v1/approvals/${approval.id}`, { decision: "deny" });
+    await log.waitFor((e) => e.type === "task.evidence");
+    expect(log.ofType("task.evidence")[0]).toMatchObject({ status: "error" });
+    expect(existsSync(join(work, "made"))).toBe(false);
+  });
+
+  test("allow always saves the command to the user's proof list; the next run does not ask", async () => {
+    fake.script([
+      tool("prove", { kind: "command", command: "mkdir -p made" }),
+      { text: "first" },
+      tool("prove", { kind: "command", command: "mkdir -p made" }),
+      { text: "second" },
+    ]);
+    const { call, id, log } = await start();
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: "go" });
+    const approval = await approvalOf(log);
+    expect(approval.suggestions).toEqual([{ tool: "prove_command", pattern: "mkdir *" }]);
+    await call("POST", `/v1/approvals/${approval.id}`, { decision: "allow-always" });
+    await log.waitFor(() => log.ofType("agent.status").filter((e) => !e.busy).length >= 1);
+    const saved = JSON.parse(readFileSync(join(home.dir, "data", "config.json"), "utf8"));
+    expect(saved.proof.commands).toEqual(["mkdir *"]);
+    // The project's safety rules were not touched.
+    expect(existsSync(join(work, ".hamness"))).toBe(false);
+
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: "again" });
+    await log.waitFor(() => log.ofType("task.evidence").length >= 2);
+    expect(log.ofType("safety.approval.request")).toHaveLength(1);
+    expect(log.ofType("task.evidence")[1]).toMatchObject({ status: "passed" });
+  });
+
+  test("user proof commands count without asking", async () => {
+    userConfig({ proof: { commands: ["mkdir *"] } });
+    fake.script([tool("prove", { kind: "command", command: "mkdir made" }), { text: "ok" }]);
+    const { run, log } = await start();
+    await run("go");
+    expect(log.ofType("safety.approval.request")).toHaveLength(0);
+    expect(log.ofType("task.evidence")[0]).toMatchObject({ status: "passed" });
   });
 });
 
@@ -211,7 +309,8 @@ describe("the implicit task per turn", () => {
   });
 
   test("a turn that proves something closes on its own", async () => {
-    fake.script([tool("prove", { kind: "command", command: "echo ok" }), { text: "checked" }]);
+    testFile();
+    fake.script([tool("prove", { kind: "command", command: "bun test" }), { text: "checked" }]);
     const { run, log } = await start();
     await run("is it ok?");
     expect(log.ofType("task.end")[0]?.task).toMatchObject({ implicit: true, outcome: "verified" });
@@ -256,5 +355,51 @@ describe("the user's task commands", () => {
     const { call, id } = await start();
     expect((await call("POST", `/v1/sessions/${id}/task`, { goal: " " })).status).toBe(400);
     expect((await call("POST", "/v1/sessions/nope/task", { goal: "x" })).status).toBe(404);
+  });
+});
+
+describe("prove url (S-H3)", () => {
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+  });
+
+  test("asks before fetching; a local address needs proof.allowPrivateUrls", async () => {
+    let hits = 0;
+    server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => {
+        hits += 1;
+        return new Response("ok");
+      },
+    });
+    const url = `http://127.0.0.1:${server.port}/health`;
+    fake.script([
+      tool("prove", { kind: "url", url }),
+      { text: "first" },
+      tool("prove", { kind: "url", url }),
+      { text: "second" },
+    ]);
+    const { call, id, log } = await start();
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: "go" });
+    const first = await approvalOf(log);
+    expect(first).toMatchObject({ tool: "prove_url", args: { url } });
+    expect(hits).toBe(0);
+    await call("POST", `/v1/approvals/${first.id}`, { decision: "allow-once" });
+    await log.waitFor(() => log.ofType("task.evidence").length >= 1);
+    expect(log.ofType("task.evidence")[0]).toMatchObject({ status: "error" });
+    expect(log.ofType("task.evidence")[0]?.summary).toContain("private");
+    expect(hits).toBe(0);
+    await log.waitFor(() => log.ofType("agent.status").filter((e) => !e.busy).length >= 1);
+
+    userConfig({ proof: { allowPrivateUrls: true } });
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: "again" });
+    const second = await approvalOf(log, 2);
+    await call("POST", `/v1/approvals/${second.id}`, { decision: "allow-once" });
+    await log.waitFor(() => log.ofType("task.evidence").length >= 2);
+    expect(log.ofType("task.evidence")[1]).toMatchObject({ status: "passed" });
+    expect(hits).toBe(1);
   });
 });

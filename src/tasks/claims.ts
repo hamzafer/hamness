@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { proofCommandProblem } from "./proof-shape.ts";
 import type { EvidenceClaim } from "./types.ts";
 
 /** Longest a command re-run may take (30 minutes) and a URL fetch (2 minutes). */
@@ -92,6 +93,8 @@ export function parseClaim(input: unknown): ParsedClaim {
   switch (kind) {
     case "command": {
       if (!nonEmpty(raw.command)) return fail("command evidence needs a command");
+      const problem = proofCommandProblem(raw.command);
+      if (problem) return fail(`not proof: ${problem}`);
       const t = timeout(raw.timeoutSeconds, MAX_COMMAND_TIMEOUT_S);
       if (t === null) return fail(`timeoutSeconds must be between 0 and ${MAX_COMMAND_TIMEOUT_S}`);
       return {
