@@ -21,6 +21,9 @@ export function resolveDataDir(
   return join(home, ".local", "share", "hamness");
 }
 
+/** hamness's user config: `safety`, `trust` and other settings. Never in a repo. */
+export const userConfigFile = (dataDir: string) => join(dataDir, "config.json");
+
 /** The files hamness keeps in its data dir. */
 export function dataPaths(dataDir: string) {
   return {

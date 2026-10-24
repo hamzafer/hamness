@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { readJsonOr } from "../config/json.ts";
 import {
   ancestorsDown,
   type ClaudeEnv,
@@ -85,15 +86,6 @@ function real(path: string): string {
   }
 }
 
-function readJson(path: string): Record<string, unknown> | undefined {
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Read from user and managed settings only, like Claude Code (project settings can't set it). */
 function instructionMode(claude: ClaudeEnv): InstructionMode {
   const managed = claudeManagedDir(claude);
@@ -103,7 +95,7 @@ function instructionMode(claude: ClaudeEnv): InstructionMode {
   ];
   let mode: InstructionMode = "claude-md-or-agents-md";
   for (const file of files) {
-    const configs = readJson(file)?.pluginConfigs as Record<string, unknown> | undefined;
+    const configs = readJsonOr(file)?.pluginConfigs as Record<string, unknown> | undefined;
     for (const id of ["agents-md@builtin", "cc-plugin-agents-md@builtin"]) {
       const value = (configs?.[id] as { options?: { instructionFiles?: unknown } } | undefined)
         ?.options?.instructionFiles;
@@ -161,9 +153,21 @@ class Loader {
 
   constructor(
     private readonly home: string,
-    /** Imports from project files must stay under this folder. */
+    /** Imports from project files, and project files themselves, must stay under this folder. */
     private readonly projectRoot: string,
+    /** The same folder as written (before symlinks are resolved). */
+    private readonly lexicalRoot: string,
   ) {}
+
+  /** A repo file whose real path leaves the repo (a symlink to `~/.aws/...`). */
+  private escapes(path: string): boolean {
+    const inside = (p: string, root: string) => {
+      const rel = relative(root, p);
+      return !rel.startsWith("..") && !isAbsolute(rel);
+    };
+    const inRepo = inside(resolve(path), this.lexicalRoot) || inside(path, this.projectRoot);
+    return inRepo && !inside(real(path), this.projectRoot);
+  }
 
   has(path: string): boolean {
     return this.loaded.has(real(path));
@@ -174,6 +178,13 @@ class Loader {
     if (!isFile(path)) return false;
     const key = real(path);
     if (this.loaded.has(key)) return true;
+    if ((scope === "project" || scope === "local") && this.escapes(path)) {
+      this.skipped.push({
+        path,
+        reason: "links outside the project; repo files must stay inside the repo",
+      });
+      return true;
+    }
     let text: string;
     try {
       text = readFileSync(path, "utf8");
@@ -317,7 +328,8 @@ export function findInstructions(opts: FindInstructionsOptions): InstructionsRes
   const { claude } = opts;
   const cwd = resolve(opts.cwd);
   const mode = instructionMode(claude);
-  const loader = new Loader(homeOf(claude), real(repoRoot(cwd) ?? cwd));
+  const root = repoRoot(cwd) ?? cwd;
+  const loader = new Loader(homeOf(claude), real(root), root);
 
   const managed = claudeManagedDir(claude);
   if (managed) loader.add(join(managed, "CLAUDE.md"), "managed");

@@ -1,4 +1,5 @@
-import { dirname, isAbsolute, normalize, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { matchCommand, matchPath } from "./glob.ts";
 import { parseCommand, type Segment } from "./shell.ts";
 
@@ -33,6 +34,11 @@ export interface EvalContext {
   dataDir: string;
   /** Resolves symlinks, so a link can't smuggle a path past the rules. Optional (tests). */
   realpath?: (path: string) => string;
+  /**
+   * Expands a shell glob (an absolute pattern) to the paths it matches now; undefined when it
+   * can't (too many matches). Without it, a command with a glob is never allowed outright.
+   */
+  glob?: (pattern: string) => string[] | undefined;
 }
 
 export interface Evaluation {
@@ -134,14 +140,16 @@ const escapeGlob = (s: string) => s.replace(/[*?{},\\]/g, "\\$&");
 
 function expandPathPattern(pattern: string, ctx: EvalContext): string {
   if (pattern === "*" || pattern === "**") return "**";
-  if (pattern.startsWith("$CWD")) return escapeGlob(ctx.cwd) + pattern.slice(4);
+  // At `/`, `$CWD/x` is `/x`, not `//x`.
+  const cwd = ctx.cwd === "/" ? "" : escapeGlob(ctx.cwd);
+  if (pattern.startsWith("$CWD")) return cwd + pattern.slice(4);
   if (pattern.startsWith("$DATA")) return escapeGlob(ctx.dataDir) + pattern.slice(5);
   if (pattern.startsWith("$HOME")) return escapeGlob(ctx.home) + pattern.slice(5);
   if (pattern === "~" || pattern.startsWith("~/") || pattern.startsWith("~{")) {
     return escapeGlob(ctx.home) + pattern.slice(1);
   }
   if (pattern.startsWith("/") || pattern.startsWith("**")) return pattern;
-  return `${escapeGlob(ctx.cwd)}/${pattern}`;
+  return `${cwd}/${pattern}`;
 }
 
 /** The last matching rule, where a project rule can't loosen an ask/deny from below it. */
@@ -168,12 +176,40 @@ function lookup(
   return last;
 }
 
-function resolvePath(raw: string, ctx: EvalContext): string {
+/** Pi's `UNICODE_SPACES` (utils/paths.ts): read as plain spaces. */
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/**
+ * The file a Pi tool opens for a `path` argument: Pi's `resolveToCwd` exactly (unicode spaces
+ * to spaces, `@` stripped, `~` expanded, `file://` URLs decoded, then resolved against the cwd;
+ * no trimming). Throws when Pi would (a `file:` URL that is not a local path).
+ */
+export function piToolPath(raw: string, cwd: string, home: string): string {
+  let p = raw.replace(UNICODE_SPACES, " ");
+  if (p.startsWith("@")) p = p.slice(1);
+  if (p === "~") p = home;
+  else if (p.startsWith("~/")) p = join(home, p.slice(2));
+  else if (/^file:\/\//.test(p)) p = fileURLToPath(p);
+  return isAbsolute(p) ? resolve(p) : resolve(cwd, p);
+}
+
+/** Pi's read tool also tries these when the path is missing (macOS screenshot names). */
+function piReadVariants(path: string): string[] {
+  const amPm = path.replace(/ (AM|PM)\./gi, "\u202F$1.");
+  const nfd = path.normalize("NFD");
+  const curly = (p: string) => p.replace(/'/g, "\u2019");
+  return [...new Set([amPm, nfd, curly(path), curly(nfd)])].filter((p) => p !== path);
+}
+
+/** A path word in a shell command: the shell expands `~` and `$HOME`; relative to the cwd. */
+function shellPath(raw: string, ctx: EvalContext): string {
   let p = raw.trim();
   if (p.startsWith("@")) p = p.slice(1);
   if (p === "~") p = ctx.home;
   else if (p.startsWith("~/")) p = ctx.home + p.slice(1);
   else if (p.startsWith("$HOME/") || p === "$HOME") p = ctx.home + p.slice(5);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's literal ${HOME}.
+  else if (p.startsWith("${HOME}/") || p === "${HOME}") p = ctx.home + p.slice(7);
   return normalize(isAbsolute(p) ? p : resolve(ctx.cwd, p));
 }
 
@@ -195,8 +231,27 @@ function pathSuggestion(tool: string, path: string, ctx: EvalContext): Rule {
   return { tool, pattern, verdict: "allow", layer: "project" };
 }
 
+/** Checks the file a tool's path argument opens (see `piToolPath`). */
+function checkToolPath(tool: string, raw: string, rules: Rule[], ctx: EvalContext): Part {
+  let path: string;
+  try {
+    path = piToolPath(raw, ctx.cwd, ctx.home);
+  } catch (err) {
+    return {
+      verdict: "deny",
+      reason: `could not resolve the path ${JSON.stringify(raw)} (${(err as Error).message})`,
+      suggestion: null,
+    };
+  }
+  const paths = tool === "read" ? [path, ...piReadVariants(path)] : [path];
+  return worstOf(paths.map((p) => checkResolved(tool, p, rules, ctx)));
+}
+
 function checkPath(tool: string, raw: string, rules: Rule[], ctx: EvalContext): Part {
-  const lexical = resolvePath(raw, ctx);
+  return checkResolved(tool, shellPath(raw, ctx), rules, ctx);
+}
+
+function checkResolved(tool: string, lexical: string, rules: Rule[], ctx: EvalContext): Part {
   const candidates: Array<[string, EvalContext]> = [[lexical, ctx]];
   const real = ctx.realpath?.(lexical);
   if (real && ctx.realpath && real !== lexical) {
@@ -208,20 +263,36 @@ function checkPath(tool: string, raw: string, rules: Rule[], ctx: EvalContext): 
   let worst: Part | undefined;
   for (const [path, c] of candidates) {
     const rule = lookup(rules, tool, (p) => matchPath(expandPathPattern(p, c), path));
-    const part: Part = rule
-      ? {
-          verdict: rule.verdict,
-          rule,
-          reason: `${verbFor(rule.verdict)} by ${describeRule(rule)} for ${path}`,
-        }
-      : {
-          verdict: "undecided",
-          reason: `no rule matches ${tool} ${path}`,
-          suggestion: pathSuggestion(tool, path, c),
-        };
+    const part: Part =
+      rule?.verdict === "allow" && rule.pattern.startsWith("$CWD") && broadWorkspace(c.cwd, c.home)
+        ? {
+            verdict: "ask",
+            reason: `the session runs in your home folder or /, so ${describeRule(rule)} does not allow ${path}`,
+            suggestion: null,
+          }
+        : rule
+          ? {
+              verdict: rule.verdict,
+              rule,
+              reason: `${verbFor(rule.verdict)} by ${describeRule(rule)} for ${path}`,
+            }
+          : {
+              verdict: "undecided",
+              reason: `no rule matches ${tool} ${path}`,
+              suggestion: pathSuggestion(tool, path, c),
+            };
     if (!worst || RANK[part.verdict] > RANK[worst.verdict]) worst = part;
   }
   return worst as Part;
+}
+
+/**
+ * A session dir too broad for `$CWD` rules to mean "the project": the home folder or `/`.
+ * There, `$CWD/**` would allow writing `~/.zshrc`, so those rules ask instead.
+ */
+export function broadWorkspace(cwd: string, home: string): boolean {
+  const dir = resolve(cwd);
+  return dir === "/" || dir === resolve(home);
 }
 
 const verbFor = (v: RuleVerdict) => (v === "allow" ? "allowed" : v === "deny" ? "denied" : "asked");
@@ -256,6 +327,21 @@ function unwrap(words: string[]): { words: string[]; wrapped: boolean } {
   return { words: w, wrapped };
 }
 
+/**
+ * The rule for a command's words. A command run by its path (`/usr/bin/sudo`) also meets the
+ * ask and deny rules for its bare name; an allow for the bare name never applies to a path.
+ */
+function commandRule(bashRules: Rule[], words: string[]): Rule | undefined {
+  const rule = lookup(bashRules, "bash", (p) => matchCommand(p, words.join(" ")));
+  const head = words[0] ?? "";
+  if (!head.includes("/")) return rule;
+  const bare = [basename(head), ...words.slice(1)].join(" ");
+  const byName = lookup(bashRules, "bash", (p) => matchCommand(p, bare));
+  if (!byName || byName.verdict === "allow") return rule;
+  const rank = (r: Rule | undefined) => (r ? RANK[r.verdict] : RANK.undecided);
+  return rank(byName) > rank(rule) ? byName : rule;
+}
+
 function commandSuggestion(words: string[]): Rule {
   const [w0 = "", w1] = words;
   let pattern: string;
@@ -266,6 +352,7 @@ function commandSuggestion(words: string[]): Rule {
 }
 
 function worstOf(parts: Part[]): Part {
+  if (parts.length === 0) return { verdict: "ask", reason: "nothing to check", suggestion: null };
   return parts.reduce((a, b) => (RANK[b.verdict] > RANK[a.verdict] ? b : a));
 }
 
@@ -321,13 +408,15 @@ function checkSegment(
   depth: number,
 ): Part[] {
   const parts: Part[] = [];
-  const { words, wrapped } = unwrap(seg.words);
-  const text = words.join(" ");
+  const unwrapped = unwrap(seg.words);
+  // `env` or `nohup` alone (or only assignments) is a command too: `env` prints the environment.
+  const words = unwrapped.words.length > 0 ? unwrapped.words : seg.words;
+  const wrapped = unwrapped.wrapped;
   const shown = seg.words.join(" ");
 
   if (words.length > 0) {
     const outer = parts.length;
-    const rule = lookup(bashRules, "bash", (p) => matchCommand(p, text));
+    const rule = commandRule(bashRules, words);
     if (rule && !(rule.verdict === "allow" && (seg.dynamic || wrapped))) {
       parts.push({
         verdict: rule.verdict,
@@ -352,7 +441,8 @@ function checkSegment(
     }
 
     // A shell's -c string and eval's words run too: check them as commands.
-    const [head = "", ...rest] = words;
+    const [path = "", ...rest] = words;
+    const head = basename(path);
     let inner: string | undefined;
     if (SHELLS.has(head)) {
       const flag = rest.findIndex((w) => /^-[a-z]*c[a-z]*$/.test(w));
@@ -380,6 +470,13 @@ function checkSegment(
       if (!path || path.startsWith("-")) continue;
       const p = checkPath("read", path, rules, ctx);
       if (p.verdict === "deny") parts.push(p);
+      if (isGlob(word)) parts.push(...checkGlob(word, rules, ctx));
+    }
+
+    // A recursive read (`grep -r`, `rg`, `find`) over a folder that holds denied paths asks.
+    for (const root of recursiveRoots(words, ctx)) {
+      const denied = deniedInside("read", root, rules, ctx);
+      if (denied) parts.push(recursivePart(shown, denied));
     }
   }
 
@@ -392,12 +489,97 @@ function checkSegment(
       });
       continue;
     }
-    const target = resolvePath(r.target, ctx);
+    const target = shellPath(r.target, ctx);
     if (PATH_SAFE.has(target) || target.startsWith("/dev/fd/")) continue;
     parts.push(checkPath(r.op === "<" ? "read" : "write", r.target, rules, ctx));
   }
   return parts;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Globs and recursive reads
+
+const isGlob = (word: string) => /[*?[]/.test(word) || /\{[^}]*,[^}]*\}/.test(word);
+
+/** A glob word: every path it matches must pass the secret check, or the command can't be allowed. */
+function checkGlob(word: string, rules: Rule[], ctx: EvalContext): Part[] {
+  const pattern = shellPath(word, ctx);
+  const matches = ctx.glob?.(pattern);
+  if (!matches) {
+    return [
+      {
+        verdict: "undecided",
+        reason: `\`${word}\` is a glob ${ctx.glob ? "with too many matches to check" : "hamness can't expand here"}, so no rule can allow it`,
+        suggestion: null,
+      },
+    ];
+  }
+  return matches
+    .map((m) => checkResolved("read", m, rules, ctx))
+    .filter((p) => p.verdict === "deny");
+}
+
+const ALWAYS_RECURSIVE = new Set(["rg", "find", "fd", "tree", "ag", "du"]);
+/** Commands whose first word after the flags is a pattern, not a path. */
+const PATTERN_FIRST = new Set(["grep", "egrep", "fgrep", "rg", "ag", "fd"]);
+
+/** The folders a recursive read command walks; empty when it does not recurse. */
+function recursiveRoots(words: string[], ctx: EvalContext): string[] {
+  const head = basename(words[0] ?? "");
+  const rest = words.slice(1);
+  const flags = rest.filter((w) => w.startsWith("-"));
+  const recursive =
+    ALWAYS_RECURSIVE.has(head) ||
+    (["grep", "egrep", "fgrep"].includes(head) &&
+      flags.some((f) => /^-[A-Za-z]*[rR]/.test(f) || /^--(dereference-)?recursive$/.test(f))) ||
+    (head === "ls" && flags.some((f) => /^-[A-Za-z]*R/.test(f) || f === "--recursive"));
+  if (!recursive) return [];
+  const operands = rest.filter((w) => !w.startsWith("-") && !w.includes("$(…)"));
+  const paths = PATTERN_FIRST.has(head) ? operands.slice(1) : operands;
+  return (paths.length > 0 ? paths : ["."]).map((p) => shellPath(p, ctx));
+}
+
+/** Unescapes a pattern's fixed start (before any wildcard): the folder or file it names. */
+function fixedPrefix(pattern: string): string {
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i] as string;
+    if (c === "\\") {
+      out += pattern[++i] ?? "";
+      continue;
+    }
+    if ("*?{[".includes(c)) break;
+    out += c;
+  }
+  return out.replace(/\/+$/, "");
+}
+
+/** A denied path under `root` (a deny rule's fixed start inside it), for recursive reads. */
+function deniedInside(
+  tool: string,
+  root: string,
+  rules: Rule[],
+  ctx: EvalContext,
+): string | undefined {
+  const roots = [root];
+  const real = ctx.realpath?.(root);
+  if (real && real !== root) roots.push(real);
+  for (const rule of rules) {
+    if (rule.verdict !== "deny" || !matchCommand(rule.tool, tool)) continue;
+    const prefix = fixedPrefix(expandPathPattern(rule.pattern, ctx));
+    if (!prefix.startsWith("/")) continue; // `**/.env`: anywhere, checked file by file
+    for (const r of roots) {
+      if (r === "/" || prefix === r || prefix.startsWith(`${r}/`)) return prefix;
+    }
+  }
+  return undefined;
+}
+
+const recursivePart = (what: string, denied: string): Part => ({
+  verdict: "ask",
+  reason: `\`${what}\` searches a folder that holds ${denied}, which is denied`,
+  suggestion: null,
+});
 
 // ---------------------------------------------------------------------------------------------
 
@@ -420,8 +602,19 @@ export function evaluate(
   } else if (READ_TOOLS.has(call.tool) || WRITE_TOOLS.has(call.tool)) {
     const path = subjectPath(call.args) ?? (READ_TOOLS.has(call.tool) ? ctx.cwd : undefined);
     parts = path
-      ? [checkPath(call.tool, path, rules, ctx)]
+      ? [checkToolPath(call.tool, path, rules, ctx)]
       : [{ verdict: "ask", reason: `${call.tool} without a path`, suggestion: null }];
+    // grep and find walk the folder: one that holds denied paths asks.
+    if (path && (call.tool === "grep" || call.tool === "find")) {
+      let root: string | undefined;
+      try {
+        root = piToolPath(path, ctx.cwd, ctx.home);
+      } catch {
+        root = undefined;
+      }
+      const denied = root && deniedInside(call.tool, root, rules, ctx);
+      if (denied) parts.push(recursivePart(`${call.tool} ${path}`, denied));
+    }
   } else {
     const rule = lookup(rules, call.tool, (p) => p === "*" || p === "**");
     parts = [

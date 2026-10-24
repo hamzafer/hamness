@@ -1,6 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { projectKey, projectRoot } from "../compat/paths.ts";
+import { type Json, readJson, writeJsonAtomic } from "../config/json.ts";
+import { userConfigFile } from "../config/paths.ts";
 import type { SafetyMode } from "../events/types.ts";
+import { addTrusted, allowItem, isTrusted } from "../trust/index.ts";
 import { defaultRules } from "./defaults.ts";
 import { parsePermission, type Rule } from "./rules.ts";
 
@@ -25,40 +28,23 @@ export const SAFETY_MODES: readonly SafetyMode[] = ["ask", "auto", "yolo"];
 export interface SafetyConfig {
   mode: SafetyMode;
   approvalTimeoutMs: number;
-  /** Defaults, then user rules, then project rules. */
+  /** Defaults, then user rules, then project rules (allow rules only once trusted). */
   rules: Rule[];
+  /** Project allow rules left out because the repo has not trusted them (`hamness trust`). */
+  untrusted: Rule[];
 }
 
 export const DEFAULT_MODE: SafetyMode = "auto";
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 15 * 60_000;
 
-export const userConfigPath = (dataDir: string) => join(dataDir, "config.json");
+export const userConfigPath = userConfigFile;
 
-/** The repo root (nearest folder with `.git`) holds `.hamness/`; outside a repo, the cwd does. */
+/**
+ * The project root (`projectRoot`: the repo root, the main repo's for a worktree) holds
+ * `.hamness/`; outside a repo, the cwd does.
+ */
 export function projectConfigPath(cwd: string): string {
-  let dir = cwd;
-  for (;;) {
-    if (existsSync(join(dir, ".git"))) return join(dir, ".hamness", "config.json");
-    const up = dirname(dir);
-    if (up === dir) return join(cwd, ".hamness", "config.json");
-    dir = up;
-  }
-}
-
-type Json = Record<string, unknown>;
-
-function readJson(path: string): Json | undefined {
-  if (!existsSync(path)) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    throw new Error(`${path}: not valid JSON (${(err as Error).message})`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${path}: must hold a JSON object`);
-  }
-  return parsed as Json;
+  return join(projectRoot(cwd), ".hamness", "config.json");
 }
 
 function safetyBlock(path: string, file: Json | undefined): Json {
@@ -93,19 +79,29 @@ export function loadSafetyConfig(dataDir: string, cwd: string): SafetyConfig {
     }
   };
 
+  // A repo's allow rules loosen safety, so they wait for the user's trust (ADR 0020).
+  const key = projectKey(cwd);
+  const projectRules = parse(projectPath, project, "project");
+  const isTrustedRule = (r: Rule) =>
+    r.verdict !== "allow" || isTrusted(dataDir, key, "safety", allowItem(r.tool, r.pattern));
+
   return {
     mode: mode as SafetyMode,
     approvalTimeoutMs: timeoutSec === undefined ? DEFAULT_APPROVAL_TIMEOUT_MS : timeoutSec * 1000,
     rules: [
       ...defaultRules(),
       ...parse(userPath, user, "user"),
-      ...parse(projectPath, project, "project"),
+      ...projectRules.filter(isTrustedRule),
     ],
+    untrusted: projectRules.filter((r) => !isTrustedRule(r)),
   };
 }
 
-/** Appends rules to the project config ("allow always"). A pattern already there moves to the end. */
-export function addProjectRules(cwd: string, rules: Rule[]): string {
+/**
+ * Appends rules to the project config ("allow always"). A pattern already there moves to the
+ * end. The user chose them, so their allow rules are trusted for the repo as they are saved.
+ */
+export function addProjectRules(dataDir: string, cwd: string, rules: Rule[]): string {
   const path = projectConfigPath(cwd);
   const file = readJson(path) ?? {};
   const safety = { ...safetyBlock(path, file) };
@@ -124,10 +120,14 @@ export function addProjectRules(cwd: string, rules: Rule[]): string {
   safety.permission = permission;
   file.safety = safety;
 
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`);
-  renameSync(tmp, path);
+  writeJsonAtomic(path, file, 0o644);
+  const allows = rules.filter((r) => r.verdict === "allow");
+  addTrusted(
+    dataDir,
+    projectKey(cwd),
+    "safety",
+    allows.map((r) => allowItem(r.tool, r.pattern)),
+  );
   return path;
 }
 

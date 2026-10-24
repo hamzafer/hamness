@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { ancestorsDown, type ClaudeEnv, claudeDirOf, repoRoot } from "./paths.ts";
 
@@ -115,6 +115,14 @@ function loadSkill(file: string, scope: CompatSkill["scope"]): CompatSkill {
   };
 }
 
+function real(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 export function discoverSkills(opts: DiscoverSkillsOptions): SkillsResult {
   const cwd = resolve(opts.cwd);
   const root = repoRoot(cwd);
@@ -134,6 +142,13 @@ export function discoverSkills(opts: DiscoverSkillsOptions): SkillsResult {
       ? [[join(root, ".hamness", "skills"), "project"] as [string, CompatSkill["scope"]]]
       : []),
   ];
+
+  // A repo skill (file and folder) must resolve inside the repo, like instruction files.
+  const realRoot = real(root ?? cwd);
+  const inside = (p: string) => {
+    const rel = relative(realRoot, p);
+    return !rel.startsWith("..") && !isAbsolute(rel);
+  };
 
   const skills: CompatSkill[] = [];
   const skipped: SkillsResult["skipped"] = [];
@@ -158,6 +173,13 @@ export function discoverSkills(opts: DiscoverSkillsOptions): SkillsResult {
       }
       if (seen.has(key)) continue;
       seen.add(key);
+      if (scope === "project" && !(inside(key) && inside(real(join(folder, entry))))) {
+        skipped.push({
+          path: file,
+          reason: "links outside the project; repo skills must stay inside the repo",
+        });
+        continue;
+      }
       let skill: CompatSkill;
       try {
         skill = loadSkill(file, scope);

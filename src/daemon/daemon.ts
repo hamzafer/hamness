@@ -6,7 +6,7 @@ import { dashboardMount } from "../api/dashboard-routes.ts";
 import { sessionRoutes } from "../api/routes.ts";
 import { assertPortFree, startApiServer } from "../api/server.ts";
 import { claudePermissionMode, createClaudeHooks } from "../compat/hooks.ts";
-import { claudeConfigDir } from "../compat/paths.ts";
+import { claudeConfigDir, claudeManagedDir, managedDirOption } from "../compat/paths.ts";
 import { dataPaths, ensureDataDir } from "../config/paths.ts";
 import { type HamnessDb, openDatabase } from "../db/open.ts";
 import type { HamnessEvent } from "../events/types.ts";
@@ -35,6 +35,8 @@ export interface DaemonOptions {
   contextFiles?: boolean;
   /** Claude Code's config dir, for its hooks. Default `CLAUDE_CONFIG_DIR` or `~/.claude`. */
   claudeConfigDir?: string;
+  /** Claude Code's managed policy folder, for managed hooks. Default the platform's; tests set it. */
+  claudeManagedDir?: string;
 }
 
 export interface RunningDaemon {
@@ -86,6 +88,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     const hooks = createClaudeHooks({
       claudeDir: opts.claudeConfigDir ?? claudeConfigDir(process.env),
       dataDir: paths.dataDir,
+      ...managedDirOption(opts.claudeManagedDir ?? claudeManagedDir({ env: process.env })),
     });
     let hubRef: SessionHub | undefined;
     const judge = opts.safety

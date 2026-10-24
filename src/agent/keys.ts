@@ -1,6 +1,7 @@
-import { chmodSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { findEnvKeys } from "@earendil-works/pi-ai/compat";
+import { writeJsonAtomic } from "../config/json.ts";
 import { type Env, ensureDataDir } from "../config/paths.ts";
 
 /**
@@ -64,11 +65,7 @@ export function saveKey(dataDir: string, provider: string, key: string): void {
   ensureDataDir(dataDir);
   const keys = readKeyFile(dataDir);
   keys[provider] = value;
-  const path = keyFilePath(dataDir);
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
+  writeJsonAtomic(keyFilePath(dataDir), keys, 0o600);
 }
 
 /** The env var that holds a key for `provider` in `env`, if one is set. Never returns the value. */

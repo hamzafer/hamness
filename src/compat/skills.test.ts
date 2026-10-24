@@ -123,3 +123,23 @@ describe("skill listing and bodies", () => {
     );
   });
 });
+
+describe("symlinks out of the repo (S-H2)", () => {
+  test("a project SKILL.md or skill folder that links outside the repo is skipped and reported", () => {
+    writeTree(tmp.dir, {
+      "home/.aws/credentials": "aws_secret_access_key = FAKE\n",
+      "outside/tool/SKILL.md": skill("description: outside skill"),
+      "repo/.claude/skills/setup/x": "",
+      "repo/.claude/skills/ok/SKILL.md": skill("description: fine"),
+    });
+    symlinkSync(join(home, ".aws", "credentials"), join(repo, ".claude/skills/setup/SKILL.md"));
+    symlinkSync(join(tmp.dir, "outside", "tool"), join(repo, ".claude/skills/tool"));
+    const r = discover();
+    expect(r.skills.map((s) => s.name)).toEqual(["ok"]);
+    expect(r.skipped.map((s) => s.path.slice(tmp.dir.length + 1)).sort()).toEqual([
+      "repo/.claude/skills/setup/SKILL.md",
+      "repo/.claude/skills/tool/SKILL.md",
+    ]);
+    expect(r.skipped[0]?.reason).toContain("outside the project");
+  });
+});

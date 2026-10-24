@@ -93,10 +93,11 @@ A task is **verified** only when at least one piece passed; otherwise it closes 
 
 Every tool call passes **allow / ask / deny rules** before it runs (ADR 0006). The defaults:
 
-- Reads are allowed, except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys).
-- Writes inside the session's dir are allowed.
-- `bash` asks, except a short read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...). `rm -rf` and force pushes ask; `sudo` and `curl | sh` are denied.
-- Compound commands (`&&`, `;`, `|`, subshells, `$(...)`) are checked part by part, and the strictest part wins.
+- Reads are allowed, except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys). A recursive read (`grep -r`, `rg`, `find`, the grep and find tools) over a folder that holds them asks.
+- Writes inside the session's dir are allowed, except `.env`, `.git`, `.hamness`, `.claude/settings*.json` and `.mcp.json`, which ask. When the session runs in your home folder or `/`, writes there ask too.
+- `bash` asks, except a short read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...). `rm -rf` and force pushes ask; `sudo` and `curl | sh` are denied, also when run by path (`/usr/bin/sudo`).
+- Compound commands (`&&`, `;`, `|`, subshells, `$(...)`, `${x:-$(...)}`) are checked part by part, and the strictest part wins. Globs are expanded and every match is checked (`cat ~/.ss?/id_rsa` is denied).
+- Paths are resolved the way Pi's tools open them (`file://` URLs, `~`, `@`, Unicode spaces).
 
 **Modes** decide what happens to calls no rule decides (user config only):
 
@@ -110,7 +111,7 @@ Every tool call passes **allow / ask / deny rules** before it runs (ADR 0006). T
 
 **Approvals** show above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. No answer before the timeout (15 minutes) is a deny. Every decision is stored with its source (`rule`, `judge`, `hook`, `user`, `mode`) and reason; `hamness audit` lists them.
 
-Rules go under `safety` in your config or the project's, as globs where the last match wins. A project rule can allow what nothing else decides but never loosens an `ask` or `deny`. Mode, timeout and judge settings are read from your config only:
+Rules go under `safety` in your config or the project's, as globs where the last match wins. A project rule can allow what nothing else decides but never loosens an `ask` or `deny`, and a project's allow rules apply only once you trust the repo (see [Repo trust](#repo-trust)); its ask and deny rules always apply. Mode, timeout and judge settings are read from your config only:
 
 ```json
 {
@@ -127,14 +128,26 @@ Rules go under `safety` in your config or the project's, as globs where the last
 }
 ```
 
+## Repo trust
+
+A repo can bring things that loosen safety or run code: allow rules and proof commands in `.hamness/config.json`, Claude Code hooks in `.claude/settings*.json`, and MCP servers in `.mcp.json`. None of them take effect until you trust the repo (ADR 0020):
+
+```sh
+hamness trust --show   # what this repo brings, and what is new or changed since you trusted it
+hamness trust          # trust it all, as it is now
+hamness trust --revoke # forget it
+```
+
+Each item is trusted as it is, so a hook, rule or server that is added or edited later waits until you trust again. The agent's own writes to those files ask first. Trust is kept in your config, never in the repo, and a subagent's worktree shares its repo's trust.
+
 ## Claude Code compatibility
 
 hamness reads your Claude Code setup as it is and never changes it (ADRs 0008, 0016, 0017). `CLAUDE_CONFIG_DIR` picks another config dir, as in Claude Code. `hamness compat` shows what a session in this dir picks up.
 
 - **Instructions:** managed `CLAUDE.md`, `~/.claude/CLAUDE.md` and `~/.claude/rules/`, then `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/` and `CLAUDE.local.md` in each folder from `/` down to the session's dir. `AGENTS.md` loads when none of those exist (or always, with Claude Code's `claude-md-and-agents-md` setting). `@path` imports expand; a repo file can't import from outside the repo.
 - **Skills:** `<name>/SKILL.md` in `~/.claude/skills`, `<data dir>/skills`, `.claude/skills` up to the repo root and `.hamness/skills`. The prompt lists names and descriptions; the `skill` tool loads a body. Fields that would loosen safety or switch models (`allowed-tools`, `model`, ...) are not honored.
-- **MCP servers:** user and local servers from `~/.claude.json` start. A repo's `.mcp.json` servers wait until you run `hamness compat approve` in that repo. Tools are named `mcp__<server>__<tool>` and pass the safety rules. stdio and HTTP only.
-- **Hooks:** `command` hooks for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse and Stop run with Claude Code's matchers, JSON input and output, exit code 2 and timeouts. A PreToolUse deny is final; an allow skips the ask but never beats a rule deny. Hooks in `~/.claude/settings.json` always run; a project's run once you trust the repo with `hamness hooks trust`.
+- **MCP servers:** user and local servers from `~/.claude.json` start. A repo's `.mcp.json` servers wait until you trust the repo (`hamness trust`). Tools are named `mcp__<server>__<tool>` and pass the safety rules. stdio and HTTP only.
+- **Hooks:** `command` hooks for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse and Stop run with Claude Code's matchers, JSON input and output, exit code 2 and timeouts. A PreToolUse deny is final; an allow skips the ask but never beats a rule deny. Hooks in managed settings and `~/.claude/settings.json` always run; a project's (from `.claude/settings.json` and `settings.local.json` at the repo root and in the session's dir) run as you trusted them with `hamness trust`.
 - **Subagents:** the agent can start subagents in the background (`agent_start`, `agent_status`, `agent_wait`), optionally on another model or in their own git worktree (`<repo>.hamness-worktrees/`, branch `hamness/<name>-<id>`). Each passes the same rules, shows as a rail row, and its cost counts toward the parent's task. `hamness worktrees` lists them; `--prune` removes finished ones (ADR 0015).
 
 ## Stats, import and the dashboard
@@ -165,8 +178,9 @@ Imported history has no tasks, and its cost is estimated from token counts. The 
 | `hamness daemon` | run the daemon in the foreground |
 | `hamness stats`, `hamness dashboard`, `hamness import` | see [Stats](#stats-import-and-the-dashboard) |
 | `hamness audit [--session <id>] [--json]` | recent safety decisions and why |
+| `hamness trust [--show or --revoke]` | trust a repo's allow rules, proof commands, hooks and MCP servers |
 | `hamness compat [approve or revoke]` | the Claude Code setup found here; approve project MCP servers |
-| `hamness hooks [trust]` | the Claude Code hooks found here; trust a repo's hooks |
+| `hamness hooks [trust]` | the Claude Code hooks found here (`trust` is `hamness trust`) |
 | `hamness worktrees [--prune]` | subagent worktrees |
 
 Errors are one line that says what to do; set `HAMNESS_DEBUG=1` to also print the stack trace.
@@ -177,7 +191,7 @@ Everything hamness keeps is in its **data dir**: `~/Library/Application Support/
 
 | Path | Holds |
 |---|---|
-| `<data dir>/config.json` | your config: `safety` (mode, rules, judge), approved project MCP servers, trusted hook repos |
+| `<data dir>/config.json` | your config: `safety` (mode, rules, judge) and `trust` (what you trusted per repo) |
 | `<repo>/.hamness/config.json` | the project's rules ("allow always" writes here) |
 | `<data dir>/keys.json` | API keys (mode 0600; env vars win) |
 | `<data dir>/hamness.sqlite` | sessions, tasks, evidence, model calls, decisions, imported history |
