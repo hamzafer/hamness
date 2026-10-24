@@ -1,0 +1,5 @@
+# OpenTUI's Solid renderer compiles JSX through a Bun plugin.
+preload = ["@opentui/solid/preload"]
+
+[test]
+preload = ["@opentui/solid/preload"]
