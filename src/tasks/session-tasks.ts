@@ -3,6 +3,7 @@ import type { TaskEvent } from "../events/types.ts";
 import type { GuardedCall, SafetyVerdict } from "../safety/index.ts";
 import type { GhRunner } from "./checkers/index.ts";
 import { parseClaim } from "./claims.ts";
+import { decideGate, type GateResult } from "./gate.ts";
 import { proveClaim } from "./proof.ts";
 import { TaskStore } from "./store.ts";
 import type { CheckResult, TaskView } from "./types.ts";
@@ -82,12 +83,21 @@ export class SessionTasks {
     this.emitStart(this.current);
   }
 
+  /** Whether the open (or last) task would be verified now, and why (`gate.ts`). */
+  gate(taskId = this.current ?? this.store.latestFor(this.opts.sessionId)): GateResult {
+    if (!taskId) return { verified: false, reason: "there is no task" };
+    return decideGate(this.store.gateEvidence(taskId), this.store.lastFileChange(taskId));
+  }
+
   endTurn(): void {
     const open = this.openTask();
     if (open?.implicit) {
-      const { evidence, passed } = this.store.evidenceCounts(open.id);
-      if (passed > 0) this.closeAs(open.id, "verified");
-      else if (evidence > 0 || this.store.changedFiles(open.id) || this.store.hasSubagents(open.id))
+      if (this.gate(open.id).verified) this.closeAs(open.id, "verified");
+      else if (
+        this.store.failedCount(open.id) > 0 ||
+        this.store.changedFiles(open.id) ||
+        this.store.hasSubagents(open.id)
+      )
         this.closeAs(open.id, "unverified");
       else {
         this.store.drop(open.id);
@@ -123,10 +133,11 @@ export class SessionTasks {
   /** `task_done(summary)`: the proof gate. */
   done(summary: string): TaskView {
     const open = this.requireOpen("call task_start first");
-    const { passed } = this.store.evidenceCounts(open.id);
-    return this.closeAs(open.id, passed > 0 ? "verified" : "unverified", {
+    const gate = this.gate(open.id);
+    const task = this.closeAs(open.id, gate.verified ? "verified" : "unverified", {
       summary: summary.trim() || undefined,
     });
+    return gate.verified ? task : { ...task, unverifiedReason: gate.reason };
   }
 
   /** `/override [reason]`: the user accepts a task without proof. */
@@ -174,6 +185,7 @@ export class SessionTasks {
         cwd: this.opts.cwd,
         toolCallId: opts.toolCallId ?? "",
         taskStartedAt: this.store.startedAt(open.id),
+        writtenByAgent: (path) => this.store.writtenPaths(open.id, this.opts.cwd).has(path),
         safety: this.opts.safety,
         gh: this.opts.gh,
         fetch: this.opts.fetch,

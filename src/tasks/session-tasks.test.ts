@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { ChatStore } from "../agent/store.ts";
 import { type HamnessDb, openDatabase } from "../db/open.ts";
-import { SessionTasks, type TaskEventBody, TaskStateError } from "./session-tasks.ts";
+import {
+  SessionTasks,
+  type SessionTasksOptions,
+  type TaskEventBody,
+  TaskStateError,
+} from "./session-tasks.ts";
 
 /** Real checks that pass and fail: the shape test refuses `true` and `exit 1` (ADR 0019). */
 const PASS = "bun -e 'process.exit(0)'";
@@ -28,8 +33,8 @@ afterEach(() => {
   home.cleanup();
 });
 
-function tasks() {
-  return new SessionTasks({
+function optsFor(): SessionTasksOptions {
+  return {
     db,
     sessionId: ids.sessionId,
     cwd: home.dir,
@@ -39,7 +44,11 @@ function tasks() {
     fetch: async () => {
       throw new Error("no network in tests");
     },
-  });
+  };
+}
+
+function tasks() {
+  return new SessionTasks(optsFor());
 }
 
 /** A model call counted toward the current task, as the hub records one. */
@@ -369,5 +378,108 @@ describe("file evidence uses the task window", () => {
     t.start("make a report");
     writeFileSync(join(home.dir, "report.md"), "# report");
     expect((await t.prove({ kind: "file", path: "report.md" })).result.status).toBe("passed");
+  });
+});
+
+/** A write or edit tool call on the current task, finished unless `running`. */
+function fileTool(t: SessionTasks, tool: "write" | "edit", path: string, running = false) {
+  const id = chat.addToolCall(
+    { ...ids, taskId: t.attributionId() },
+    { messageId: undefined, tool, argsJson: JSON.stringify({ path, content: "x" }) },
+  );
+  if (!running) chat.finishToolCall(id, { status: "ok", summary: "ok" });
+  return id;
+}
+
+/** Waits a tick so the next row's timestamp is later (rows are stamped in ms). */
+const tick = () => Bun.sleep(3);
+
+describe("the gate looks at the latest evidence (S-M5)", () => {
+  test("files changed after the passing check: unverified, until it passes again", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    await tick();
+    fileTool(t, "edit", "src/a.ts");
+    await tick();
+    expect(t.gate().verified).toBe(false);
+    expect(t.gate().reason).toContain("changed after");
+    await t.prove({ kind: "command", command: PASS });
+    expect(t.done("fixed").outcome).toBe("verified");
+  });
+
+  test("an edit still running when the check started does not count as before it", async () => {
+    const t = tasks();
+    t.start("fix");
+    fileTool(t, "write", "src/a.ts", true);
+    await t.prove({ kind: "command", command: PASS });
+    const done = t.done("fixed");
+    expect(done.outcome).toBe("unverified");
+  });
+
+  test("a later failure wins over an earlier pass", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    await t.prove({ kind: "command", command: FAIL });
+    expect(t.done("fixed").outcome).toBe("unverified");
+  });
+
+  test("a check that could not run (error) does not change the outcome", async () => {
+    const t = new SessionTasks({
+      ...optsFor(),
+      safety: async (call) =>
+        String(call.args.command).includes("exit(0)")
+          ? { allow: true }
+          : { allow: false, reason: "denied" },
+    });
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    const blocked = await t.prove({ kind: "command", command: FAIL });
+    expect(blocked.result.status).toBe("error");
+    expect(t.done("fixed").outcome).toBe("verified");
+  });
+});
+
+describe("file evidence the agent wrote itself is weak (S-H4)", () => {
+  test("alone it does not verify; next to a passing command it is fine", async () => {
+    const t = tasks();
+    t.start("make a report");
+    fileTool(t, "write", "report.md");
+    writeFileSync(join(home.dir, "report.md"), "# report\n");
+    await tick();
+    const file = await t.prove({ kind: "file", path: "report.md" });
+    expect(file.result.status).toBe("passed");
+    expect(file.result.details.weak).toBe(true);
+    expect(file.result.summary).toContain("weak");
+    expect(t.gate().verified).toBe(false);
+    expect(t.gate().reason).toContain("weak");
+    await t.prove({ kind: "command", command: PASS });
+    expect(t.done("made").outcome).toBe("verified");
+  });
+
+  test("a file a command produced is not weak", async () => {
+    const t = tasks();
+    t.start("screenshot");
+    writeFileSync(join(home.dir, "shot.png"), "png");
+    const file = await t.prove({ kind: "file", path: "shot.png" });
+    expect(file.result.details.weak).toBeUndefined();
+    expect(t.done("done").outcome).toBe("verified");
+  });
+});
+
+describe("implicit tasks and checks that could not run (R-L3)", () => {
+  test("a turn whose only evidence is an error and no edits is dropped", async () => {
+    const t = new SessionTasks({
+      ...optsFor(),
+      safety: async () => ({ allow: false, reason: "denied" }),
+    });
+    t.beginTurn("try");
+    const id = t.attributionId() as string;
+    const r = await t.prove({ kind: "command", command: PASS });
+    expect(r.result.status).toBe("error");
+    t.endTurn();
+    expect(row(id)).toBeNull();
+    expect(db.sqlite.query("SELECT count(*) AS n FROM evidence").get()).toEqual({ n: 0 });
   });
 });

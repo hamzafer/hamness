@@ -45,6 +45,8 @@ export interface TaskView {
   endedAt?: number;
   /** Wall time, start to end (or to now while open). */
   durationMs: number;
+  /** Why the gate said no; only on the view `task_done` returns for an unverified task. */
+  unverifiedReason?: string;
 }
 
 /** A user action on the session's task, from the TUI's slash commands. */

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CheckResult, EvidenceClaim } from "../types.ts";
 import type { CheckContext } from "./context.ts";
@@ -45,10 +45,18 @@ export async function checkFile(claim: FileClaim, ctx: CheckContext): Promise<Ch
       details,
     };
   }
+  // ADR 0019: a file the agent wrote with its own write / edit tools is weak evidence.
+  let real = path;
+  try {
+    real = realpathSync(path);
+  } catch {}
+  const weak = ctx.writtenByAgent?.(real) === true || ctx.writtenByAgent?.(path) === true;
   return {
     status: "passed",
-    summary: `${claim.path}: ${st.size} bytes, sha256 ${sha256.slice(0, 12)}`,
-    details: { ...details, sha256 },
+    summary: `${claim.path}: ${st.size} bytes, sha256 ${sha256.slice(0, 12)}${
+      weak ? " (weak: the agent wrote it itself, so it does not verify alone)" : ""
+    }`,
+    details: { ...details, sha256, ...(weak ? { weak: true } : {}) },
   };
 }
 

@@ -1,5 +1,8 @@
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
+import type { GateEvidence } from "./gate.ts";
 import type { EvidenceClaim, TaskOutcome, TaskView } from "./types.ts";
 
 interface TaskRow {
@@ -68,6 +71,8 @@ export class TaskStore {
       for (const table of ["messages", "model_calls", "tool_calls", "agents"]) {
         this.sql.query(`UPDATE ${table} SET task_id = NULL WHERE task_id = ?`).run(id);
       }
+      // Checks that could not run (R-L3): with no task left they belong to nothing.
+      this.sql.query("DELETE FROM evidence WHERE task_id = ?").run(id);
       this.sql.query("DELETE FROM tasks WHERE id = ? AND implicit = 1").run(id);
     })();
   }
@@ -123,6 +128,87 @@ export class TaskStore {
       )
       .get(taskId);
     return { evidence: r?.evidence ?? 0, passed: r?.passed ?? 0 };
+  }
+
+  /** How many pieces of evidence failed (not `error`: that one checked nothing). */
+  failedCount(taskId: string): number {
+    return (
+      this.sql
+        .query<{ n: number }, [string]>(
+          "SELECT count(*) AS n FROM evidence WHERE task_id = ? AND status = 'failed'",
+        )
+        .get(taskId)?.n ?? 0
+    );
+  }
+
+  /** The task's evidence as the gate reads it (`gate.ts`). */
+  gateEvidence(taskId: string): GateEvidence[] {
+    return this.sql
+      .query<
+        {
+          id: string;
+          status: GateEvidence["status"];
+          created_at: number;
+          result_json: string | null;
+        },
+        [string]
+      >("SELECT id, status, created_at, result_json FROM evidence WHERE task_id = ?")
+      .all(taskId)
+      .map((r) => {
+        let result: { weak?: unknown; summary?: unknown } = {};
+        try {
+          result = r.result_json ? JSON.parse(r.result_json) : {};
+        } catch {}
+        return {
+          id: r.id,
+          status: r.status,
+          createdAt: r.created_at,
+          weak: result.weak === true,
+          ...(typeof result.summary === "string" ? { summary: result.summary } : {}),
+        };
+      });
+  }
+
+  /**
+   * When the task last changed a file through write / edit, by any of its agents. A call still
+   * running counts as now (Infinity); a denied one changed nothing. Undefined: no changes.
+   */
+  lastFileChange(taskId: string): number | undefined {
+    const r = this.sql
+      .query<{ running: number; last: number | null }, [string]>(
+        `SELECT COALESCE(SUM(ended_at IS NULL), 0) AS running,
+           MAX(COALESCE(ended_at, started_at, created_at)) AS last
+         FROM tool_calls WHERE task_id = ? AND status != 'denied'
+           AND tool IN (${MUTATING_TOOLS.map((t) => `'${t}'`).join(", ")})`,
+      )
+      .get(taskId);
+    if (!r || r.last === null) return undefined;
+    return r.running > 0 ? Number.POSITIVE_INFINITY : r.last;
+  }
+
+  /** The real paths the task's write / edit calls named, resolved against `cwd`. */
+  writtenPaths(taskId: string, cwd: string): Set<string> {
+    const rows = this.sql
+      .query<{ args_json: string | null }, [string]>(
+        `SELECT args_json FROM tool_calls WHERE task_id = ? AND status != 'denied'
+           AND tool IN (${MUTATING_TOOLS.map((t) => `'${t}'`).join(", ")})`,
+      )
+      .all(taskId);
+    const out = new Set<string>();
+    for (const r of rows) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(r.args_json ?? "{}");
+      } catch {}
+      const p = args.path ?? args.file_path;
+      if (typeof p !== "string" || !p) continue;
+      const abs = resolve(cwd, p.startsWith("@") ? p.slice(1) : p);
+      out.add(abs);
+      try {
+        out.add(realpathSync(abs));
+      } catch {}
+    }
+    return out;
   }
 
   /** Whether the task started subagents (ADR 0015): their rows keep counting toward it. */

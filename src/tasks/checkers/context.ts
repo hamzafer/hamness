@@ -14,6 +14,8 @@ export interface CheckContext {
   toolCallId: string;
   /** Task start (ms): a file must be written at or after it. */
   taskStartedAt: number;
+  /** Whether the agent wrote this (real, absolute) path with its own write / edit tools in the task. */
+  writtenByAgent?: (path: string) => boolean;
   /** The session's safety check, bound to its approval prompt. Throwing counts as a deny. */
   safety: (call: GuardedCall) => Promise<SafetyVerdict>;
   gh: GhRunner;
