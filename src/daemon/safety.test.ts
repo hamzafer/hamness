@@ -404,6 +404,8 @@ describe("safety in the daemon", () => {
     const res = await call("POST", `/v1/sessions/${s.session.id}/judge`, { paused: false });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ judge: "on" });
+    // The event comes over the socket, maybe after the response.
+    await log.waitFor(() => log.ofType("safety.judge").length === 2);
     expect(log.ofType("safety.judge").at(-1)).toMatchObject({ state: "on" });
     const again = await call("GET", `/v1/sessions/${s.session.id}`);
     expect(((await again.json()) as SessionSnapshot).session.judge).toBe("on");
