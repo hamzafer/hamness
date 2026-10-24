@@ -31,7 +31,9 @@ Runs on Bun. Multi-model (Claude by default). Reads your Claude Code setup (CLAU
 bun install -g github:hamzafer/hamness
 ```
 
-This links `hamness` into Bun's global bin dir (`~/.bun/bin`; add it to your `PATH` if Bun says so). It is not on npm yet. From a clone, `bun install && bun link` does the same.
+This links `hamness` into Bun's global bin dir (`~/.bun/bin`; add it to your `PATH` if Bun says so). It is not on npm yet. From a clone, `bun install --frozen-lockfile && bun link` does the same.
+
+A global install resolves dependencies afresh: it doesn't read hamness's `bun.lock` or `bunfig.toml`. Direct dependencies are exact pins either way, but their own dependencies take the newest version their ranges allow. For the exact locked set, install from a clone as above. To hold a global install to a minimum release age too, put `[install]` `minimumReleaseAge = 259200` in `~/.bunfig.toml`.
 
 **2. Add a key.** Chat uses Claude through an Anthropic API key (Claude subscriptions are not used, see ADR 0011):
 
