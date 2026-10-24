@@ -2,4 +2,4 @@
 preload = ["@opentui/solid/preload"]
 
 [test]
-preload = ["@opentui/solid/preload"]
+preload = ["@opentui/solid/preload", "./test/support/isolate.ts"]

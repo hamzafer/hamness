@@ -11,7 +11,7 @@ import { tempHome } from "../../test/support/temp-home.ts";
 import { openDatabase } from "../db/open.ts";
 import type { AgentEvent } from "../events/types.ts";
 import { createSafetyService, type SafetyCheck } from "../safety/index.ts";
-import { SessionHub } from "./session-hub.ts";
+import { SessionHub, type SessionHubOptions } from "./session-hub.ts";
 
 let home: ReturnType<typeof tempHome>;
 let work: string;
@@ -35,7 +35,9 @@ afterEach(() => {
   home.cleanup();
 });
 
-function startHub(opts: { safety?: SafetyCheck; maxSubagents?: number } = {}) {
+function startHub(
+  opts: { safety?: SafetyCheck; maxSubagents?: number; hooks?: SessionHubOptions["hooks"] } = {},
+) {
   hub = new SessionHub({
     db,
     dataDir: join(home.dir, "data"),
@@ -413,5 +415,42 @@ describe("subagents", () => {
     expect(calls).toEqual([{ model: "claude-haiku-5-5" }]);
     const final = h.snapshot(snap.session.id)?.items.at(-1);
     expect(final?.kind === "message" && final.text).toContain("unknown model fake/nope");
+  });
+
+  test("a subagent's run fires none of the session's prompt, tool-result or stop hooks", async () => {
+    const seen: string[] = [];
+    const hooks: NonNullable<SessionHubOptions["hooks"]> = {
+      sessionStart: async () => ({}),
+      userPromptSubmit: async (_s, prompt) => {
+        seen.push(`prompt ${prompt}`);
+        return {};
+      },
+      postToolUse: async (_s, call) => {
+        seen.push(`post ${call.tool}`);
+        return {};
+      },
+      stop: async () => {
+        seen.push("stop");
+        return {};
+      },
+    };
+    fake.route((ctx): FakeReply => {
+      if (firstUser(ctx) === "peek") {
+        return replies(ctx) === 0
+          ? { tools: [{ name: "read", args: { path: "." } }] }
+          : { text: "peeked" };
+      }
+      const n = replies(ctx);
+      if (n === 0)
+        return { tools: [{ name: "agent_start", args: { name: "peeker", prompt: "peek" } }] };
+      if (n === 1)
+        return { tools: [{ name: "agent_wait", args: { id: idsIn(toolResults(ctx))[0] } }] };
+      return { text: "done" };
+    });
+    const h = startHub({ hooks });
+    const snap = await h.attach(work);
+    h.prompt(snap.session.id, "go");
+    await until(mainIdle(snap.session.id, snap.session.mainAgentId as string));
+    expect(seen).toEqual(["prompt go", "post agent_start", "post agent_wait", "stop"]);
   });
 });

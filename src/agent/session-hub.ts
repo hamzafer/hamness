@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { type ClaudeHooks, claudePermissionMode, type HookSession } from "../compat/hooks.ts";
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
 import type {
@@ -75,9 +76,13 @@ export interface SessionHubOptions {
   /** How `ci` evidence runs `gh`, and how `url` evidence fetches. Tests pass fakes. */
   gh?: GhRunner;
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
+  /** Claude Code hooks for session starts, prompts, tool results and stops (PreToolUse is in `safety`). */
+  hooks?: Omit<ClaudeHooks, "preToolUse">;
 }
 
 export const DEFAULT_MAX_SUBAGENTS = 4;
+/** Stop hooks may continue a turn this many times in a row (Claude Code's cap). */
+export const STOP_HOOK_CAP = 8;
 
 /** Pi's "No API key" error points at its own `/login`; say what works in hamness instead. */
 function explainError(message: string, dataDir: string): string {
@@ -136,6 +141,18 @@ interface LiveSession extends AgentState {
   subagents: Map<string, Subagent>;
   /** The session's tasks: the per-turn task, the agent's task tools, the proof gate. */
   tasks: SessionTasks;
+  /** SessionStart hooks; the first prompt waits for them. */
+  ready: Promise<void>;
+  /** SessionStart hook context and notice, for the first prompt. */
+  startContext?: string | undefined;
+  startNotice?: string | undefined;
+  /** The text of the last reply, for Stop hooks. */
+  lastReply: string;
+  /** True while a Stop hook keeps the turn going; `stopStreak` counts it (tool calls reset it). */
+  stopActive: boolean;
+  stopStreak: number;
+  /** Bumped by abort, so a Stop hook that answers after it doesn't restart the run. */
+  runGen: number;
 }
 
 interface Subagent {
@@ -211,13 +228,90 @@ export class SessionHub {
     this.emit(live, { type: "agent.message.start", messageId, role: "user" });
     this.emit(live, { type: "agent.message.end", messageId, role: "user", text });
     this.setBusy(live, live, true);
-    live.runner.prompt(text).catch((err: unknown) => {
-      const message = (err as Error).message ?? String(err);
-      this.emit(live, { type: "agent.error", message: explainError(message, this.opts.dataDir) });
+    this.send(live, text).catch((err: unknown) => this.failRun(live, err));
+    return messageId;
+  }
+
+  private failRun(live: LiveSession, err: unknown): void {
+    const message = (err as Error).message ?? String(err);
+    this.emit(live, { type: "agent.error", message: explainError(message, this.opts.dataDir) });
+    live.tasks.endTurn();
+    this.setBusy(live, live, false);
+  }
+
+  private hookSession(live: LiveSession): HookSession {
+    const file = live.runner.sessionFile;
+    return {
+      sessionId: live.id,
+      cwd: live.cwd,
+      ...(file ? { transcriptPath: file } : {}),
+      permissionMode: claudePermissionMode(this.opts.safetyMode?.(live.cwd)),
+    };
+  }
+
+  /** Runs UserPromptSubmit hooks, then sends the prompt (with any hook context) to the model. */
+  private async send(live: LiveSession, text: string): Promise<void> {
+    live.stopActive = false;
+    live.stopStreak = 0;
+    const hooks = this.opts.hooks;
+    if (!hooks) return live.runner.prompt(text);
+    await live.ready;
+    if (live.startNotice) {
+      this.emit(live, { type: "agent.notice", message: live.startNotice });
+      live.startNotice = undefined;
+    }
+    const submitted = await hooks.userPromptSubmit(this.hookSession(live), text);
+    if (submitted.blocked) {
+      this.emit(live, {
+        type: "agent.notice",
+        message: `A UserPromptSubmit hook blocked the prompt: ${submitted.blocked}`,
+      });
       live.tasks.endTurn();
       this.setBusy(live, live, false);
-    });
-    return messageId;
+      return;
+    }
+    const extra = [
+      live.startContext && `SessionStart hook additional context:\n${live.startContext}`,
+      submitted.context && `UserPromptSubmit hook additional context:\n${submitted.context}`,
+    ].filter(Boolean);
+    live.startContext = undefined;
+    const body = extra.length
+      ? `${text}\n\n<system-reminder>\n${extra.join("\n\n")}\n</system-reminder>`
+      : text;
+    await live.runner.prompt(body);
+  }
+
+  /** The run settled: Stop hooks may keep it going, up to `STOP_HOOK_CAP` times in a row. */
+  private async afterRun(live: LiveSession, aborted: boolean): Promise<void> {
+    const hooks = this.opts.hooks;
+    const gen = live.runGen;
+    let reason: string | undefined;
+    if (hooks && !aborted) {
+      reason = (
+        await hooks.stop(this.hookSession(live), {
+          stopHookActive: live.stopActive,
+          lastAssistantMessage: live.lastReply,
+        })
+      ).continueWith;
+    }
+    if (reason && gen === live.runGen) {
+      if (live.stopStreak < STOP_HOOK_CAP) {
+        live.stopActive = true;
+        live.stopStreak += 1;
+        live.runner
+          .prompt(`Stop hook feedback:\n${reason}`)
+          .catch((err: unknown) => this.failRun(live, err));
+        return;
+      }
+      this.emit(live, {
+        type: "agent.notice",
+        message: `Stop hooks continued the turn ${STOP_HOOK_CAP} times in a row; ending it.`,
+      });
+    }
+    live.stopActive = false;
+    live.currentReplyRow = undefined;
+    live.tasks.endTurn();
+    this.setBusy(live, live, false);
   }
 
   /** Announces a session's new judge state to its clients. */
@@ -284,6 +378,7 @@ export class SessionHub {
     const live = this.byId.get(sessionId);
     if (!live) return false;
     // Pi waits for a pending tool_call handler, so answer the approvals first.
+    live.runGen += 1;
     this.cancelApprovals(live);
     await Promise.all([
       live.runner.abort(),
@@ -381,6 +476,7 @@ export class SessionHub {
       onEvent: (e) => live && this.onRunnerEvent(live, live, e),
       guard: (call) =>
         live ? this.guard(live, live, call) : Promise.resolve(notReady("session not ready")),
+      ...(this.opts.hooks ? { afterTool: (call) => this.postToolHooks(live, call) } : {}),
     });
     const { sessionId, agentId } = resume
       ? { sessionId: resume.sessionId, agentId: resume.agentId }
@@ -416,7 +512,13 @@ export class SessionHub {
       approvals: new Map(),
       subagents: new Map(),
       tasks,
+      ready: Promise.resolve(),
+      lastReply: "",
+      stopActive: false,
+      stopStreak: 0,
+      runGen: 0,
     };
+    live.ready = this.sessionStartHooks(live, resume ? "resume" : "startup", model);
     this.byId.set(sessionId, live);
     return live;
   }
@@ -430,7 +532,14 @@ export class SessionHub {
     const toolCallId = this.toolRow(live, agent, call.toolCallId, call.tool, call.args);
     try {
       return await this.safety(
-        { sessionId: live.id, toolCallId, tool: call.tool, args: call.args, cwd: agent.cwd },
+        {
+          sessionId: live.id,
+          toolCallId,
+          tool: call.tool,
+          args: call.args,
+          cwd: agent.cwd,
+          ...(agent.runner.sessionFile ? { transcriptPath: agent.runner.sessionFile } : {}),
+        },
         {
           cwd: agent.cwd,
           askUser: (req) =>
@@ -612,6 +721,44 @@ export class SessionHub {
     };
   }
 
+  private async sessionStartHooks(
+    live: LiveSession,
+    source: "startup" | "resume",
+    model: string,
+  ): Promise<void> {
+    const hooks = this.opts.hooks;
+    if (!hooks) return;
+    try {
+      const started = await hooks.sessionStart(this.hookSession(live), { source, model });
+      if (started.context) live.startContext = started.context;
+      if (started.notice) live.startNotice = started.notice;
+    } catch {
+      // A hook problem never keeps the session from starting.
+    }
+  }
+
+  /** PostToolUse hooks; their feedback goes next to the tool's result. */
+  private async postToolHooks(
+    live: LiveSession | undefined,
+    call: {
+      toolCallId: string;
+      tool: string;
+      args: Record<string, unknown>;
+      output: string;
+      isError: boolean;
+    },
+  ): Promise<string | undefined> {
+    const hooks = this.opts.hooks;
+    if (!hooks || !live || call.isError) return undefined;
+    const r = await hooks.postToolUse(this.hookSession(live), {
+      tool: call.tool,
+      args: call.args,
+      toolUseId: live.tools.get(call.toolCallId) ?? call.toolCallId,
+      output: call.output,
+    });
+    return r.context && `PostToolUse hook feedback:\n${r.context}`;
+  }
+
   private snapshotOf(live: LiveSession): SessionSnapshot {
     const streaming = new Map(
       [...live.replies.values()].filter((r) => !r.done).map((r) => [r.rowId, r.text]),
@@ -779,6 +926,7 @@ export class SessionHub {
         agent.lastText = e.text;
         if (e.error) agent.lastError = explainError(e.error, this.opts.dataDir);
         else delete agent.lastError;
+        if (agent === live) live.lastReply = e.text;
         this.store.setMessageContent(reply.rowId, e.text);
         const priced = costMicros(e.model, e.usage);
         const cost = priced ?? Math.round(e.piCostUsd * 1_000_000);
@@ -815,6 +963,7 @@ export class SessionHub {
         return;
       }
       case "tool.start":
+        if (agent === live) live.stopStreak = 0;
         this.toolRow(live, agent, e.toolCallId, e.tool, e.args);
         return;
       case "tool.denied":
@@ -848,10 +997,13 @@ export class SessionHub {
       }
       case "run.settled":
         agent.currentReplyRow = undefined;
-        // A subagent's last status waits for its result (`finishSubagent`).
+        // A subagent's last status waits for its result (`finishSubagent`); no Stop hooks.
         if (agent !== live) return;
-        live.tasks.endTurn();
-        this.setBusy(live, live, false);
+        this.afterRun(live, e.aborted).catch(() => {
+          live.currentReplyRow = undefined;
+          live.tasks.endTurn();
+          this.setBusy(live, live, false);
+        });
         return;
     }
   }

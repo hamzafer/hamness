@@ -54,6 +54,14 @@ export type ToolGuard = (call: ToolCallRequest) => Promise<ToolVerdict>;
 
 export const allowAllTools: ToolGuard = async () => ({ allow: true });
 
+/**
+ * Runs after a tool call finished (Claude Code's PostToolUse hooks). Text it returns is added
+ * to the tool's result, so the model reads it next to the output.
+ */
+export type AfterTool = (
+  call: ToolCallRequest & { output: string; isError: boolean },
+) => Promise<string | undefined>;
+
 export type RunnerEvent =
   | { type: "assistant.start"; key: string }
   | { type: "assistant.delta"; key: string; text: string }
@@ -97,6 +105,7 @@ export interface RunnerOptions {
   models: ModelChoice;
   onEvent: (event: RunnerEvent) => void;
   guard?: ToolGuard;
+  afterTool?: AfterTool;
   /** Load AGENTS.md / CLAUDE.md into the system prompt (Pi's loader). Default true. */
   contextFiles?: boolean;
   /** Where Pi writes its session JSONL. In memory when unset. */
@@ -117,6 +126,8 @@ export interface AgentRunner {
   readonly model: string;
   /** Pi's session id: the name of its JSONL file, used to resume after a restart. */
   readonly piSessionId: string;
+  /** Pi's session file, when it keeps one on disk. */
+  readonly sessionFile: string | undefined;
   /** Switches the model for the next call. Throws when the provider has no credentials. */
   setModel(model: Model<Api>): Promise<void>;
   /** How full the context window is now (Pi's estimate), or undefined when Pi can't tell. */
@@ -174,6 +185,19 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       emit({ type: "tool.denied", toolCallId: event.toolCallId, reason: verdict.reason });
       return { block: true, reason: verdict.reason };
     });
+    const after = opts.afterTool;
+    if (after) {
+      pi.on("tool_result", async (event) => {
+        const extra = await after({
+          toolCallId: event.toolCallId,
+          tool: event.toolName,
+          args: (event.input ?? {}) as Record<string, unknown>,
+          output: textOf(event.content),
+          isError: event.isError,
+        });
+        return extra ? { content: [...event.content, { type: "text", text: extra }] } : undefined;
+      });
+    }
   };
 
   const resourceLoader = new DefaultResourceLoader({
@@ -300,6 +324,9 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     },
     get piSessionId() {
       return session.sessionId;
+    },
+    get sessionFile() {
+      return session.sessionFile;
     },
     async setModel(next) {
       await session.setModel(next);

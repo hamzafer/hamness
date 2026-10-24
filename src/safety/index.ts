@@ -14,6 +14,8 @@ export interface GuardedCall {
   args: Record<string, unknown>;
   /** The session's working directory. */
   cwd?: string;
+  /** The session's transcript file, for Claude Code hooks. */
+  transcriptPath?: string;
 }
 
 /** What the session hub gives a check, so it can ask the user. */
@@ -43,9 +45,11 @@ export const allowAll: SafetyCheck = async () => ({ allow: true });
 export { redactArgs, redactText } from "./redact.ts";
 export type {
   ApprovalAnswer,
+  HookVerdict,
   Judge,
   JudgeRequest,
   JudgeVerdict,
+  PreToolHook,
   SafetyService,
 } from "./service.ts";
 export { createSafetyService } from "./service.ts";
