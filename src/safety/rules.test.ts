@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: shell ${...} syntax is the fixture.
 import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -401,6 +402,29 @@ describe("paths resolve exactly as Pi's tools open them (S-H1)", () => {
       "$HOME/x",
     ]) {
       expect([input, piToolPath(input, cwd, home)]).toEqual([input, resolveToCwd(input, cwd)]);
+    }
+  });
+});
+
+describe("commands by path and odd forms (S-M3, S-L1)", () => {
+  test("a deny or ask rule matches a command run by its path", () => {
+    expect(verdict(bash("/usr/bin/sudo id"))).toBe("deny");
+    expect(verdict(bash("./node_modules/.bin/../../../bin/sudo id"))).toBe("deny");
+    expect(verdict(bash("/bin/rm -rf build"))).toBe("ask");
+    expect(verdict(bash("/bin/sh -c 'sudo id'"))).toBe("deny");
+  });
+
+  test("an allow rule does not match a command run by another path", () => {
+    expect(verdict(bash("/tmp/evil/ls -la"))).toBe("undecided");
+  });
+
+  test("a substitution inside ${...} is checked", () => {
+    expect(verdict(bash("echo ${x:-$(sudo id)}"))).toBe("deny");
+  });
+
+  test("env, nohup and friends on their own are checked, not a crash (S-L1)", () => {
+    for (const command of ["env", "nohup", "env -i", "time", "FOO=1"]) {
+      expect([command, verdict(bash(command))]).toEqual([command, "undecided"]);
     }
   });
 });

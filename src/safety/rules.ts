@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { matchCommand, matchPath } from "./glob.ts";
 import { parseCommand, type Segment } from "./shell.ts";
@@ -304,6 +304,21 @@ function unwrap(words: string[]): { words: string[]; wrapped: boolean } {
   return { words: w, wrapped };
 }
 
+/**
+ * The rule for a command's words. A command run by its path (`/usr/bin/sudo`) also meets the
+ * ask and deny rules for its bare name; an allow for the bare name never applies to a path.
+ */
+function commandRule(bashRules: Rule[], words: string[]): Rule | undefined {
+  const rule = lookup(bashRules, "bash", (p) => matchCommand(p, words.join(" ")));
+  const head = words[0] ?? "";
+  if (!head.includes("/")) return rule;
+  const bare = [basename(head), ...words.slice(1)].join(" ");
+  const byName = lookup(bashRules, "bash", (p) => matchCommand(p, bare));
+  if (!byName || byName.verdict === "allow") return rule;
+  const rank = (r: Rule | undefined) => (r ? RANK[r.verdict] : RANK.undecided);
+  return rank(byName) > rank(rule) ? byName : rule;
+}
+
 function commandSuggestion(words: string[]): Rule {
   const [w0 = "", w1] = words;
   let pattern: string;
@@ -314,6 +329,7 @@ function commandSuggestion(words: string[]): Rule {
 }
 
 function worstOf(parts: Part[]): Part {
+  if (parts.length === 0) return { verdict: "ask", reason: "nothing to check", suggestion: null };
   return parts.reduce((a, b) => (RANK[b.verdict] > RANK[a.verdict] ? b : a));
 }
 
@@ -369,13 +385,15 @@ function checkSegment(
   depth: number,
 ): Part[] {
   const parts: Part[] = [];
-  const { words, wrapped } = unwrap(seg.words);
-  const text = words.join(" ");
+  const unwrapped = unwrap(seg.words);
+  // `env` or `nohup` alone (or only assignments) is a command too: `env` prints the environment.
+  const words = unwrapped.words.length > 0 ? unwrapped.words : seg.words;
+  const wrapped = unwrapped.wrapped;
   const shown = seg.words.join(" ");
 
   if (words.length > 0) {
     const outer = parts.length;
-    const rule = lookup(bashRules, "bash", (p) => matchCommand(p, text));
+    const rule = commandRule(bashRules, words);
     if (rule && !(rule.verdict === "allow" && (seg.dynamic || wrapped))) {
       parts.push({
         verdict: rule.verdict,
@@ -400,7 +418,8 @@ function checkSegment(
     }
 
     // A shell's -c string and eval's words run too: check them as commands.
-    const [head = "", ...rest] = words;
+    const [path = "", ...rest] = words;
+    const head = basename(path);
     let inner: string | undefined;
     if (SHELLS.has(head)) {
       const flag = rest.findIndex((w) => /^-[a-z]*c[a-z]*$/.test(w));
