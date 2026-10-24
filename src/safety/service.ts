@@ -72,8 +72,6 @@ export interface SafetyServiceOptions {
   judge?: Judge;
   /** Claude Code PreToolUse hooks; they run before the rules. */
   preToolHook?: PreToolHook;
-  /** Whether the repo at `cwd` is trusted, so its project proof commands count. Default: no. */
-  projectTrusted?: (cwd: string) => boolean;
 }
 
 export interface SafetyService {
@@ -163,9 +161,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       ? evaluateProofCommand(
           command,
           config.rules,
-          loadProofConfig(opts.dataDir, cwd, {
-            projectTrusted: opts.projectTrusted?.(cwd) ?? false,
-          }).commands,
+          loadProofConfig(opts.dataDir, cwd).commands,
           evalCtx,
         )
       : evaluate({ tool: call.tool, args: call.args }, config.rules, evalCtx);

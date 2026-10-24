@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
+import { projectKey } from "../compat/paths.ts";
+import { addTrusted, proofItem } from "../trust/index.ts";
 import { loadSafetyConfig } from "./config.ts";
 import { evaluateProofCommand, loadProofConfig } from "./proof.ts";
 
@@ -23,9 +25,9 @@ const json = (path: string, value: unknown) => {
   writeFileSync(path, JSON.stringify(value));
 };
 
-function verdict(command: string, opts: { projectTrusted?: boolean } = {}) {
+function verdict(command: string) {
   const rules = loadSafetyConfig(dataDir, repo).rules;
-  const proof = loadProofConfig(dataDir, repo, opts).commands;
+  const proof = loadProofConfig(dataDir, repo).commands;
   return evaluateProofCommand(command, rules, proof, { cwd: repo, home: home.dir, dataDir });
 }
 
@@ -53,10 +55,14 @@ describe("a proof re-run's safety check", () => {
     expect(verdict("just verify").verdict).toBe("allow");
   });
 
-  test("project proof commands count only in a trusted repo", () => {
+  test("a project proof command counts only once the repo trusts it (hamness trust)", () => {
     json(join(repo, ".hamness", "config.json"), { proof: { commands: ["just verify *"] } });
     expect(verdict("just verify").verdict).toBe("undecided");
-    expect(verdict("just verify", { projectTrusted: true }).verdict).toBe("allow");
+    addTrusted(dataDir, projectKey(repo), "safety", [proofItem("just verify *")]);
+    expect(verdict("just verify").verdict).toBe("allow");
+    // Changing the command needs trust again.
+    json(join(repo, ".hamness", "config.json"), { proof: { commands: ["just *"] } });
+    expect(verdict("just verify").verdict).toBe("undecided");
   });
 
   test("a bad proof block names the file", () => {

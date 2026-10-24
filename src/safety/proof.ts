@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { projectKey } from "../compat/paths.ts";
+import { type Json, readJson, writeJsonAtomic } from "../config/json.ts";
+import { isTrusted, proofItem } from "../trust/index.ts";
 import { projectConfigPath, userConfigPath } from "./config.ts";
 import { matchCommand } from "./glob.ts";
 import { type EvalContext, type Evaluation, evaluate, type Rule } from "./rules.ts";
@@ -80,22 +81,6 @@ export const DEFAULT_PROOF_COMMANDS: readonly string[] = [
 /** Read-only commands that may sit next to a check (`cd web && npm test`, `| tail`). */
 const HELPERS = ["cd *", "pushd *", "popd *"];
 
-type Json = Record<string, unknown>;
-
-function readJson(path: string): Json | undefined {
-  if (!existsSync(path)) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    throw new Error(`${path}: not valid JSON (${(err as Error).message})`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${path}: must hold a JSON object`);
-  }
-  return parsed as Json;
-}
-
 function proofBlock(path: string, file: Json | undefined): Json {
   const block = file?.proof;
   if (block === undefined) return {};
@@ -115,14 +100,10 @@ function commandsOf(path: string, block: Json): string[] {
 }
 
 /**
- * The proof config for a session in `cwd`. Project commands count only when
- * `projectTrusted` says the repo is trusted; they are ignored (not an error) otherwise.
+ * The proof config for a session in `cwd`. Each project command counts only once the user
+ * trusted it for the repo (`hamness trust`, ADR 0020); untrusted ones are left out.
  */
-export function loadProofConfig(
-  dataDir: string,
-  cwd: string,
-  opts: { projectTrusted?: boolean } = {},
-): ProofConfig {
+export function loadProofConfig(dataDir: string, cwd: string): ProofConfig {
   const userPath = userConfigPath(dataDir);
   const user = proofBlock(userPath, readJson(userPath));
   const allow = user.allowPrivateUrls ?? false;
@@ -133,15 +114,13 @@ export function loadProofConfig(
     ...DEFAULT_PROOF_COMMANDS.map((pattern) => ({ pattern, layer: "default" as const })),
     ...commandsOf(userPath, user).map((pattern) => ({ pattern, layer: "user" as const })),
   ];
-  if (opts.projectTrusted) {
-    const projectPath = projectConfigPath(cwd);
-    const project = proofBlock(projectPath, readJson(projectPath));
-    commands.push(
-      ...commandsOf(projectPath, project).map((pattern) => ({
-        pattern,
-        layer: "project" as const,
-      })),
-    );
+  const projectPath = projectConfigPath(cwd);
+  const project = proofBlock(projectPath, readJson(projectPath));
+  const key = projectKey(cwd);
+  for (const pattern of commandsOf(projectPath, project)) {
+    if (isTrusted(dataDir, key, "safety", proofItem(pattern))) {
+      commands.push({ pattern, layer: "project" });
+    }
   }
   return { commands, allowPrivateUrls: allow };
 }
@@ -155,10 +134,7 @@ export function addUserProofCommands(dataDir: string, patterns: string[]): strin
   for (const p of patterns) if (!list.includes(p)) list.push(p);
   proof.commands = list;
   file.proof = proof;
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, path);
+  writeJsonAtomic(path, file, 0o600);
   return path;
 }
 
