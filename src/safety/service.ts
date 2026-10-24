@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { HamnessDb } from "../db/open.ts";
 import type { ApprovalDecision, SafetyMode } from "../events/types.ts";
+import { stableJson } from "../trust/index.ts";
 import { addProjectRules, loadSafetyConfig } from "./config.ts";
 import { type DecisionRecord, DecisionStore } from "./decisions.ts";
 import type { GuardedCall, SafetyCheck, SafetyVerdict } from "./index.ts";
@@ -127,7 +128,12 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
   const recent = new Map<string, { key: string; count: number }>();
 
   function repeats(call: GuardedCall): number {
-    const key = `${call.tool}\0${JSON.stringify(call.args)}`;
+    // Same call however it is spelled: keys sorted, a command's spacing collapsed.
+    const args =
+      typeof call.args.command === "string"
+        ? { ...call.args, command: call.args.command.replace(/\s+/g, " ").trim() }
+        : call.args;
+    const key = `${call.tool}\0${stableJson(args)}`;
     const last = recent.get(call.sessionId);
     const count = last?.key === key ? last.count + 1 : 1;
     recent.set(call.sessionId, { key, count });
