@@ -180,4 +180,50 @@ describe("the judge controller", () => {
     for (let i = 0; i < BACK_OFF; i++) await c.judge(req());
     expect(c.state("s-1")).toBe("paused");
   });
+
+  test("a timed-out call still counts its estimated input cost (S-L2)", async () => {
+    const c = setup(() => new Promise(() => {}), { timeoutSec: 0.02 });
+    const v = await c.judge(req());
+    expect(v.verdict).toBe("ask");
+    expect(v.costMicros).toBeGreaterThan(0);
+  });
+
+  test("calls running at once share the budget: the second one waits for none (S-L2)", async () => {
+    let calls = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const c = setup(
+      async () => {
+        calls++;
+        await gate;
+        return allow;
+      },
+      { dailyBudgetUsd: 0.001 },
+    );
+    seed.decision({ at: NOW - HOUR, verdict: "allow", source: "judge", costMicros: 999 });
+    const first = c.judge(req());
+    const second = await c.judge(req("s-2"));
+    expect(second).toMatchObject({ verdict: "ask", skipped: true, reason: "judge budget reached" });
+    release();
+    expect(await first).toEqual(allow);
+    expect(calls).toBe(1);
+  });
+
+  test("a judge model with no price counts as over budget, with the reason (S-L2)", async () => {
+    let calls = 0;
+    const c = setup(
+      async () => {
+        calls++;
+        return allow;
+      },
+      { model: "mystery-model-1" },
+    );
+    expect(c.state("s-1")).toBe("over-budget");
+    const v = await c.judge(req());
+    expect(v).toMatchObject({ verdict: "ask", skipped: true });
+    expect(v.reason).toContain("mystery-model-1 has no price");
+    expect(calls).toBe(0);
+  });
 });
