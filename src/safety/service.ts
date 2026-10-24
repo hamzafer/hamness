@@ -18,14 +18,15 @@ import { type Evaluation, evaluate, type Rule } from "./rules.ts";
  *   rules ── allow / deny ─────────────────────────────────▶ verdict (source: rule)
  *         └─ ask ─────────────────────────────────────────▶ user
  *         └─ undecided ── auto mode + judge ── allow ─────▶ allow (source: judge)
- *                     │                    └─ ask / error ▶ user
- *                     └─ ask mode (or no judge yet) ──────▶ user
+ *                     │                    ├─ ask / error ▶ user
+ *                     │                    └─ skipped ────▶ user (source: mode; paused, budget, no key)
+ *                     └─ ask mode (or no judge) ─────────▶ user
  *   user ── allow once / allow always (saved) / deny / timeout
  *
  * Every step is a row in the decisions table.
  */
 
-/** What the judge (ticket #5) is given: the call (args redacted) and what the rules said. */
+/** What the judge is given: the call (args redacted) and what the rules said. */
 export interface JudgeRequest {
   sessionId: string;
   cwd: string;
@@ -39,6 +40,8 @@ export interface JudgeVerdict {
   reason: string;
   category?: string;
   costMicros?: number;
+  /** The judge did not run (paused, over budget, no key): recorded with source `mode`. */
+  skipped?: boolean;
 }
 
 /** Decides undecided calls in `auto` mode. Throwing means ask. Budget and back-off live in it. */
@@ -59,7 +62,7 @@ export interface SafetyServiceOptions {
   db: HamnessDb;
   dataDir: string;
   home?: string;
-  /** Ticket #5. Until then `auto` asks the user for undecided calls, like `ask`. */
+  /** The judge (`src/safety/judge/`). Without one `auto` asks the user for undecided calls, like `ask`. */
   judge?: Judge;
   /** Claude Code PreToolUse hooks; they run before the rules. */
   preToolHook?: PreToolHook;
@@ -196,7 +199,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
         record(
           {
             verdict: judged.verdict,
-            source: "judge",
+            source: judged.skipped ? "mode" : "judge",
             reason: judged.reason,
             ...(judged.category ? { category: judged.category } : {}),
             ...(judged.costMicros ? { costMicros: judged.costMicros } : {}),
@@ -206,7 +209,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
         if (judged.verdict === "allow") return { allow: true };
         reason = judged.reason;
       } else {
-        const why = mode === "auto" ? "no judge yet, so it asks" : "ask mode";
+        const why = mode === "auto" ? "no judge, so it asks" : "ask mode";
         record({ verdict: "ask", source: "mode", reason: `${reason}; ${why}` });
       }
     }

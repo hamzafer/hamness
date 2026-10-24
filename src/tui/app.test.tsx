@@ -34,6 +34,7 @@ const snapshot: SessionSnapshot = {
 function fakeClient() {
   let listener: (e: HamnessEvent) => void = () => {};
   const prompts: string[] = [];
+  const resumed: string[] = [];
   const client: DaemonClient = {
     ready: Promise.resolve(),
     attach: async () => snapshot,
@@ -44,6 +45,10 @@ function fakeClient() {
     models: async () => [],
     setModel: async () => snapshot,
     answerApproval: async () => {},
+    resumeJudge: async (id) => {
+      resumed.push(id);
+      return "on";
+    },
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};
@@ -52,11 +57,11 @@ function fakeClient() {
   let seq = snapshot.seq;
   const send = (body: Record<string, unknown>) =>
     listener({ sessionId: SID, seq: ++seq, ...body } as AgentEvent);
-  return { client, prompts, send, sendRaw: (e: HamnessEvent) => listener(e) };
+  return { client, prompts, resumed, send, sendRaw: (e: HamnessEvent) => listener(e) };
 }
 
-async function render(client: DaemonClient) {
-  setup = await testRender(() => <App client={client} snapshot={snapshot} />, {
+async function render(client: DaemonClient, snap: SessionSnapshot = snapshot) {
+  setup = await testRender(() => <App client={client} snapshot={snap} />, {
     width: 100,
     height: 24,
   });
@@ -129,5 +134,31 @@ describe("TUI chat layout (headless)", () => {
     s.mockInput.pressEnter();
     await s.waitFor(() => fake.prompts.length === 1);
     expect(fake.prompts).toEqual(["fix the bug"]);
+  });
+
+  test("auto mode: the header shows the judge's state; /judge resume turns it back on", async () => {
+    const fake = fakeClient();
+    const auto = {
+      ...snapshot,
+      session: { ...snapshot.session, mode: "auto" as const, judge: "on" as const },
+    };
+    const s = await render(fake.client, auto);
+    expect(s.captureCharFrame()).toContain("judge on");
+    fake.send({ type: "safety.judge", state: "paused", reason: "asked 3 times" });
+    await s.waitForFrame((f) => f.includes("judge paused"));
+    await s.mockInput.typeText("/judge resume");
+    s.mockInput.pressEnter();
+    await s.waitForFrame((f) => f.includes("judge on"));
+    expect(fake.resumed).toEqual([SID]);
+    expect(fake.prompts).toEqual([]);
+    fake.send({ type: "safety.judge", state: "over-budget", reason: "judge budget reached" });
+    await s.waitForFrame((f) => f.includes("judge over budget"));
+    fake.send({ type: "safety.judge", state: "no-key", reason: "no key" });
+    await s.waitForFrame((f) => f.includes("judge off: no key"));
+  });
+
+  test("no judge state outside auto mode", async () => {
+    const s = await render(fakeClient().client);
+    expect(s.captureCharFrame()).not.toContain("judge");
   });
 });

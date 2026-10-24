@@ -34,6 +34,7 @@ function isDirectory(path: string): boolean {
  * - `POST /v1/sessions/:id/prompt {text}`: 202 `{messageId}`; the reply streams on `/v1/events`
  * - `POST /v1/sessions/:id/abort`: stops the run; pending approvals become denies
  * - `POST /v1/sessions/:id/model {model}`: switch to `provider/id`; returns the snapshot
+ * - `POST /v1/sessions/:id/judge {paused: false}`: resumes a paused judge; returns `{judge}`
  * - `GET /v1/models`: the models a session can switch to
  * - `POST /v1/approvals/:id {decision}`: answers an approval (`allow-once`, `allow-always`, `deny`)
  */
@@ -94,6 +95,13 @@ export function sessionRoutes(hub: SessionHub) {
         if (err instanceof SessionBusyError) return json({ error: err.message }, 409);
         throw err;
       }
+    }
+    if (action === "judge" && req.method === "POST") {
+      if (!hub.snapshot(id)) return json({ error: "no such session" }, 404);
+      const body = await readJson(req);
+      if (body?.paused !== false) return json({ error: 'send {"paused": false}' }, 400);
+      const judge = hub.resumeJudge(id);
+      return judge ? json({ judge }) : json({ error: "this session has no judge" }, 409);
     }
     if (action === "abort" && req.method === "POST") {
       return (await hub.abort(id)) ? json({ ok: true }) : json({ error: "no such session" }, 404);

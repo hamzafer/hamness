@@ -4,7 +4,12 @@ import { createSignal, For, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient } from "../client/client.ts";
-import type { PendingApproval, SessionSnapshot, TranscriptItem } from "../events/types.ts";
+import type {
+  JudgeState,
+  PendingApproval,
+  SessionSnapshot,
+  TranscriptItem,
+} from "../events/types.ts";
 import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
 import { applyEvent, argSummary, initialState, STATUS_GLYPH } from "./chat-state.ts";
 import { ModelPicker } from "./model-picker.tsx";
@@ -21,6 +26,14 @@ const COLORS = {
 };
 
 export { RAIL_WIDTH };
+
+/** The header's judge note in `auto` mode. */
+const JUDGE_LABEL: Record<JudgeState, string> = {
+  on: "judge on",
+  paused: "judge paused (/judge resume)",
+  "over-budget": "judge over budget",
+  "no-key": "judge off: no key",
+};
 
 export interface AppProps {
   client: DaemonClient;
@@ -83,6 +96,13 @@ export function App(props: AppProps) {
     setState("notice", undefined);
     const command = /^\/model(?:\s+(.*))?$/.exec(text);
     if (command) return modelCommand((command[1] ?? "").trim());
+    if (/^\/judge\s+resume$/.test(text)) {
+      props.client
+        .resumeJudge(state.session.id)
+        .then((judge) => setState("session", "judge", judge))
+        .catch((err: Error) => setState("notice", err.message));
+      return;
+    }
     props.client
       .prompt(state.session.id, text)
       .catch((err: Error) => setState("notice", err.message));
@@ -114,6 +134,13 @@ export function App(props: AppProps) {
           <text fg={COLORS.muted}>
             hamness · {state.session.cwd} · {state.session.model}
           </text>
+          <Show when={state.session.mode === "auto" && state.session.judge}>
+            {(judge: () => JudgeState) => (
+              <text fg={judge() === "on" ? COLORS.muted : COLORS.warn}>
+                {` · ${JUDGE_LABEL[judge()]}`}
+              </text>
+            )}
+          </Show>
           <Show when={state.session.busy}>
             <text fg={COLORS.warn}> · working…</text>
           </Show>

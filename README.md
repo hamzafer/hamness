@@ -56,7 +56,14 @@ Add rules under `safety` in `<data dir>/config.json` (yours) or `.hamness/config
 }
 ```
 
-Modes (user config only): `ask` asks you about anything no rule decides, `auto` (the default) will ask a judge model first (until then it asks you), `yolo` allows everything and says so in a red banner. When a call asks, the TUI shows it above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. With no answer it is denied after the timeout. Every decision is stored with its source and reason; `hamness audit` lists them.
+Modes (user config only): `ask` asks you about anything no rule decides, `auto` (the default) asks a judge model first, `yolo` allows everything and says so in a red banner.
+
+The judge (auto mode) is Claude Haiku 5.5 by default, keyed like chat (`ANTHROPIC_API_KEY` or the key file). It sees the call (secrets redacted) as untrusted data and answers a strict JSON verdict: `allow`, or `ask` with a reason and a risk category (`src/safety/judge/categories.ts`). An error, a timeout (8 s), a refusal or an answer that does not parse means you are asked. Its spend is capped per local day (default $1, from the stored judge decisions); over the cap, undecided calls ask you. After 3 judge asks in a row it pauses for that session until the daemon restarts or you type `/judge resume`. With no API key it is off and undecided calls ask you. The TUI header shows its state (`judge on`, `paused`, `over budget`, `off: no key`). Settings, user config only:
+
+```json
+{ "safety": { "judge": { "model": "claude-haiku-5-5", "dailyBudgetUsd": 1, "timeoutSec": 8 } } }
+```
+ When a call asks, the TUI shows it above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. With no answer it is denied after the timeout. Every decision is stored with its source and reason; `hamness audit` lists them.
 
 ### Claude Code hooks
 

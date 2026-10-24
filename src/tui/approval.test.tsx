@@ -61,6 +61,7 @@ function fakeClient() {
     answerApproval: async (id, decision) => {
       answers.push([id, decision]);
     },
+    resumeJudge: async () => "on",
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};

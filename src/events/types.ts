@@ -13,10 +13,19 @@ export interface SessionInfo {
   mode?: SafetyMode;
   /** The session's main agent; events with this `agentId` (or none) are about it. */
   mainAgentId?: string;
+  /** The judge's state in `auto` mode. Absent in other modes. */
+  judge?: JudgeState;
 }
 
 /** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: allow all. */
 export type SafetyMode = "ask" | "auto" | "yolo";
+
+/**
+ * The judge, as `auto` mode sees it: `on`; `paused` for the session after 3 asks in a row;
+ * `over-budget` for the rest of the day; `no-key` when there is no Anthropic API key.
+ * Anything but `on` means undecided calls ask the user.
+ */
+export type JudgeState = "on" | "paused" | "over-budget" | "no-key";
 
 /** A tool call waiting for the user's answer. Answer it with `POST /v1/approvals/:id`. */
 export interface PendingApproval {
@@ -146,6 +155,8 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
       /** `user` answered, `timeout` ran out, `abort`: the run was stopped. */
       by: "user" | "timeout" | "abort";
     }
+  /** The session's judge changed state (paused, over budget, no key, back on). */
+  | { type: "safety.judge"; state: JudgeState; reason: string }
   /** The session switched models (`provider/id`); the next model call uses it. */
   | { type: "agent.model"; model: string }
 );

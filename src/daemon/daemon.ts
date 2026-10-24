@@ -10,7 +10,8 @@ import { claudeConfigDir } from "../compat/paths.ts";
 import { dataPaths } from "../config/paths.ts";
 import { type HamnessDb, openDatabase } from "../db/open.ts";
 import type { HamnessEvent } from "../events/types.ts";
-import { createSafetyService, type Judge, type SafetyCheck } from "../safety/index.ts";
+import { createSafetyService, type SafetyCheck } from "../safety/index.ts";
+import { type BackendJudge, createJudgeController } from "../safety/judge/index.ts";
 import { VERSION } from "../version.ts";
 import { claimState, type DaemonState, releaseState, writeState } from "./state.ts";
 import { getStatus } from "./status.ts";
@@ -25,8 +26,11 @@ export interface DaemonOptions {
   models?: () => Promise<ModelChoice>;
   /** Replaces the rules-based check every tool call passes (tests). */
   safety?: SafetyCheck;
-  /** Decides calls no rule decides, in `auto` mode (ticket #5). */
-  judge?: Judge;
+  /**
+   * The judge model for calls no rule decides, in `auto` mode. The daemon adds the deadline,
+   * daily budget and back-off. None: no API key, so undecided calls ask.
+   */
+  judge?: BackendJudge;
   /** Load AGENTS.md / CLAUDE.md into sessions. Default true; tests turn it off. */
   contextFiles?: boolean;
   /** Claude Code's config dir, for its hooks. Default `CLAUDE_CONFIG_DIR` or `~/.claude`. */
@@ -82,18 +86,25 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       claudeDir: opts.claudeConfigDir ?? claudeConfigDir(process.env),
       dataDir: paths.dataDir,
     });
-    const rules = opts.safety
+    let hubRef: SessionHub | undefined;
+    const judge = opts.safety
       ? undefined
-      : createSafetyService({
+      : createJudgeController({
           db: openDb,
           dataDir: paths.dataDir,
-          ...(opts.judge ? { judge: opts.judge } : {}),
+          ...(opts.judge ? { backend: opts.judge } : {}),
+          onState: (sessionId, state, reason) => hubRef?.judgeChanged(sessionId, state, reason),
+        });
+    const rules = judge
+      ? createSafetyService({
+          db: openDb,
+          dataDir: paths.dataDir,
+          judge: judge.judge,
           preToolHook: async (call, mode) => {
-            const cwd = call.cwd ?? "";
             const out = await hooks.preToolUse(
               {
                 sessionId: call.sessionId,
-                cwd,
+                cwd: call.cwd ?? "",
                 ...(call.transcriptPath ? { transcriptPath: call.transcriptPath } : {}),
                 permissionMode: claudePermissionMode(mode),
               },
@@ -101,17 +112,20 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
             );
             return out && { verdict: out.decision, reason: out.reason, hook: `hook: ${out.hook}` };
           },
-        });
+        })
+      : undefined;
     const hub = new SessionHub({
       db: openDb,
       dataDir: paths.dataDir,
       models: opts.models ?? (() => resolveModels({ dataDir: paths.dataDir, env: process.env })),
       safety: opts.safety ?? (rules as NonNullable<typeof rules>).check,
       ...(rules ? { safetyMode: (cwd: string) => rules.modeFor(cwd) } : {}),
+      ...(judge ? { judge } : {}),
       ...(opts.contextFiles !== undefined ? { contextFiles: opts.contextFiles } : {}),
       hooks,
       publish: (event) => publish(event),
     });
+    hubRef = hub;
     const api = startApiServer({
       token,
       port: opts.port ?? DEFAULT_PORT,

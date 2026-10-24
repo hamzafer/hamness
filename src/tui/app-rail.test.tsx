@@ -29,6 +29,7 @@ function fakeClient() {
     models: async () => [],
     setModel: async () => snapshot,
     answerApproval: async () => {},
+    resumeJudge: async () => "on",
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};

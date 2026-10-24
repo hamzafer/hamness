@@ -6,6 +6,7 @@ import type { HamnessDb } from "../db/open.ts";
 import type {
   AgentEvent,
   ApprovalDecision,
+  JudgeState,
   PendingApproval,
   SafetyMode,
   SessionInfo,
@@ -47,6 +48,8 @@ export interface SessionHubOptions {
   safety?: SafetyCheck;
   /** The safety mode for a cwd, shown to clients (the yolo banner). */
   safetyMode?: (cwd: string) => SafetyMode | undefined;
+  /** The judge's state per session, and `/judge resume` (auto mode only). */
+  judge?: { state(sessionId: string): JudgeState; resume(sessionId: string): boolean };
   publish: (event: AgentEvent) => void;
   contextFiles?: boolean;
   /** Claude Code hooks for session starts, prompts, tool results and stops (PreToolUse is in `safety`). */
@@ -238,6 +241,20 @@ export class SessionHub {
     live.stopActive = false;
     live.currentReplyRow = undefined;
     this.setBusy(live, false);
+  }
+
+  /** Announces a session's new judge state to its clients. */
+  judgeChanged(sessionId: string, state: JudgeState, reason: string): void {
+    const live = this.byId.get(sessionId);
+    if (live) this.emit(live, { type: "safety.judge", state, reason });
+  }
+
+  /** Unpauses the session's judge. Undefined when there is no such session or no judge. */
+  resumeJudge(sessionId: string): JudgeState | undefined {
+    const judge = this.opts.judge;
+    if (!this.byId.has(sessionId) || !judge) return undefined;
+    judge.resume(sessionId);
+    return judge.state(sessionId);
   }
 
   /** The models a session can switch to: Pi's catalog, for providers with credentials. */
@@ -438,6 +455,7 @@ export class SessionHub {
 
   private info(live: LiveSession): SessionInfo {
     const mode = this.opts.safetyMode?.(live.cwd);
+    const judge = mode === "auto" ? this.opts.judge?.state(live.id) : undefined;
     return {
       id: live.id,
       cwd: live.cwd,
@@ -445,6 +463,7 @@ export class SessionHub {
       busy: live.busy,
       mainAgentId: live.agentId,
       ...(mode ? { mode } : {}),
+      ...(judge ? { judge } : {}),
     };
   }
 

@@ -103,6 +103,9 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
     case "agent.model":
       state.session.model = e.model;
       return;
+    case "safety.judge":
+      state.session.judge = e.state;
+      return;
     default:
       return;
   }
