@@ -3,6 +3,7 @@ import type { ModelChoice } from "../agent/models.ts";
 import { resolveModels } from "../agent/models.ts";
 import { SessionHub } from "../agent/session-hub.ts";
 import { generateToken, writeTokenFile } from "../api/auth.ts";
+import { dashboardMount } from "../api/dashboard-routes.ts";
 import { sessionRoutes } from "../api/routes.ts";
 import { startApiServer } from "../api/server.ts";
 import { dataPaths } from "../config/paths.ts";
@@ -112,6 +113,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         schemaVersion: openDb.schemaVersion(),
       }),
       routes: sessionRoutes(hub),
+      dashboard: dashboardMount(openDb),
     });
     publish = (event) => api.publish(event);
     writeState(paths.daemonState, { pid, url: api.url, startedAt });

@@ -27,6 +27,8 @@ bun src/cli/main.ts models   # models you can switch to, with prices (--all: who
 bun src/cli/main.ts keys set anthropic   # store an API key (hidden prompt, mode 0600)
 bun src/cli/main.ts login openai         # sign in with a ChatGPT plan (through Pi)
 bun src/cli/main.ts audit    # recent safety decisions and why (--session, --limit, --json)
+bun src/cli/main.ts stats    # sessions, tasks, cost, models and decisions (--range, --source, --json)
+bun src/cli/main.ts dashboard   # open the web dashboard (--no-open prints the link)
 ```
 
 Data lives in `~/Library/Application Support/hamness` on macOS and `$XDG_DATA_HOME/hamness` (default `~/.local/share/hamness`) on Linux. Set `HAMNESS_HOME` to use another dir and `HAMNESS_PORT` to change the API port (default 7357).
@@ -79,6 +81,14 @@ The side rail on the right shows the current task (goal, outcome, passing / chec
 ### Tasks and proof
 
 Work happens in tasks. The agent opens one with `task_start`, attaches evidence with `prove` and closes it with `task_done`; you can open one with `/task <goal>`. hamness checks the evidence itself: it re-runs a command (through the same safety rules as `bash`), checks a file was written during the task, fetches a URL, or reads CI through `gh`. A task is `verified` only when at least one piece passed; otherwise it is `unverified`. Only you can accept it anyway with `/override [reason]`, or drop the open task with `/abandon [reason]`. A turn with no task open gets its own task, which is dropped at the end if it had no evidence and no file edits. Cost, tokens and time roll up to the task (ADRs 0004, 0005, 0012).
+
+### Dashboard
+
+`hamness dashboard` opens the web dashboard the daemon serves on `127.0.0.1` (starting the daemon if needed; `--no-open` prints the link instead). It shows cost, tasks, verified rate, cost per verified task and active time for the last 24 hours, 7, 30 or 90 days, one chart over time (cost, tokens or tasks, with a table view), the task list with each task's outcome and evidence, and the safety decisions. Filter by source: hamness, Claude Code or Codex (imported history has no tasks, and its cost is estimated from token counts). Light and dark follow the system; the toggle overrides it.
+
+![The hamness dashboard on sample data: KPI tiles and cost per day](images/dashboard.png)
+
+The link carries the daemon's token after `#`, which the browser keeps to itself; the page stores it for that tab only (ADR 0018).
 
 ## License
 

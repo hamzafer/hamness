@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { dataPaths } from "../../config/paths.ts";
 import { openDatabase } from "../../db/open.ts";
+import { count, duration, money } from "../../stats/format.ts";
 import {
   RANGES,
   type Range,
@@ -11,6 +12,8 @@ import {
   statsReport,
 } from "../../stats/index.ts";
 import type { CliContext } from "../run.ts";
+
+export { count, duration, money };
 
 export const STATS_USAGE = [
   "Usage: hamness stats [--range 24h|7d|30d|90d] [--source hamness|claude-code|codex] [--json]",
@@ -91,37 +94,6 @@ export async function statsCommand({ args, dataDir, io }: CliContext): Promise<n
 }
 
 // ---- Rendering ----
-
-/** Micro-dollars as dollars: `$12.34`, `<$0.01`, `-` for none. */
-export function money(micros: number | null): string {
-  if (micros === null) return "-";
-  if (micros > 0 && micros < 5_000) return "<$0.01";
-  const dollars = micros / 1_000_000;
-  return `$${dollars.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-/** 950, 12.3k, 4.5M, 1.2B. */
-export function count(n: number): string {
-  if (n < 1_000) return String(n);
-  for (const [div, unit] of [
-    [1e9, "B"],
-    [1e6, "M"],
-    [1e3, "k"],
-  ] as const)
-    if (n >= div) return `${(n / div).toFixed(1)}${unit}`;
-  return String(n);
-}
-
-/** 45s, 12m, 3h 05m, 2d 4h. */
-export function duration(ms: number): string {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
-  return `${Math.floor(h / 24)}d ${h % 24}h`;
-}
 
 const percent = (x: number | null) => (x === null ? "-" : `${Math.round(x * 100)}%`);
 

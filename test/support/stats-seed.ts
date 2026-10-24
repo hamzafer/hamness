@@ -27,14 +27,59 @@ export function seeder(sqlite: Database) {
     return id;
   };
 
-  const task = (o: { sessionId: string; at: number; outcome: Outcome }) => {
+  const task = (o: {
+    sessionId: string;
+    at: number;
+    outcome: Outcome;
+    goal?: string;
+    implicit?: boolean;
+    endAt?: number | null;
+    reason?: string | null;
+  }) => {
     const id = newId();
     sqlite
       .query(
-        `INSERT INTO tasks (id, session_id, goal, outcome, started_at, created_at, updated_at)
-         VALUES (?, ?, 'a goal', ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, session_id, goal, implicit, outcome, outcome_reason, started_at,
+           ended_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, o.sessionId, o.outcome, o.at, o.at, o.at);
+      .run(
+        id,
+        o.sessionId,
+        o.goal ?? "a goal",
+        o.implicit ? 1 : 0,
+        o.outcome,
+        o.reason ?? null,
+        o.at,
+        o.endAt ?? null,
+        o.at,
+        o.at,
+      );
+    return id;
+  };
+
+  /** A claim, then (unless pending) the checker's result, the way proof.ts writes it. */
+  const evidence = (o: {
+    taskId: string;
+    at: number;
+    kind?: "command" | "file" | "url" | "ci";
+    claim?: Record<string, unknown>;
+    status: "pending" | "passed" | "failed" | "error";
+    summary?: string;
+  }) => {
+    const id = newId();
+    const kind = o.kind ?? "command";
+    const claim = o.claim ?? { kind, command: "bun test" };
+    sqlite
+      .query(
+        `INSERT INTO evidence (id, task_id, kind, claim_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, o.taskId, kind, JSON.stringify(claim), o.at, o.at);
+    if (o.status !== "pending")
+      sqlite
+        .query("UPDATE evidence SET status = ?, result_json = ?, checked_at = ? WHERE id = ?")
+        .run(o.status, JSON.stringify({ summary: o.summary ?? o.status, exitCode: 0 }), o.at, id);
     return id;
   };
 
@@ -96,24 +141,31 @@ export function seeder(sqlite: Database) {
     source: "rule" | "judge" | "hook" | "user" | "mode";
     latencyMs?: number | null;
     costMicros?: number;
+    reason?: string | null;
+    rule?: string | null;
   }) => {
+    const id = newId();
     sqlite
       .query(
-        `INSERT INTO decisions (id, session_id, tool, verdict, source, latency_ms, cost_micros, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO decisions (id, session_id, tool, verdict, source, reason, rule, latency_ms,
+           cost_micros, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        newId(),
+        id,
         o.sessionId ?? null,
         o.tool ?? "bash",
         o.verdict,
         o.source,
+        o.reason ?? null,
+        o.rule ?? null,
         o.latencyMs ?? null,
         o.costMicros ?? 0,
         o.at,
         o.at,
       );
+    return id;
   };
 
-  return { session, task, modelCall, toolCall, decision };
+  return { session, task, evidence, modelCall, toolCall, decision };
 }

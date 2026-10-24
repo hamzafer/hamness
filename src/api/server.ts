@@ -16,6 +16,17 @@ export interface ApiOptions {
   hello: () => HamnessEvent;
   /** Feature routes, called after the token check. Return undefined for "not mine". */
   routes?: (req: Request, url: URL) => Promise<Response | undefined>;
+  /** The web dashboard: its page (no token: it holds no data) and its data routes (token). */
+  dashboard?: DashboardMount;
+}
+
+export type RouteHandler = (req: Request, url: URL) => Promise<Response | undefined>;
+
+export interface DashboardMount {
+  /** Static page and assets only, served before the token check (the Host check still runs). */
+  page: RouteHandler;
+  /** JSON routes, after the token check. */
+  api: RouteHandler;
 }
 
 export interface ApiServer {
@@ -43,6 +54,8 @@ export function startApiServer(opts: ApiOptions): ApiServer {
     async fetch(req, srv) {
       const url = new URL(req.url);
       if (!isLocalHost(req)) return json({ error: "forbidden host" }, 403);
+      const page = await opts.dashboard?.page(req, url);
+      if (page) return page;
 
       const isEvents = url.pathname === "/v1/events";
       if (!tokensMatch(opts.token, tokenFromRequest(req, url, isEvents))) {
@@ -55,7 +68,7 @@ export function startApiServer(opts: ApiOptions): ApiServer {
       }
       if (req.method === "GET" && url.pathname === "/v1/health") return json(opts.health());
       try {
-        const res = await opts.routes?.(req, url);
+        const res = (await opts.dashboard?.api(req, url)) ?? (await opts.routes?.(req, url));
         if (res) return res;
       } catch (err) {
         return json({ error: (err as Error).message }, 500);
