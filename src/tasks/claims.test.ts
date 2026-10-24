@@ -118,3 +118,90 @@ describe("command evidence must be able to prove something (ADR 0019)", () => {
     }
   });
 });
+
+describe("flags that make a check a no-op are refused, per runner (V-M2)", () => {
+  const refused = (command: string) => {
+    const parsed = parseClaim({ kind: "command", command });
+    return parsed.ok ? undefined : parsed.error;
+  };
+
+  test("no-op flags in any spelling: --flag=value, after --, short clusters", () => {
+    for (const c of [
+      "go test -exec /usr/bin/true ./...",
+      "go test --exec=/usr/bin/true ./...",
+      "go test -toolexec x ./...",
+      "go test -n ./...",
+      "go test -run '^$' ./...",
+      "go test -run=^$ ./...",
+      "go test -list . ./...",
+      "ruff check --exit-zero",
+      "make test -i",
+      "make test -t",
+      "make test -n",
+      "make -k test",
+      "make -q test",
+      "make -ik test",
+      "make test --just-print",
+      "make test --ignore-errors",
+      "mvn test -DskipTests",
+      "mvn verify -Dmaven.test.skip=true",
+      "mvn test -Dmaven.test.failure.ignore=true",
+      "mvn test --fail-never",
+      "gradle test -x test",
+      "gradle test --exclude-task test",
+      "./gradlew test -m",
+      "tsc -v",
+      "npx tsc --init",
+      "tsc --noCheck --noEmit",
+      "tsc --build --clean",
+      "tsc --showConfig",
+      "pytest --fixtures",
+      "pytest --fixtures-per-test",
+      "pytest --setup-plan",
+      "pytest --setup-only",
+      "pytest --markers",
+      "python -m pytest --co",
+      "pytest -k ''",
+      "eslint --no-error-on-unmatched-pattern zz",
+      "eslint --print-config x.js",
+      "eslint --env-info",
+      "biome check --no-errors-on-unmatched zz",
+      "npm run lint --if-present",
+      "bun run test --if-present",
+      "npm test -- --passWithNoTests=true",
+      "npm test -- --passWithNoTests",
+      "bun test --pass-with-no-tests=true",
+      "yarn test --passwithnotests",
+      "cargo test -- --skip ''",
+      "cargo test -- --list",
+      "deno test --permit-no-files",
+      "mix test --exclude test",
+      "bun test -t ''",
+      "npm test -- --testNamePattern=",
+      "dotnet test --list-tests",
+    ]) {
+      expect(refused(c), c).toBeDefined();
+    }
+  });
+
+  test("the same flags mean something else for other commands, and real flags pass", () => {
+    for (const c of [
+      "bun test -t greeting",
+      "go test -run TestGreeting ./...",
+      "go test -v ./...",
+      "pytest -k greeting -x",
+      "make -j4 test",
+      "make -C web test",
+      "mvn -q test",
+      "gradle test --continue",
+      "tsc --noEmit -p tsconfig.json",
+      "eslint --max-warnings 0 src",
+      "cargo test --all -- --nocapture",
+      "npm test -- --runInBand",
+      "bun test --bail",
+      "ruff check --fix src",
+    ]) {
+      expect(refused(c), c).toBeUndefined();
+    }
+  });
+});

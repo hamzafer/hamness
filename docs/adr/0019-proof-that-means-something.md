@@ -7,7 +7,8 @@ ADR 0005 made `verified` mean "a hamness checker passed a piece of evidence". Th
 **A command must be able to prove something.** `parseClaim` refuses, before anything runs:
 - commands joined by `||`, `;`, a new line or `&`, and `!`: they can turn a failure into exit 0. Only `&&` and `|` join commands, and a pipe runs under bash's `pipefail`;
 - words known only at run time (`$VAR`, `$(...)`, backticks);
-- no-ops that set the exit code (`true`, `:`, `exit`, `set`, `trap`, ...) and flags that only print (`--help`, `--version`, `--collect-only`, `--passWithNoTests`, ...);
+- no-ops that set the exit code (`true`, `:`, `exit`, `set`, `trap`, ...);
+- flags that make a check print, skip or pass without checking, by a denylist per runner (`src/tasks/proof-shape.ts`): for any runner `--help`, `--version`, `--collect-only`, `--if-present`, `--exit-zero`, `--no-error-on-unmatched-pattern`, `--passWithNoTests` in any spelling; `tsc -v --init --noCheck --clean`; make's `-i -t -n -k -q` (clustered too); `-DskipTests`, `-Dmaven.test.skip`; gradle `-x`; `go test -exec -toolexec -n -list`; pytest `--fixtures --setup-plan --markers`; and test filters that obviously select nothing (`-run '^$'`, `-k ''`) or skip everything (`--skip ''`). `--flag=value` is read as `--flag`, and words after `--` count. A denylist, not an allowlist of flag shapes, because real checks take too many legitimate flags to list; a filter that matches nothing in a less obvious way is caught at run time by the no-tests-ran check below, or not at all;
 - commands made only of read-only or printing parts (`echo`, `printf`, `cat`, `ls`, `grep`, `test`, `git status` ...). A `sh -c` string is looked into.
 
 A run that exits 0 but shows that no tests ran (`Ran 0 tests`, `no tests to run`, `No tests found`, only `running 0 tests` lines) fails.

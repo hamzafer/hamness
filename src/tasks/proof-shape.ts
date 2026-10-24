@@ -77,8 +77,14 @@ const INERT = new Set([
 ]);
 const INERT_GIT = new Set(["status", "diff", "log", "show", "branch", "rev-parse", "ls-files"]);
 
-/** Flags that make a test runner, build or linter print and exit without checking. */
-const INFO_FLAGS = new Set([
+/**
+ * No-op flags (V-M2): flags that make a test runner, build or linter print, skip, or exit 0
+ * without checking. A denylist per runner rather than an allowlist of flag shapes: real checks
+ * take too many legitimate flags to list, and what slips through (a filter that matches
+ * nothing) is mostly caught at run time by the "no tests ran" check. `--flag=value` is read
+ * as `--flag`, every word counts (also after `--`), and `--passWithNoTests` in any spelling.
+ */
+const ANY_RUNNER = new Set([
   "--help",
   "-h",
   "--version",
@@ -86,13 +92,132 @@ const INFO_FLAGS = new Set([
   "--dry-run",
   "--list",
   "--list-tests",
+  "--listTests",
   "--collect-only",
   "--co",
-  "--passWithNoTests",
-  "--pass-with-no-tests",
-  "--listTests",
   "--showConfig",
+  "--show-config",
+  "--print-config",
+  "--env-info",
+  "--if-present",
+  "--exit-zero",
+  "--no-error-on-unmatched-pattern",
+  "--no-errors-on-unmatched",
+  "--permit-no-files",
 ]);
+
+/** Flags that pick which tests run: a value that obviously matches nothing runs nothing. */
+const FILTER_FLAGS = new Set([
+  "-t",
+  "--test-name-pattern",
+  "--testNamePattern",
+  "--testPathPattern",
+  "--test-path-pattern",
+  "-k",
+  "-run",
+  "--run",
+  "--filter",
+  "--grep",
+  "-g",
+]);
+/** Flags that skip the tests they match: a value that matches everything skips them all. */
+const SKIP_FLAGS = new Set(["--skip", "-skip", "--exclude"]);
+
+const selectsNothing = (v: string) => /^\s*$|^\^\$$|^\$\^$|^\(\?!\)$|^\^\\b\$$/.test(v);
+const matchesAll = (v: string) => /^\s*$|^\.\*?$|^\*$|^\.\+$/.test(v);
+
+type Policy = {
+  /** Flags (already without `=value`) that are no-ops for this runner. */
+  flags?: ReadonlySet<string>;
+  /** Short options that can be clustered (`make -ik`): any of these letters refuses. */
+  cluster?: RegExp;
+  /** Any other word test (maven's -D properties, mix's --exclude test). */
+  word?: (word: string, next: string | undefined) => boolean;
+};
+
+const POLICIES: Record<string, Policy> = {
+  tsc: {
+    flags: new Set(["-v", "--init", "--noCheck", "--clean", "--listFilesOnly", "--all"]),
+  },
+  make: {
+    flags: new Set([
+      "--ignore-errors",
+      "--touch",
+      "--just-print",
+      "--recon",
+      "--keep-going",
+      "--question",
+    ]),
+    cluster: /^-[A-Za-z]*[iknqt][A-Za-z]*$/,
+  },
+  go: {
+    flags: new Set(["-exec", "-toolexec", "-n", "-list"]),
+  },
+  mvn: {
+    flags: new Set(["-fn", "--fail-never"]),
+    word: (w) =>
+      /^-D(?:skipTests|maven\.test\.skip|maven\.test\.failure\.ignore|testFailureIgnore|surefire\.skip|failIfNoTests|surefire\.failIfNoSpecifiedTests|skip)\b/.test(
+        w,
+      ),
+  },
+  gradle: { flags: new Set(["-x", "--exclude-task", "-m"]) },
+  pytest: {
+    flags: new Set([
+      "--fixtures",
+      "--funcargs",
+      "--fixtures-per-test",
+      "--setup-plan",
+      "--setup-only",
+      "--markers",
+    ]),
+  },
+  cargo: { flags: new Set(["--no-run"]) },
+  mix: { word: (w, next) => w === "--exclude" && next === "test" },
+};
+
+/** The runner a command's words start: launchers (`npx`, `python -m`, `uv run`) stripped. */
+function runnerOf(words: string[]): string {
+  let w = words;
+  for (;;) {
+    const head = w[0] ?? "";
+    if (["npx", "bunx", "pnpx"].includes(head)) w = w.slice(1);
+    else if ((head === "pnpm" || head === "yarn") && ["exec", "dlx"].includes(w[1] ?? ""))
+      w = w.slice(2);
+    else if (head === "uv" && w[1] === "run") w = w.slice(2);
+    else if (/^python3?$/.test(head) && w[1] === "-m") w = w.slice(2);
+    else break;
+  }
+  const head = basename(w[0] ?? "");
+  return head === "gradlew" ? "gradle" : head;
+}
+
+/** A no-op flag in a check's words, or undefined. */
+function noOpFlag(words: string[]): string | undefined {
+  const runner = runnerOf(words);
+  const policy = POLICIES[runner] ?? {};
+  const rest = words.slice(1);
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i] as string;
+    const next = rest[i + 1];
+    if (/pass-?with-?no-?tests/i.test(word)) return word;
+    if (!word.startsWith("-")) continue;
+    const eq = word.indexOf("=");
+    let flag = eq > 0 ? word.slice(0, eq) : word;
+    const value = eq > 0 ? word.slice(eq + 1) : next;
+    // Go reads -flag and --flag alike.
+    if (runner === "go" && flag.startsWith("--")) flag = flag.slice(1);
+    if (ANY_RUNNER.has(flag) || policy.flags?.has(flag)) return word;
+    if (policy.cluster && !flag.startsWith("--") && policy.cluster.test(flag)) return word;
+    if (policy.word?.(word, next)) return `${word}${next && eq < 0 ? ` ${next}` : ""}`;
+    if (value !== undefined && FILTER_FLAGS.has(flag) && selectsNothing(value)) {
+      return `${flag} ${JSON.stringify(value)}`;
+    }
+    if (value !== undefined && SKIP_FLAGS.has(flag) && matchesAll(value)) {
+      return `${flag} ${JSON.stringify(value)}`;
+    }
+  }
+  return undefined;
+}
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 
@@ -133,8 +258,8 @@ function segmentProblem(seg: Segment, depth: number): string | boolean {
   if (!head) return false;
   if (NO_OPS.has(head))
     return `\`${head}\` proves nothing: it sets the exit code without checking anything`;
-  const info = rest.find((w) => INFO_FLAGS.has(w));
-  if (info) return `\`${info}\` only prints information; it checks nothing`;
+  const noOp = noOpFlag(words);
+  if (noOp) return `\`${noOp}\` makes it print, skip or pass without checking; it checks nothing`;
 
   if (SHELLS.has(head)) {
     const flag = rest.findIndex((w) => /^-[a-z]*c[a-z]*$/.test(w));
