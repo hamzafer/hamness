@@ -140,14 +140,16 @@ const escapeGlob = (s: string) => s.replace(/[*?{},\\]/g, "\\$&");
 
 function expandPathPattern(pattern: string, ctx: EvalContext): string {
   if (pattern === "*" || pattern === "**") return "**";
-  if (pattern.startsWith("$CWD")) return escapeGlob(ctx.cwd) + pattern.slice(4);
+  // At `/`, `$CWD/x` is `/x`, not `//x`.
+  const cwd = ctx.cwd === "/" ? "" : escapeGlob(ctx.cwd);
+  if (pattern.startsWith("$CWD")) return cwd + pattern.slice(4);
   if (pattern.startsWith("$DATA")) return escapeGlob(ctx.dataDir) + pattern.slice(5);
   if (pattern.startsWith("$HOME")) return escapeGlob(ctx.home) + pattern.slice(5);
   if (pattern === "~" || pattern.startsWith("~/") || pattern.startsWith("~{")) {
     return escapeGlob(ctx.home) + pattern.slice(1);
   }
   if (pattern.startsWith("/") || pattern.startsWith("**")) return pattern;
-  return `${escapeGlob(ctx.cwd)}/${pattern}`;
+  return `${cwd}/${pattern}`;
 }
 
 /** The last matching rule, where a project rule can't loosen an ask/deny from below it. */
@@ -261,20 +263,36 @@ function checkResolved(tool: string, lexical: string, rules: Rule[], ctx: EvalCo
   let worst: Part | undefined;
   for (const [path, c] of candidates) {
     const rule = lookup(rules, tool, (p) => matchPath(expandPathPattern(p, c), path));
-    const part: Part = rule
-      ? {
-          verdict: rule.verdict,
-          rule,
-          reason: `${verbFor(rule.verdict)} by ${describeRule(rule)} for ${path}`,
-        }
-      : {
-          verdict: "undecided",
-          reason: `no rule matches ${tool} ${path}`,
-          suggestion: pathSuggestion(tool, path, c),
-        };
+    const part: Part =
+      rule?.verdict === "allow" && rule.pattern.startsWith("$CWD") && broadWorkspace(c.cwd, c.home)
+        ? {
+            verdict: "ask",
+            reason: `the session runs in your home folder or /, so ${describeRule(rule)} does not allow ${path}`,
+            suggestion: null,
+          }
+        : rule
+          ? {
+              verdict: rule.verdict,
+              rule,
+              reason: `${verbFor(rule.verdict)} by ${describeRule(rule)} for ${path}`,
+            }
+          : {
+              verdict: "undecided",
+              reason: `no rule matches ${tool} ${path}`,
+              suggestion: pathSuggestion(tool, path, c),
+            };
     if (!worst || RANK[part.verdict] > RANK[worst.verdict]) worst = part;
   }
   return worst as Part;
+}
+
+/**
+ * A session dir too broad for `$CWD` rules to mean "the project": the home folder or `/`.
+ * There, `$CWD/**` would allow writing `~/.zshrc`, so those rules ask instead.
+ */
+export function broadWorkspace(cwd: string, home: string): boolean {
+  const dir = resolve(cwd);
+  return dir === "/" || dir === resolve(home);
 }
 
 const verbFor = (v: RuleVerdict) => (v === "allow" ? "allowed" : v === "deny" ? "denied" : "asked");

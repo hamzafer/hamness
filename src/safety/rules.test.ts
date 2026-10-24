@@ -5,7 +5,14 @@ import { pathToFileURL } from "node:url";
 // Pi's own resolver, the tools' source of truth (not exported from the package index).
 import { resolveToCwd } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.js";
 import { defaultRules } from "./defaults.ts";
-import { type EvalContext, evaluate, parsePermission, piToolPath, type Rule } from "./rules.ts";
+import {
+  broadWorkspace,
+  type EvalContext,
+  evaluate,
+  parsePermission,
+  piToolPath,
+  type Rule,
+} from "./rules.ts";
 
 const ctx: EvalContext = { cwd: "/work/proj", home: "/home/u", dataDir: "/data/hamness" };
 const defaults = defaultRules();
@@ -477,5 +484,25 @@ describe("globs and recursive reads (S-M1, S-M2)", () => {
     expect(verdict(tool("grep", { pattern: "TODO" }))).toBe("allow");
     expect(verdict(tool("find", { pattern: "*.ts", path: "src" }))).toBe("allow");
     expect(verdict(tool("ls", { path: "/home/u" }))).toBe("allow");
+  });
+});
+
+describe("a session in the home folder or / (S-L5)", () => {
+  test("$CWD rules don't allow writes there; they ask", () => {
+    const inHome: EvalContext = { ...ctx, cwd: "/home/u" };
+    const write = (path: string, c: EvalContext) =>
+      evaluate({ tool: "write", args: { path, content: "" } }, defaults, c);
+    expect(verdict(write(".zshrc", inHome))).toBe("ask");
+    expect(write("notes/a.md", inHome).reason).toContain("home folder");
+    expect(verdict(write("etc/x", { ...ctx, cwd: "/" }))).toBe("ask");
+    expect(verdict(write("/home/u/.ssh/config", inHome))).toBe("deny");
+    expect(verdict(write("src/a.ts", ctx))).toBe("allow");
+  });
+
+  test("broadWorkspace names those folders", () => {
+    expect(broadWorkspace("/home/u", "/home/u")).toBe(true);
+    expect(broadWorkspace("/home/u/", "/home/u")).toBe(true);
+    expect(broadWorkspace("/", "/home/u")).toBe(true);
+    expect(broadWorkspace("/home/u/proj", "/home/u")).toBe(false);
   });
 });

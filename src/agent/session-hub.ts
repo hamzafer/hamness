@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { type ClaudeHooks, claudePermissionMode, type HookSession } from "../compat/hooks.ts";
@@ -22,6 +23,7 @@ import {
   redactArgs,
   type SafetyCheck,
 } from "../safety/index.ts";
+import { broadWorkspace } from "../safety/rules.ts";
 import { type GhRunner, runGh } from "../tasks/checkers/index.ts";
 import { SessionTasks } from "../tasks/session-tasks.ts";
 import { PROOF_GATE_PROMPT, taskTools } from "../tasks/tools.ts";
@@ -141,6 +143,8 @@ interface LiveSession extends AgentState {
   /** SessionStart hook context and notice, for the first prompt. */
   startContext?: string | undefined;
   startNotice?: string | undefined;
+  /** Set once the "runs in your home folder or /" notice went out. */
+  broadNoticeShown?: boolean;
   /** The text of the last reply, for Stop hooks. */
   lastReply: string;
   /** True while a Stop hook keeps the turn going; `stopStreak` counts it (tool calls reset it). */
@@ -251,6 +255,13 @@ export class SessionHub {
   private async send(live: LiveSession, text: string): Promise<void> {
     live.stopActive = false;
     live.stopStreak = 0;
+    if (!live.broadNoticeShown && broadWorkspace(live.cwd, homedir())) {
+      live.broadNoticeShown = true;
+      this.emit(live, {
+        type: "agent.notice",
+        message: `This session runs in ${live.cwd}, your home folder or /. Writes there ask instead of being allowed as the project's; start hamness in a project folder for the usual rules.`,
+      });
+    }
     const hooks = this.opts.hooks;
     if (!hooks) return live.runner.prompt(text);
     await live.ready;
