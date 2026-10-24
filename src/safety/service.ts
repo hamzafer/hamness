@@ -266,7 +266,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
     }
     recent.delete(sessionId);
     if (answer.decision === "allow-always" && suggestions.length > 0) {
-      addProjectRules(cwd, suggestions);
+      addProjectRules(opts.dataDir, cwd, suggestions);
       const saved = suggestions.map((s) => `${s.tool} "${s.pattern}"`).join(", ");
       record({
         verdict: "allow",

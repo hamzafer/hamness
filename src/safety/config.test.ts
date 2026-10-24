@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeWorktree } from "../../test/support/files.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
+import { addTrusted, allowItem } from "../trust/index.ts";
 import { addProjectRules, loadJudgeConfig, loadSafetyConfig, projectConfigPath } from "./config.ts";
 
 let home: ReturnType<typeof tempHome>;
@@ -40,6 +41,7 @@ describe("loading safety config", () => {
     writeJson(join(repo, ".hamness", "config.json"), {
       safety: { permission: { bash: { "make *": "allow" } } },
     });
+    addTrusted(dataDir, realpathSync(repo), "safety", [allowItem("bash", "make *")]);
     const c = loadSafetyConfig(dataDir, join(repo, "pkg", "sub"));
     expect(c.mode).toBe("ask");
     expect(c.approvalTimeoutMs).toBe(30_000);
@@ -62,6 +64,26 @@ describe("loading safety config", () => {
     });
     expect(projectConfigPath(wt)).toBe(join(repo, ".hamness", "config.json"));
     expect(loadSafetyConfig(dataDir, wt).rules.at(-1)?.pattern).toBe("make deploy *");
+  });
+
+  test("project allow rules apply only once the repo trusts them; ask and deny always do (S-H5)", () => {
+    writeJson(join(repo, ".hamness", "config.json"), {
+      safety: {
+        permission: { bash: { "curl *": "allow", "make deploy *": "ask" }, "*": "allow" },
+      },
+    });
+    const untrusted = loadSafetyConfig(dataDir, repo);
+    const project = (c: typeof untrusted) =>
+      c.rules
+        .filter((r) => r.layer === "project")
+        .map((r) => `${r.tool} ${r.pattern} ${r.verdict}`);
+    expect(project(untrusted)).toEqual(["bash make deploy * ask"]);
+    expect(untrusted.untrusted.map((r) => r.pattern)).toEqual(["curl *", "*"]);
+
+    addTrusted(dataDir, realpathSync(repo), "safety", [allowItem("bash", "curl *")]);
+    const trusted = loadSafetyConfig(dataDir, repo);
+    expect(project(trusted)).toEqual(["bash curl * allow", "bash make deploy * ask"]);
+    expect(trusted.untrusted.map((r) => r.tool)).toEqual(["*"]);
   });
 
   test("a project config cannot change the mode", () => {
@@ -90,7 +112,7 @@ describe("saving 'allow always' rules to the project config", () => {
       other: true,
       safety: { permission: { bash: "ask", read: { "x/**": "deny" } } },
     });
-    addProjectRules(repo, [
+    addProjectRules(dataDir, repo, [
       { tool: "bash", pattern: "npm test *", verdict: "allow", layer: "project" },
       { tool: "write", pattern: "~/notes/**", verdict: "allow", layer: "project" },
     ]);
@@ -118,7 +140,7 @@ describe("saving 'allow always' rules to the project config", () => {
     writeJson(join(repo, ".hamness", "config.json"), {
       safety: { permission: { bash: { "make *": "deny", "ls *": "allow" } } },
     });
-    addProjectRules(repo, [
+    addProjectRules(dataDir, repo, [
       { tool: "bash", pattern: "make *", verdict: "allow", layer: "project" },
     ]);
     const saved = JSON.parse(readFileSync(join(repo, ".hamness", "config.json"), "utf8"));

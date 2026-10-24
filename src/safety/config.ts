@@ -1,8 +1,9 @@
 import { join } from "node:path";
-import { projectRoot } from "../compat/paths.ts";
+import { projectKey, projectRoot } from "../compat/paths.ts";
 import { type Json, readJson, writeJsonAtomic } from "../config/json.ts";
 import { userConfigFile } from "../config/paths.ts";
 import type { SafetyMode } from "../events/types.ts";
+import { addTrusted, allowItem, isTrusted } from "../trust/index.ts";
 import { defaultRules } from "./defaults.ts";
 import { parsePermission, type Rule } from "./rules.ts";
 
@@ -27,8 +28,10 @@ export const SAFETY_MODES: readonly SafetyMode[] = ["ask", "auto", "yolo"];
 export interface SafetyConfig {
   mode: SafetyMode;
   approvalTimeoutMs: number;
-  /** Defaults, then user rules, then project rules. */
+  /** Defaults, then user rules, then project rules (allow rules only once trusted). */
   rules: Rule[];
+  /** Project allow rules left out because the repo has not trusted them (`hamness trust`). */
+  untrusted: Rule[];
 }
 
 export const DEFAULT_MODE: SafetyMode = "auto";
@@ -76,19 +79,29 @@ export function loadSafetyConfig(dataDir: string, cwd: string): SafetyConfig {
     }
   };
 
+  // A repo's allow rules loosen safety, so they wait for the user's trust (ADR 0020).
+  const key = projectKey(cwd);
+  const projectRules = parse(projectPath, project, "project");
+  const isTrustedRule = (r: Rule) =>
+    r.verdict !== "allow" || isTrusted(dataDir, key, "safety", allowItem(r.tool, r.pattern));
+
   return {
     mode: mode as SafetyMode,
     approvalTimeoutMs: timeoutSec === undefined ? DEFAULT_APPROVAL_TIMEOUT_MS : timeoutSec * 1000,
     rules: [
       ...defaultRules(),
       ...parse(userPath, user, "user"),
-      ...parse(projectPath, project, "project"),
+      ...projectRules.filter(isTrustedRule),
     ],
+    untrusted: projectRules.filter((r) => !isTrustedRule(r)),
   };
 }
 
-/** Appends rules to the project config ("allow always"). A pattern already there moves to the end. */
-export function addProjectRules(cwd: string, rules: Rule[]): string {
+/**
+ * Appends rules to the project config ("allow always"). A pattern already there moves to the
+ * end. The user chose them, so their allow rules are trusted for the repo as they are saved.
+ */
+export function addProjectRules(dataDir: string, cwd: string, rules: Rule[]): string {
   const path = projectConfigPath(cwd);
   const file = readJson(path) ?? {};
   const safety = { ...safetyBlock(path, file) };
@@ -108,6 +121,13 @@ export function addProjectRules(cwd: string, rules: Rule[]): string {
   file.safety = safety;
 
   writeJsonAtomic(path, file, 0o644);
+  const allows = rules.filter((r) => r.verdict === "allow");
+  addTrusted(
+    dataDir,
+    projectKey(cwd),
+    "safety",
+    allows.map((r) => allowItem(r.tool, r.pattern)),
+  );
   return path;
 }
 
