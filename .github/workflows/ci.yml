@@ -32,3 +32,14 @@ jobs:
       - run: bun run typecheck
       - run: bun run lint
       - run: bun test
+      # A fresh global install, as the README's quickstart does it, run from outside the repo.
+      - name: install smoke test
+        env:
+          BUN_INSTALL: ${{ runner.temp }}/bun-global
+          HAMNESS_HOME: ${{ runner.temp }}/hamness-home
+          ANTHROPIC_API_KEY: sk-ant-ci-not-a-real-key
+        working-directory: ${{ runner.temp }}
+        run: |
+          bun install -g "$GITHUB_WORKSPACE"
+          "$BUN_INSTALL/bin/hamness" --version
+          "$BUN_INSTALL/bin/hamness" doctor
