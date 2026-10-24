@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { TextAttributes } from "@opentui/core";
 import { testRender } from "@opentui/solid";
 import type { DaemonClient } from "../client/client.ts";
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
@@ -92,10 +93,24 @@ async function render(
   return setup;
 }
 
+/**
+ * Renders until `pred` holds. Assistant Markdown lays out a few milliseconds after its content
+ * changes, so this waits on the clock too, not only on render passes.
+ */
+async function frameWhere(s: Setup, pred: (frame: string) => boolean): Promise<string> {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    await Bun.sleep(2);
+    await s.renderOnce();
+    const frame = s.captureCharFrame();
+    if (pred(frame) || Date.now() > deadline) return frame;
+  }
+}
+
 describe("TUI chat layout (headless)", () => {
   test("renders the transcript, a compact tool line, the input box and the rail placeholder", async () => {
     const s = await render(fakeClient().client);
-    const frame = s.captureCharFrame();
+    const frame = await frameWhere(s, (f) => f.includes("The word is fig."));
     expect(frame).toContain("what is the word?");
     expect(frame).toContain("Let me read it.");
     expect(frame).toMatch(/read +notes\.txt.*12ms/);
@@ -115,7 +130,7 @@ describe("TUI chat layout (headless)", () => {
     fake.send({ type: "agent.message.start", messageId: "m4", role: "assistant" });
     fake.send({ type: "agent.message.delta", messageId: "m4", text: "Streaming " });
     fake.send({ type: "agent.message.delta", messageId: "m4", text: "works." });
-    await s.waitForFrame((f) => f.includes("Streaming works."));
+    await frameWhere(s, (f) => f.includes("Streaming works."));
     fake.send({
       type: "agent.tool.start",
       toolCallId: "t2",
@@ -146,7 +161,7 @@ describe("TUI chat layout (headless)", () => {
     await s.waitForFrame((f) => /thinking… 3s/.test(f));
     fake.send({ type: "agent.message.start", messageId: "m4", role: "assistant" });
     fake.send({ type: "agent.message.delta", messageId: "m4", text: "First token." });
-    await s.waitForFrame((f) => f.includes("First token.") && !f.includes("thinking"));
+    await frameWhere(s, (f) => f.includes("First token.") && !f.includes("thinking"));
     fake.send({
       type: "agent.message.end",
       messageId: "m4",
@@ -181,6 +196,39 @@ describe("TUI chat layout (headless)", () => {
     expect(frame).toMatch(/hamness · ~\/…\/[\w/-]*claude-code-mods · anthropic\/claude-opus-5-5/);
     const hint = frame.split("\n").find((l) => l.includes("Ask hamness")) ?? "";
     expect(hint).toMatch(/Ask hamness…[^│]*\)/);
+  });
+
+  test("assistant replies render as Markdown, also while streaming; prompts stay plain", async () => {
+    const fake = fakeClient();
+    const md = {
+      ...snapshot,
+      items: [
+        { kind: "message" as const, id: "u1", role: "user" as const, text: "keep **this** raw" },
+        {
+          kind: "message" as const,
+          id: "a1",
+          role: "assistant" as const,
+          text: "## Plan\n\nSome **bold** and `code`.\n\n- first item\n- second item\n",
+        },
+      ],
+    };
+    const s = await render(fake.client, md);
+    const frame = await frameWhere(s, (f) => f.includes("Some bold and code."));
+    expect(frame).toContain("Some bold and code.");
+    expect(frame).toContain("keep **this** raw");
+    expect(frame).toContain("Plan");
+    expect(frame).not.toContain("## Plan");
+    expect(frame).toContain("first item");
+    const spans = s.captureSpans().lines.flatMap((l) => l.spans);
+    const bold = spans.find((sp) => sp.text.includes("bold"));
+    expect((bold?.attributes ?? 0) & TextAttributes.BOLD).toBeTruthy();
+
+    fake.send({ type: "agent.message.start", messageId: "a2", role: "assistant" });
+    fake.send({ type: "agent.message.delta", messageId: "a2", text: "Now **str" });
+    fake.send({ type: "agent.message.delta", messageId: "a2", text: "eaming** works" });
+    expect(await frameWhere(s, (f) => f.includes("Now streaming works"))).toContain(
+      "Now streaming works",
+    );
   });
 
   test("ignores events for other sessions and events the snapshot already has", async () => {

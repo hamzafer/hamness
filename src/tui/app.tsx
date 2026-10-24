@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
-import type { KeyBinding, TextareaRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import type { KeyBinding, SyntaxStyle, TextareaRenderable } from "@opentui/core";
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { ModelInfo } from "../agent/models.ts";
@@ -21,6 +21,7 @@ import {
 } from "./chat-state.ts";
 import { COMMAND_WORDS, HelpPanel } from "./help.tsx";
 import { promptHint, shortPath } from "./layout.ts";
+import { markdownStyle } from "./markdown.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
 import { applyRailEvent, initialRail } from "./rail-state.ts";
@@ -68,9 +69,11 @@ export function App(props: AppProps) {
     setRail(produce((r) => applyRailEvent(r, e, now())));
     setClock(now());
   });
+  const md = markdownStyle(useRenderer().nativeScene);
   onCleanup(() => {
     off();
     clearInterval(tick);
+    md.destroy();
   });
   /** When the current wait for the model began (`waitingForModel`), for its elapsed seconds. */
   const [waitingSince, setWaitingSince] = createSignal<number | undefined>();
@@ -203,7 +206,11 @@ export function App(props: AppProps) {
         <scrollbox stickyScroll stickyStart="bottom" flexGrow={1} minHeight={0}>
           <For each={state.items}>
             {(item) =>
-              item.kind === "message" ? <MessageView message={item} /> : <ToolLine tool={item} />
+              item.kind === "message" ? (
+                <MessageView message={item} markdown={md} />
+              ) : (
+                <ToolLine tool={item} />
+              )
             }
           </For>
           <Show when={waitingSince() !== undefined}>
@@ -281,14 +288,23 @@ const PROMPT_KEYS: KeyBinding[] = [
 type MessageItem = Extract<TranscriptItem, { kind: "message" }>;
 type ToolItem = Extract<TranscriptItem, { kind: "tool" }>;
 
-function MessageView(props: { message: MessageItem }) {
+/** A user prompt as typed; an assistant reply as Markdown, re-rendered as it streams. */
+function MessageView(props: { message: MessageItem; markdown: SyntaxStyle }) {
   const m = () => props.message;
   return (
     <box paddingTop={m().role === "user" ? 1 : 0} flexDirection="column">
       <Show when={m().text || m().streaming}>
-        <text fg={m().role === "user" ? COLORS.user : COLORS.assistant}>
-          {m().role === "user" ? `› ${m().text}` : m().text}
-        </text>
+        <Show
+          when={m().role === "assistant"}
+          fallback={<text fg={COLORS.user}>{`› ${m().text}`}</text>}
+        >
+          <markdown
+            content={m().text}
+            syntaxStyle={props.markdown}
+            fg={COLORS.assistant}
+            streaming={m().streaming === true}
+          />
+        </Show>
       </Show>
       <Show when={m().error}>
         <text fg={COLORS.error}>error: {m().error}</text>
