@@ -104,7 +104,7 @@ A task is **verified** only when its latest evidence passed after its last file 
 
 Every tool call passes **allow / ask / deny rules** before it runs (ADR 0006). The defaults:
 
-- Reads are allowed, except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys). A recursive read (`grep -r`, `rg`, `find`, the grep and find tools) over a folder that holds them asks.
+- Reads are allowed, except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys). A recursive read (`grep -r`, `rg`, `find`, the grep and find tools) over a folder that holds them asks, and so does one that reads contents (`grep -r`, `rg`, `ag`, the grep tool) when the files it would open include a denied one, such as a repo's `.env` (rg and the grep tool skip what `.gitignore` ignores, so an ignored `.env` does not count for them). On a case-insensitive filesystem these paths match in any case.
 - Writes inside the session's dir are allowed, except `.env`, `.git`, `.hamness`, `.claude/settings*.json` and `.mcp.json`, which ask. When the session runs in your home folder or `/`, writes there ask too.
 - `bash` asks, except a short read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...). `rm -rf` and force pushes ask; `sudo` and `curl | sh` are denied, also when run by path (`/usr/bin/sudo`).
 - Compound commands (`&&`, `;`, `|`, subshells, `$(...)`, `${x:-$(...)}`) are checked part by part, and the strictest part wins. Globs are expanded and every match is checked (`cat ~/.ss?/id_rsa` is denied).

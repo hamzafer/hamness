@@ -538,3 +538,65 @@ describe("on a case-insensitive filesystem, paths match in any case (V-M4)", () 
     expect(read(".ENV", ctx)).toBe("allow");
   });
 });
+
+describe("recursive reads over files that are denied ask (V-M5)", () => {
+  /** A fake disk: what a recursive read would open under a root, by ignore and hidden flags. */
+  const disk = [
+    { path: "/work/proj/src/a.ts" },
+    { path: "/work/proj/.env", hidden: true, ignored: true },
+    { path: "/work/proj/certs/dev.pem", ignored: true },
+    { path: "/work/proj/.env.example", hidden: true },
+  ];
+  const seen: Array<{ root: string; ignore: boolean; hidden: boolean }> = [];
+  const listFiles = (root: string, o: { ignore: boolean; hidden: boolean }) => {
+    seen.push({ root, ...o });
+    return disk
+      .filter((f) => f.path.startsWith(`${root}/`) || f.path === root)
+      .filter((f) => (o.hidden || !f.hidden) && (!o.ignore || !f.ignored))
+      .map((f) => f.path);
+  };
+  const c: EvalContext = { ...ctx, listFiles };
+  const b = (command: string) => verdict(bash(command, defaults, c));
+  const t = (name: string, args: Record<string, unknown>) =>
+    evaluate({ tool: name, args }, defaults, c).verdict;
+
+  test("grep -r and rg flags that reach a denied file ask", () => {
+    for (const cmd of [
+      "grep -r SECRET .",
+      "grep -R SECRET",
+      "grep -rn S= .",
+      "rg -uu SECRET .",
+      "rg -u SECRET",
+      "rg --no-ignore KEY",
+    ]) {
+      expect([cmd, b(cmd)]).toEqual([cmd, "ask"]);
+    }
+  });
+
+  test("rg reads what it would read: hidden and ignored files only with its flags", () => {
+    expect(b("rg SECRET")).toBe("allow");
+    expect(b("rg --hidden SECRET")).toBe("allow");
+    expect(b("rg --hidden --no-ignore SECRET")).toBe("ask");
+    const last = seen.at(-1);
+    expect(last).toEqual({ root: "/work/proj", ignore: false, hidden: true });
+  });
+
+  test("normal recursive greps without denied files stay allowed", () => {
+    expect(b("grep -rn TODO src")).toBe("allow");
+    expect(b("rg TODO src")).toBe("allow");
+  });
+
+  test("Pi's grep tool (rg, hidden, ignore files respected) asks only for what it would read", () => {
+    expect(t("grep", { pattern: "SECRET" })).toBe("allow");
+    disk.push({ path: "/work/proj/config/.env.local", hidden: true });
+    expect(t("grep", { pattern: "SECRET" })).toBe("ask");
+    expect(t("grep", { pattern: "SECRET", path: "." })).toBe("ask");
+    expect(t("grep", { pattern: "SECRET", path: "src" })).toBe("allow");
+    disk.pop();
+  });
+
+  test("a tree too big to list is not allowed outright", () => {
+    const big: EvalContext = { ...ctx, listFiles: () => undefined };
+    expect(verdict(bash("grep -r TODO .", defaults, big))).toBe("undecided");
+  });
+});

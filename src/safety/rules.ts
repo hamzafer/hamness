@@ -48,6 +48,17 @@ export interface EvalContext {
    * path rules match in any case (V-M4).
    */
   caseInsensitive?: boolean;
+  /**
+   * The files a recursive read under `root` would open (V-M5): `ignore` honours .gitignore and
+   * the like (rg's default), `hidden` includes dot files. Undefined: too many to list.
+   * Without it, only deny rules with a fixed folder are checked against recursive reads.
+   */
+  listFiles?: (root: string, opts: ListOptions) => string[] | undefined;
+}
+
+export interface ListOptions {
+  ignore: boolean;
+  hidden: boolean;
 }
 
 export interface Evaluation {
@@ -497,6 +508,11 @@ function checkSegment(
       const denied = deniedInside("read", root, rules, ctx);
       if (denied) parts.push(recursivePart(shown, denied));
     }
+    // One that reads contents (`grep -r`, `rg`, `ag`) over denied files asks too (V-M5).
+    for (const { root, opts } of contentRoots(words, ctx)) {
+      const part = deniedFilePart(shown, root, opts, rules, ctx);
+      if (part) parts.push(part);
+    }
   }
 
   for (const r of seg.redirects) {
@@ -556,6 +572,74 @@ function recursiveRoots(words: string[], ctx: EvalContext): string[] {
   const operands = rest.filter((w) => !w.startsWith("-") && !w.includes("$(…)"));
   const paths = PATTERN_FIRST.has(head) ? operands.slice(1) : operands;
   return (paths.length > 0 ? paths : ["."]).map((p) => shellPath(p, ctx));
+}
+
+/**
+ * The folders a command reads every file of, and which files it opens: `grep -r` all of them,
+ * `rg` and `ag` skip ignored and hidden files unless their flags say otherwise.
+ */
+function contentRoots(
+  words: string[],
+  ctx: EvalContext,
+): Array<{ root: string; opts: ListOptions }> {
+  const head = basename(words[0] ?? "");
+  const rest = words.slice(1);
+  const flags = rest.filter((w) => w.startsWith("-") && w !== "-" && w !== "--");
+  let opts: ListOptions;
+  if (["grep", "egrep", "fgrep"].includes(head)) {
+    const recursive = flags.some(
+      (f) => /^-[A-Za-z]*[rR]/.test(f) || /^--(dereference-)?recursive$/.test(f),
+    );
+    if (!recursive) return [];
+    opts = { ignore: false, hidden: true };
+  } else if (head === "rg" || head === "ag") {
+    const u = flags
+      .filter((f) => /^-[A-Za-z]*u/.test(f) && !f.startsWith("--"))
+      .reduce((n, f) => n + (f.match(/u/g)?.length ?? 0), 0);
+    const unrestricted = flags.filter((f) => f === "--unrestricted").length;
+    const level = u + unrestricted;
+    opts = {
+      ignore: !(
+        level >= 1 || flags.some((f) => /^--no-ignore/.test(f) || f === "--skip-vcs-ignores")
+      ),
+      hidden:
+        (head === "ag" ? level >= 1 : level >= 2) ||
+        flags.some((f) => f === "--hidden" || f === "-." || /^-[A-Za-z]*\.$/.test(f)),
+    };
+  } else {
+    return [];
+  }
+  const operands = rest.filter((w) => !w.startsWith("-") && !w.includes("$(…)"));
+  const paths = operands.slice(1);
+  return (paths.length > 0 ? paths : ["."]).map((p) => ({ root: shellPath(p, ctx), opts }));
+}
+
+/** Reading every file `listFiles` gives under `root`: ask when one is denied. */
+function deniedFilePart(
+  what: string,
+  root: string,
+  opts: ListOptions,
+  rules: Rule[],
+  ctx: EvalContext,
+): Part | undefined {
+  if (!ctx.listFiles) return undefined;
+  const files = ctx.listFiles(root, opts);
+  if (!files) {
+    return {
+      verdict: "undecided",
+      reason: `\`${what}\` reads more files than hamness can check, so no rule can allow it`,
+      suggestion: null,
+    };
+  }
+  // Each file against the read rules, without resolving links (the walk does not follow them).
+  const plain: EvalContext = {
+    cwd: ctx.cwd,
+    home: ctx.home,
+    dataDir: ctx.dataDir,
+    ...(ctx.caseInsensitive ? { caseInsensitive: true } : {}),
+  };
+  const denied = files.find((f) => checkResolved("read", f, rules, plain).verdict === "deny");
+  return denied ? recursivePart(what, denied) : undefined;
 }
 
 /** Unescapes a pattern's fixed start (before any wildcard): the folder or file it names. */
@@ -670,6 +754,18 @@ export function evaluate(
       }
       const denied = root && deniedInside(call.tool, root, rules, ctx);
       if (denied) parts.push(recursivePart(`${call.tool} ${path}`, denied));
+      // Pi's grep runs rg with --hidden, honouring ignore files: it reads what that lists.
+      // (find only lists names, so it is not checked file by file.)
+      if (root && call.tool === "grep") {
+        const part = deniedFilePart(
+          `grep ${path}`,
+          root,
+          { ignore: true, hidden: true },
+          rules,
+          ctx,
+        );
+        if (part) parts.push(part);
+      }
     }
   } else {
     const rule = lookup(rules, call.tool, (p) => p === "*" || p === "**");

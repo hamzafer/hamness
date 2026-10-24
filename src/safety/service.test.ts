@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { ChatStore } from "../agent/store.ts";
 import { openDatabase } from "../db/open.ts";
-import { caseInsensitiveAt, createSafetyService } from "./service.ts";
+import { caseInsensitiveAt, createSafetyService, listFiles } from "./service.ts";
 
 let tmp: ReturnType<typeof tempHome>;
 let home: string;
@@ -184,5 +184,42 @@ describe("the service detects a case-insensitive filesystem (V-M4)", () => {
     expect(caseInsensitiveAt(cwd)).toBe(insensitive);
     expect(await call("write", { path: ".MCP.json", content: "{}" })).toBe(!insensitive);
     expect(await call("write", { path: ".mcp.json", content: "{}" })).toBe(false);
+  });
+});
+
+describe("recursive reads are checked against the files on disk (V-M5)", () => {
+  test("grep -r over a folder with .env asks; one over plain files is allowed", async () => {
+    mkdirSync(join(cwd, "src"));
+    writeFileSync(join(cwd, "src", "a.ts"), "x");
+    expect(await check("grep -rn TODO src")).toBe(true);
+    expect(await check("grep -r SECRET .")).toBe(false);
+    expect(await check("rg -uu SECRET")).toBe(false);
+    expect(await call("grep", { pattern: "SECRET", path: "src" })).toBe(true);
+    expect(await call("grep", { pattern: "SECRET" })).toBe(false);
+  });
+
+  test("Pi's grep honours .gitignore, so an ignored .env is not read (when rg is installed)", async () => {
+    writeFileSync(join(cwd, ".gitignore"), ".env\n");
+    expect(await call("grep", { pattern: "SECRET" })).toBe(Bun.which("rg") !== null);
+    expect(await check("grep -r SECRET .")).toBe(false);
+  });
+});
+
+describe("listing files without ripgrep (V-M5)", () => {
+  test("every file is listed, dot files only when hidden ones count", () => {
+    mkdirSync(join(cwd, "src"));
+    writeFileSync(join(cwd, "src", "a.ts"), "x");
+    const path = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      expect(listFiles(cwd, { ignore: true, hidden: true })?.sort()).toEqual(
+        [join(cwd, ".env"), join(cwd, "a.ts"), join(cwd, "src", "a.ts")].sort(),
+      );
+      expect(listFiles(cwd, { ignore: true, hidden: false })?.sort()).toEqual(
+        [join(cwd, "a.ts"), join(cwd, "src", "a.ts")].sort(),
+      );
+    } finally {
+      process.env.PATH = path;
+    }
   });
 });

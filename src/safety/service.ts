@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { HamnessDb } from "../db/open.ts";
 import type { ApprovalDecision, SafetyMode } from "../events/types.ts";
 import { stableJson } from "../trust/index.ts";
@@ -9,7 +9,7 @@ import { type DecisionRecord, DecisionStore } from "./decisions.ts";
 import type { GuardedCall, SafetyCheck, SafetyVerdict } from "./index.ts";
 import { addUserProofCommands, loadProofConfig, PROVE_COMMAND, proofListing } from "./proof.ts";
 import { redactArgs, redactText } from "./redact.ts";
-import { type Evaluation, evaluate, type Rule } from "./rules.ts";
+import { type Evaluation, evaluate, type ListOptions, type Rule } from "./rules.ts";
 
 /**
  * The safety check every tool call passes (ADR 0006), in order:
@@ -163,6 +163,57 @@ export function expandGlob(pattern: string): string[] | undefined {
   return out;
 }
 
+/** More files than this under a recursive read's root and it is not checked (not allowed outright). */
+const LIST_LIMIT = 200_000;
+
+/**
+ * The files a recursive read under `root` would open (V-M5). With ripgrep installed it lists
+ * them exactly as rg would (`ignore`: honour .gitignore and the like; `hidden`: dot files);
+ * without it, every file is listed, ignore files or not (stricter). `.git` is skipped, as rg
+ * does. Undefined past `LIST_LIMIT` files or when listing fails.
+ */
+export function listFiles(root: string, opts: ListOptions): string[] | undefined {
+  try {
+    if (statSync(root).isFile()) return [root];
+  } catch {
+    return [];
+  }
+  const rg = Bun.which("rg");
+  if (rg) {
+    const args = ["--files", "--no-config", "--no-messages"];
+    if (opts.hidden) args.push("--hidden");
+    if (!opts.ignore) args.push("--no-ignore");
+    const run = Bun.spawnSync([rg, ...args, "--", root], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 5000,
+    });
+    // 0: files listed, 1: none, 2: some could not be read (the rest are still listed).
+    if (run.exitCode === 0 || run.exitCode === 1 || run.exitCode === 2) {
+      const out = run.stdout.toString("utf8").split("\n").filter(Boolean);
+      return out.length > LIST_LIMIT ? undefined : out.map((f) => resolve(root, f));
+    }
+    return undefined;
+  }
+  const out: string[] = [];
+  try {
+    const glob = new Bun.Glob("**/*");
+    for (const f of glob.scanSync({
+      cwd: root,
+      dot: opts.hidden,
+      onlyFiles: true,
+      absolute: true,
+    })) {
+      if (f.includes("/.git/")) continue;
+      out.push(f);
+      if (out.length > LIST_LIMIT) return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return out;
+}
+
 const ruleLabel = (r: Rule) => `${r.layer}: ${r.tool} ${r.pattern}`;
 
 export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
@@ -232,6 +283,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       realpath: realpathNearest,
       glob: expandGlob,
       caseInsensitive: caseInsensitiveAt(cwd),
+      listFiles,
     };
     // A proof re-run may run exactly when the same bash command could (V-H1); the proof list
     // only decides whether it counts as evidence.
