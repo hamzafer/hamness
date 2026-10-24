@@ -3,7 +3,7 @@ import { type Json, readJson, writeJsonAtomic } from "../config/json.ts";
 import { isTrusted, proofItem } from "../trust/index.ts";
 import { projectConfigPath, userConfigPath } from "./config.ts";
 import { matchCommand } from "./glob.ts";
-import { type EvalContext, type Evaluation, evaluate, type Rule } from "./rules.ts";
+import { type EvalContext, type Evaluation, evaluate, PROVE_COMMAND, type Rule } from "./rules.ts";
 
 /**
  * The safety side of the proof gate (ADR 0019).
@@ -25,8 +25,7 @@ import { type EvalContext, type Evaluation, evaluate, type Rule } from "./rules.
  * ```
  */
 
-export const PROVE_COMMAND = "prove_command";
-export const PROVE_URL = "prove_url";
+export { PROVE_COMMAND, PROVE_URL } from "./rules.ts";
 
 export interface ProofPattern {
   pattern: string;

@@ -6,6 +6,7 @@ import { projectKey } from "../compat/paths.ts";
 import { addTrusted, proofItem } from "../trust/index.ts";
 import { loadSafetyConfig } from "./config.ts";
 import { evaluateProofCommand, loadProofConfig } from "./proof.ts";
+import { evaluate } from "./rules.ts";
 
 let home: ReturnType<typeof tempHome>;
 let dataDir: string;
@@ -68,5 +69,31 @@ describe("a proof re-run's safety check", () => {
   test("a bad proof block names the file", () => {
     json(join(dataDir, "config.json"), { proof: { commands: "bun test" } });
     expect(() => loadProofConfig(dataDir, repo)).toThrow("proof.commands");
+  });
+});
+
+describe("a proof URL's safety check (S-H3)", () => {
+  const evalUrl = (url: string) =>
+    evaluate({ tool: "prove_url", args: { url } }, loadSafetyConfig(dataDir, repo).rules, {
+      cwd: repo,
+      home: home.dir,
+      dataDir,
+    });
+
+  test("no rule allows a fetch by default; allow always offers the URL's origin", () => {
+    const e = evalUrl("https://example.com/health?x=1");
+    expect(e.verdict).toBe("undecided");
+    expect(e.suggestions).toEqual([
+      { tool: "prove_url", pattern: "https://example.com/*", verdict: "allow", layer: "project" },
+    ]);
+  });
+
+  test("URL patterns match the whole URL, not a longer host", () => {
+    json(join(dataDir, "config.json"), {
+      safety: { permission: { prove_url: { "https://example.com/*": "allow" } } },
+    });
+    expect(evalUrl("https://example.com/health").verdict).toBe("allow");
+    expect(evalUrl("https://example.com.evil.net/").verdict).toBe("undecided");
+    expect(evalUrl("https://example.com@evil.net/").verdict).toBe("undecided");
   });
 });

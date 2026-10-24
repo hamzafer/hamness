@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { checkContext } from "../../../test/support/check-context.ts";
+import type { GuardedCall } from "../../safety/index.ts";
+import type { CheckContext } from "./context.ts";
 import { checkUrl } from "./url.ts";
 
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -14,7 +16,13 @@ function serve(handler: (req: Request) => Response | Promise<Response>) {
   return `http://127.0.0.1:${server.port}`;
 }
 
-const ctx = () => checkContext("/", { fetch: (input, init) => fetch(input, init) });
+/** The local test server is loopback, so these checks allow private addresses. */
+const ctx = (over: Partial<CheckContext> = {}) =>
+  checkContext("/", {
+    fetch: (input, init) => fetch(input, init),
+    allowPrivateUrls: true,
+    ...over,
+  });
 
 describe("url checker", () => {
   test("passes on a 2xx and stores the status code", async () => {
@@ -25,7 +33,7 @@ describe("url checker", () => {
     expect(r.summary).toContain("200");
   });
 
-  test("follows redirects to the final status", async () => {
+  test("follows redirects on the same host to the final status", async () => {
     const base = serve((req) =>
       new URL(req.url).pathname === "/old"
         ? Response.redirect(`${new URL(req.url).origin}/new`, 302)
@@ -56,7 +64,7 @@ describe("url checker", () => {
   test("fails when the connection is refused", async () => {
     const r = await checkUrl(
       { kind: "url", url: "http://127.0.0.1:9/" },
-      checkContext("/", {
+      ctx({
         fetch: async () => {
           throw new TypeError("Unable to connect");
         },
@@ -64,5 +72,91 @@ describe("url checker", () => {
     );
     expect(r.status).toBe("failed");
     expect(r.summary).toContain("Unable to connect");
+  });
+});
+
+describe("url checker safety (S-H3)", () => {
+  test("asks the safety check as prove_url first; a denied URL is never fetched", async () => {
+    const seen: GuardedCall[] = [];
+    const fetched: string[] = [];
+    const r = await checkUrl(
+      { kind: "url", url: "https://example.com/?k=leak" },
+      ctx({
+        safety: async (call) => {
+          seen.push(call);
+          return { allow: false, reason: "no" };
+        },
+        fetch: async (u) => {
+          fetched.push(u);
+          return new Response("ok");
+        },
+      }),
+    );
+    expect(seen[0]).toMatchObject({
+      tool: "prove_url",
+      args: { url: "https://example.com/?k=leak" },
+    });
+    expect(r.status).toBe("error");
+    expect(fetched).toEqual([]);
+  });
+
+  test("loopback, private and link-local addresses are refused unless the user allows them", async () => {
+    const fetched: string[] = [];
+    const strict = (lookup: CheckContext["lookup"]) =>
+      ctx({
+        allowPrivateUrls: false,
+        ...(lookup ? { lookup } : {}),
+        fetch: async (u) => {
+          fetched.push(u);
+          return new Response("ok");
+        },
+      });
+    for (const url of [
+      "http://127.0.0.1:7357/v1/sessions",
+      "http://localhost/",
+      "http://10.1.2.3/",
+      "http://169.254.169.254/latest/meta-data",
+      "http://[::1]/",
+      "http://[fd00::1]/",
+      "http://[::ffff:127.0.0.1]/",
+    ]) {
+      const r = await checkUrl({ kind: "url", url }, strict(undefined));
+      expect(r.status).toBe("error");
+      expect(r.summary).toContain("private");
+    }
+    // A public name that resolves to a private address is refused too.
+    const r = await checkUrl(
+      { kind: "url", url: "https://internal.example.com/" },
+      strict(async () => ["192.168.1.10"]),
+    );
+    expect(r.status).toBe("error");
+    expect(fetched).toEqual([]);
+    const pub = await checkUrl(
+      { kind: "url", url: "https://example.com/" },
+      strict(async () => ["93.184.215.14"]),
+    );
+    expect(pub.status).toBe("passed");
+  });
+
+  test("a redirect to another host is not followed", async () => {
+    let hits = 0;
+    const base = serve(() => {
+      hits += 1;
+      return Response.redirect("https://elsewhere.example.net/collect", 302);
+    });
+    const followed: string[] = [];
+    const r = await checkUrl(
+      { kind: "url", url: `${base}/go` },
+      ctx({
+        fetch: async (u, init) => {
+          followed.push(u);
+          return fetch(u, init);
+        },
+      }),
+    );
+    expect(r.status).toBe("error");
+    expect(r.summary).toContain("another host");
+    expect(hits).toBe(1);
+    expect(followed).toHaveLength(1);
   });
 });

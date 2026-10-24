@@ -28,6 +28,8 @@ export interface SessionTasksOptions {
   safety: (call: GuardedCall) => Promise<SafetyVerdict>;
   gh: GhRunner;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  /** The user config's `proof.allowPrivateUrls`, read on each `prove url`. Default false. */
+  allowPrivateUrls?: () => boolean;
 }
 
 const GOAL_MAX = 200;
@@ -189,6 +191,7 @@ export class SessionTasks {
         safety: this.opts.safety,
         gh: this.opts.gh,
         fetch: this.opts.fetch,
+        allowPrivateUrls: this.opts.allowPrivateUrls?.() ?? false,
         ...(opts.signal ? { signal: opts.signal } : {}),
       },
     );

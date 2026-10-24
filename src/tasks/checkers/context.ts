@@ -20,6 +20,10 @@ export interface CheckContext {
   safety: (call: GuardedCall) => Promise<SafetyVerdict>;
   gh: GhRunner;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  /** The user config's `proof.allowPrivateUrls`: `prove url` may reach loopback / private hosts. */
+  allowPrivateUrls?: boolean;
+  /** Resolves a host name to its addresses. Default: the system resolver. Tests pass a fake. */
+  lookup?: (host: string) => Promise<string[]>;
   /** Aborts a running check (the user pressed Esc). */
   signal?: AbortSignal;
 }

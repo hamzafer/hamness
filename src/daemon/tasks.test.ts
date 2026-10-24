@@ -357,3 +357,49 @@ describe("the user's task commands", () => {
     expect((await call("POST", "/v1/sessions/nope/task", { goal: "x" })).status).toBe(404);
   });
 });
+
+describe("prove url (S-H3)", () => {
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+  });
+
+  test("asks before fetching; a local address needs proof.allowPrivateUrls", async () => {
+    let hits = 0;
+    server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => {
+        hits += 1;
+        return new Response("ok");
+      },
+    });
+    const url = `http://127.0.0.1:${server.port}/health`;
+    fake.script([
+      tool("prove", { kind: "url", url }),
+      { text: "first" },
+      tool("prove", { kind: "url", url }),
+      { text: "second" },
+    ]);
+    const { call, id, log } = await start();
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: "go" });
+    const first = await approvalOf(log);
+    expect(first).toMatchObject({ tool: "prove_url", args: { url } });
+    expect(hits).toBe(0);
+    await call("POST", `/v1/approvals/${first.id}`, { decision: "allow-once" });
+    await log.waitFor(() => log.ofType("task.evidence").length >= 1);
+    expect(log.ofType("task.evidence")[0]).toMatchObject({ status: "error" });
+    expect(log.ofType("task.evidence")[0]?.summary).toContain("private");
+    expect(hits).toBe(0);
+    await log.waitFor(() => log.ofType("agent.status").filter((e) => !e.busy).length >= 1);
+
+    userConfig({ proof: { allowPrivateUrls: true } });
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: "again" });
+    const second = await approvalOf(log, 2);
+    await call("POST", `/v1/approvals/${second.id}`, { decision: "allow-once" });
+    await log.waitFor(() => log.ofType("task.evidence").length >= 2);
+    expect(log.ofType("task.evidence")[1]).toMatchObject({ status: "passed" });
+    expect(hits).toBe(1);
+  });
+});
