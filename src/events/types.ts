@@ -9,7 +9,30 @@ export interface SessionInfo {
   /** `provider/model`. */
   model: string;
   busy: boolean;
+  /** The safety mode for this session's tool calls (ADR 0006). Absent when no rules apply (tests). */
+  mode?: SafetyMode;
 }
+
+/** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: allow all. */
+export type SafetyMode = "ask" | "auto" | "yolo";
+
+/** A tool call waiting for the user's answer. Answer it with `POST /v1/approvals/:id`. */
+export interface PendingApproval {
+  id: string;
+  /** The `tool_calls` row. */
+  toolCallId: string;
+  tool: string;
+  /** Redacted. */
+  args: Record<string, unknown>;
+  /** Why it asks. */
+  reason: string;
+  /** What "allow always" saves to the project config. Empty: only once / deny are offered. */
+  suggestions: Array<{ tool: string; pattern: string }>;
+  /** When it turns into a deny (ms since the epoch). */
+  expiresAt: number;
+}
+
+export type ApprovalDecision = "allow-once" | "allow-always" | "deny";
 
 export type ToolStatus = "running" | "ok" | "error" | "denied";
 
@@ -42,6 +65,8 @@ export interface SessionSnapshot {
   session: SessionInfo;
   seq: number;
   items: TranscriptItem[];
+  /** Tool calls waiting for an answer. */
+  approvals?: PendingApproval[];
 }
 
 /** Events about one session. `seq` counts up per session. */
@@ -85,6 +110,14 @@ export type AgentEvent = { sessionId: string; seq: number } & (
       priced: boolean;
     }
   | { type: "agent.error"; message: string }
+  | { type: "safety.approval.request"; approval: PendingApproval }
+  | {
+      type: "safety.approval.resolved";
+      approvalId: string;
+      decision: "allow" | "deny";
+      /** `user` answered, `timeout` ran out, `abort`: the run was stopped. */
+      by: "user" | "timeout" | "abort";
+    }
 );
 
 export type HamnessEvent =

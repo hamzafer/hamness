@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { SessionBusyError, type SessionHub } from "../agent/session-hub.ts";
+import type { ApprovalDecision } from "../events/types.ts";
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const MAX_BODY = 1_000_000;
@@ -31,11 +32,13 @@ function isDirectory(path: string): boolean {
  * - `POST /v1/sessions {cwd}`: attach to the cwd's session (created if needed); returns a snapshot
  * - `GET /v1/sessions/:id`: the snapshot
  * - `POST /v1/sessions/:id/prompt {text}`: 202 `{messageId}`; the reply streams on `/v1/events`
- * - `POST /v1/sessions/:id/abort`
+ * - `POST /v1/sessions/:id/abort`: stops the run; pending approvals become denies
+ * - `POST /v1/approvals/:id {decision}`: answers an approval (`allow-once`, `allow-always`, `deny`)
  */
 export function sessionRoutes(hub: SessionHub) {
   return async (req: Request, url: URL): Promise<Response | undefined> => {
     const parts = url.pathname.split("/").filter(Boolean); // ["v1", "sessions", id?, action?]
+    if (parts[0] === "v1" && parts[1] === "approvals") return approvalRoute(hub, req, parts);
     if (parts[0] !== "v1" || parts[1] !== "sessions") return undefined;
     const [, , id, action, extra] = parts;
     if (extra !== undefined) return undefined;
@@ -75,4 +78,23 @@ export function sessionRoutes(hub: SessionHub) {
     }
     return undefined;
   };
+}
+
+const DECISIONS = new Set<ApprovalDecision>(["allow-once", "allow-always", "deny"]);
+
+async function approvalRoute(
+  hub: SessionHub,
+  req: Request,
+  parts: string[],
+): Promise<Response | undefined> {
+  const [, , id, extra] = parts;
+  if (!id || extra !== undefined || req.method !== "POST") return undefined;
+  const body = await readJson(req);
+  const decision = body?.decision;
+  if (typeof decision !== "string" || !DECISIONS.has(decision as ApprovalDecision)) {
+    return json({ error: "decision must be allow-once, allow-always or deny" }, 400);
+  }
+  return hub.answerApproval(id, decision as ApprovalDecision)
+    ? json({ ok: true })
+    : json({ error: "no such pending approval" }, 404);
 }

@@ -1,5 +1,6 @@
 import { type Env, resolveDataDir } from "../config/paths.ts";
 import { VERSION } from "../version.ts";
+import { auditCommand } from "./commands/audit.ts";
 import { daemonCommand } from "./commands/daemon.ts";
 import { importCommand } from "./commands/import.ts";
 import { statusCommand } from "./commands/status.ts";
@@ -20,6 +21,7 @@ const commands: Record<string, { summary: string; run: Command }> = {
   daemon: { summary: "Run the hamness daemon in the foreground", run: daemonCommand },
   status: { summary: "Report whether the daemon is running", run: statusCommand },
   import: { summary: "Import Claude Code and Codex history (read-only)", run: importCommand },
+  audit: { summary: "List recent safety decisions and why they were made", run: auditCommand },
   tui: { summary: "Chat in the terminal (the default with no command)", run: tuiCommand },
 };
 
