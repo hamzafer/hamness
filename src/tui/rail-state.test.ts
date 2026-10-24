@@ -299,4 +299,53 @@ describe("the current task", () => {
     });
     expect(s.task).toMatchObject({ evidence: 0, passed: 0 });
   });
+
+  test("a check gets a row while it runs, then shows how it ended (P-M3)", () => {
+    const s = initialRail(snap(view()), 0);
+    applyRailEvent(
+      s,
+      {
+        sessionId: SID2,
+        seq: 1,
+        type: "check.start",
+        taskId: "t1",
+        evidenceId: "e1",
+        kind: "command",
+        label: "bun test",
+      } as AgentEvent,
+      1000,
+    );
+    expect(s.checks).toEqual([
+      { id: "e1", kind: "command", label: "bun test", status: "running", startedAt: 1000 },
+    ]);
+    applyRailEvent(
+      s,
+      {
+        sessionId: SID2,
+        seq: 2,
+        type: "check.end",
+        taskId: "t1",
+        evidenceId: "e1",
+        status: "failed",
+        summary: "exit 1 in 40ms",
+      } as AgentEvent,
+      3000,
+    );
+    expect(s.checks[0]).toMatchObject({
+      status: "failed",
+      summary: "exit 1 in 40ms",
+      endedAt: 3000,
+    });
+    // Only the last few checks stay.
+    for (let i = 2; i < 8; i++) {
+      apply(s, i + 1, {
+        type: "check.start",
+        taskId: "t1",
+        evidenceId: `e${i}`,
+        kind: "url",
+        label: "u",
+      });
+    }
+    expect(s.checks.map((c) => c.id)).toEqual(["e5", "e6", "e7"]);
+  });
 });

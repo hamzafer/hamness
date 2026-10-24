@@ -361,14 +361,30 @@ describe("events", () => {
     const task = t.start("watch me");
     await t.prove({ kind: "command", command: PASS });
     t.done("ok");
-    expect(events.map((e) => e.type)).toEqual(["task.start", "task.evidence", "task.end"]);
-    expect(events[1]).toMatchObject({
+    expect(events.map((e) => e.type)).toEqual([
+      "task.start",
+      "check.start",
+      "check.end",
+      "task.evidence",
+      "task.end",
+    ]);
+    const evidenceId = (events[3] as { evidenceId: string }).evidenceId;
+    // P-M3: the rail shows the re-run while it runs.
+    expect(events[1]).toEqual({
+      type: "check.start",
+      taskId: task.id,
+      evidenceId,
+      kind: "command",
+      label: PASS,
+    });
+    expect(events[2]).toMatchObject({ type: "check.end", evidenceId, status: "passed" });
+    expect(events[3]).toMatchObject({
       type: "task.evidence",
       taskId: task.id,
       kind: "command",
       status: "passed",
     });
-    expect(events[2]).toMatchObject({ type: "task.end", task: { outcome: "verified" } });
+    expect(events[4]).toMatchObject({ type: "task.end", task: { outcome: "verified" } });
   });
 });
 

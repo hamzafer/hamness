@@ -6,7 +6,7 @@ import { parseClaim } from "./claims.ts";
 import { decideGate, type GateResult } from "./gate.ts";
 import { proveClaim } from "./proof.ts";
 import { TaskStore } from "./store.ts";
-import type { CheckResult, TaskView } from "./types.ts";
+import type { CheckResult, EvidenceClaim, TaskView } from "./types.ts";
 
 /** A task event before the hub stamps it with the session and its sequence number. */
 export type TaskEventBody = TaskEvent;
@@ -37,6 +37,20 @@ export interface SessionTasksOptions {
 }
 
 const GOAL_MAX = 200;
+
+/** A claim in one line, for the rail: the command, path, URL or PR / commit. */
+function claimLabel(claim: EvidenceClaim): string {
+  switch (claim.kind) {
+    case "command":
+      return claim.command;
+    case "file":
+      return claim.path;
+    case "url":
+      return claim.url;
+    case "ci":
+      return claim.pr !== undefined ? `PR ${claim.pr}` : `commit ${claim.commit}`;
+  }
+}
 
 /** The branch checked out in `cwd`; undefined outside a repo or on a detached HEAD. */
 export function gitBranch(cwd: string): string | undefined {
@@ -214,7 +228,24 @@ export class SessionTasks {
         allowPrivateUrls: this.opts.allowPrivateUrls?.() ?? false,
         ...(opts.signal ? { signal: opts.signal } : {}),
       },
+      {
+        onStart: (id) =>
+          this.opts.emit({
+            type: "check.start",
+            taskId: open.id,
+            evidenceId: id,
+            kind: parsed.claim.kind,
+            label: claimLabel(parsed.claim),
+          }),
+      },
     );
+    this.opts.emit({
+      type: "check.end",
+      taskId: open.id,
+      evidenceId,
+      status: result.status,
+      summary: result.summary,
+    });
     if (parsed.claim.kind === "ci" && result.status === "passed") {
       const { prUrl, commitSha } = result.details;
       this.store.setLinks(open.id, {

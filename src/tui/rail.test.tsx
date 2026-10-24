@@ -191,4 +191,37 @@ describe("the task slot", () => {
     expect(taskTone({ ...t, outcome: "open" })).toBe("muted");
     expect(taskTone({ ...t, outcome: "overridden" })).toBe("text");
   });
+
+  test("a proof check shows as its own row: running with its time, then how it ended (P-M3)", async () => {
+    const start = {
+      type: "check.start",
+      taskId: "t1",
+      evidenceId: "e1",
+      kind: "command",
+      label: "bun test",
+    };
+    const running = await frameOf(stateAfter([[1000, start]]), 4000, { width: 40 });
+    expect(running).toMatch(/● check {2}bun test +3s/);
+    await setup?.dispose();
+    setup = undefined;
+    const ended = await frameOf(
+      stateAfter([
+        [1000, start],
+        [
+          2500,
+          {
+            type: "check.end",
+            taskId: "t1",
+            evidenceId: "e1",
+            status: "failed",
+            summary: "exit 1 in 1500ms",
+          },
+        ],
+      ]),
+      9000,
+      { width: 40 },
+    );
+    expect(ended).toMatch(/✗ check {2}bun test +1s/);
+    expect(ended).toContain("failed: exit 1 in 1500ms");
+  });
 });
