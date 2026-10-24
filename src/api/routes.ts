@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { SessionBusyError, type SessionHub } from "../agent/session-hub.ts";
+import { ModelSwitchError, SessionBusyError, type SessionHub } from "../agent/session-hub.ts";
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const MAX_BODY = 1_000_000;
@@ -32,10 +32,19 @@ function isDirectory(path: string): boolean {
  * - `GET /v1/sessions/:id`: the snapshot
  * - `POST /v1/sessions/:id/prompt {text}`: 202 `{messageId}`; the reply streams on `/v1/events`
  * - `POST /v1/sessions/:id/abort`
+ * - `POST /v1/sessions/:id/model {model}`: switch to `provider/id`; returns the snapshot
+ * - `GET /v1/models`: the models a session can switch to
  */
 export function sessionRoutes(hub: SessionHub) {
   return async (req: Request, url: URL): Promise<Response | undefined> => {
     const parts = url.pathname.split("/").filter(Boolean); // ["v1", "sessions", id?, action?]
+    if (parts[0] === "v1" && parts[1] === "models" && parts.length === 2 && req.method === "GET") {
+      try {
+        return json({ models: await hub.models() });
+      } catch (err) {
+        return json({ error: `could not list models: ${(err as Error).message}` }, 500);
+      }
+    }
     if (parts[0] !== "v1" || parts[1] !== "sessions") return undefined;
     const [, , id, action, extra] = parts;
     if (extra !== undefined) return undefined;
@@ -66,6 +75,19 @@ export function sessionRoutes(hub: SessionHub) {
       try {
         return json({ messageId: hub.prompt(id, text) }, 202);
       } catch (err) {
+        if (err instanceof SessionBusyError) return json({ error: err.message }, 409);
+        throw err;
+      }
+    }
+    if (action === "model" && req.method === "POST") {
+      if (!hub.snapshot(id)) return json({ error: "no such session" }, 404);
+      const body = await readJson(req);
+      const model = typeof body?.model === "string" ? body.model.trim() : "";
+      if (!model) return json({ error: "model must be a provider/id string" }, 400);
+      try {
+        return json(await hub.setModel(id, model));
+      } catch (err) {
+        if (err instanceof ModelSwitchError) return json({ error: err.message }, 400);
         if (err instanceof SessionBusyError) return json({ error: err.message }, 409);
         throw err;
       }

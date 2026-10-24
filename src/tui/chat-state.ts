@@ -89,6 +89,9 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
     case "agent.error":
       state.notice = e.message;
       return;
+    case "agent.model":
+      state.session.model = e.model;
+      return;
     default:
       return;
   }

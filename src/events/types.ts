@@ -85,6 +85,8 @@ export type AgentEvent = { sessionId: string; seq: number } & (
       priced: boolean;
     }
   | { type: "agent.error"; message: string }
+  /** The session switched models (`provider/id`); the next model call uses it. */
+  | { type: "agent.model"; model: string }
 );
 
 export type HamnessEvent =

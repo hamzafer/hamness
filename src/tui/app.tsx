@@ -1,10 +1,12 @@
 import type { InputRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
-import { For, onCleanup, Show } from "solid-js";
+import { createSignal, For, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
+import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient } from "../client/client.ts";
 import type { SessionSnapshot, TranscriptItem } from "../events/types.ts";
 import { applyEvent, argSummary, initialState, STATUS_GLYPH } from "./chat-state.ts";
+import { ModelPicker } from "./model-picker.tsx";
 
 const COLORS = {
   user: "#7aa2f7",
@@ -31,12 +33,37 @@ export function App(props: AppProps) {
   onCleanup(off);
 
   let input: InputRenderable | undefined;
+  /** The `/model` picker's list while it is open. */
+  const [picker, setPicker] = createSignal<ModelInfo[] | undefined>();
+
+  const switchModel = (model: string) => {
+    setPicker(undefined);
+    props.client
+      .setModel(state.session.id, model)
+      .then((snap) => setState("session", "model", snap.session.model))
+      .catch((err: Error) => setState("notice", err.message));
+  };
+
+  /** `/model` opens the picker; `/model provider/id` switches straight away. */
+  const modelCommand = (arg: string) => {
+    if (arg) return switchModel(arg);
+    props.client
+      .models()
+      .then((models) =>
+        models.length
+          ? setPicker(models)
+          : setState("notice", "No models available: add a key with `hamness keys set <provider>`"),
+      )
+      .catch((err: Error) => setState("notice", err.message));
+  };
 
   const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
     if (input) input.value = "";
     setState("notice", undefined);
+    const command = /^\/model(?:\s+(.*))?$/.exec(text);
+    if (command) return modelCommand((command[1] ?? "").trim());
     props.client
       .prompt(state.session.id, text)
       .catch((err: Error) => setState("notice", err.message));
@@ -44,7 +71,7 @@ export function App(props: AppProps) {
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") props.onExit?.();
-    if (key.name === "escape" && state.session.busy) {
+    if (key.name === "escape" && state.session.busy && !picker()) {
       props.client.abort(state.session.id).catch(() => {});
     }
   });
@@ -70,13 +97,23 @@ export function App(props: AppProps) {
         <Show when={state.notice}>
           <text fg={COLORS.error}>{state.notice}</text>
         </Show>
+        <Show when={picker()}>
+          {(models: () => ModelInfo[]) => (
+            <ModelPicker
+              models={models()}
+              current={state.session.model}
+              onPick={switchModel}
+              onClose={() => setPicker(undefined)}
+            />
+          )}
+        </Show>
         <box border height={3}>
           <input
             ref={(r: InputRenderable) => {
               input = r;
             }}
-            placeholder="Ask hamness… (Enter sends, Esc stops, Ctrl+C leaves)"
-            focused
+            placeholder="Ask hamness… (Enter sends, Esc stops, /model switches, Ctrl+C leaves)"
+            focused={!picker()}
             onSubmit={(v: unknown) => submit(typeof v === "string" ? v : (input?.value ?? ""))}
           />
         </box>

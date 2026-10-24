@@ -23,6 +23,8 @@ export interface FakeModel extends ModelChoice {
   /** Queue replies; each model call takes the next one. */
   script(replies: FakeReply[]): void;
   readonly calls: number;
+  /** The context (system prompt and messages) each model call was sent, in order. */
+  readonly contexts: Array<{ messages: unknown[] }>;
 }
 
 const DEFAULT_USAGE: TokenUsage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 };
@@ -35,15 +37,20 @@ const DEFAULT_USAGE: TokenUsage = { input: 10, output: 5, cacheRead: 0, cacheWri
 export async function fakeModel(
   dir: string,
   modelId = "claude-opus-5-5",
-  opts: { noKey?: boolean } = {},
+  opts: { noKey?: boolean; otherModels?: string[] } = {},
 ): Promise<FakeModel> {
-  const core = createFauxCore({ provider: "fake", models: [{ id: modelId }] });
+  const core = createFauxCore({
+    provider: "fake",
+    models: [{ id: modelId }, ...(opts.otherModels ?? []).map((id) => ({ id }))],
+  });
   const usages: TokenUsage[] = [];
+  const contexts: Array<{ messages: unknown[] }> = [];
 
   const fixUsage =
     (fn: typeof core.stream) =>
     (...args: Parameters<typeof core.stream>): AssistantMessageEventStream => {
       const usage = usages.shift() ?? DEFAULT_USAGE;
+      contexts.push(structuredClone(args[1]) as { messages: unknown[] });
       const inner = fn(...args);
       const out = createAssistantMessageEventStream();
       void (async () => {
@@ -87,6 +94,7 @@ export async function fakeModel(
     get calls() {
       return core.state.callCount;
     },
+    contexts,
     script(replies) {
       core.appendResponses(
         replies.map((r) => {

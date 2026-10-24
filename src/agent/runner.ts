@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   type AgentSessionEvent,
   createAgentSession,
@@ -78,13 +78,20 @@ export interface RunnerOptions {
   contextFiles?: boolean;
   /** Where Pi writes its session JSONL. In memory when unset. */
   sessionDir?: string;
+  /** A Pi session file to continue (its messages become the context). Needs `sessionDir`. */
+  resumeFile?: string;
 }
 
 export interface AgentRunner {
   prompt(text: string): Promise<void>;
   abort(): Promise<void>;
   readonly busy: boolean;
+  /** `provider/id` of the model the next call uses. */
   readonly model: string;
+  /** Pi's session id: the name of its JSONL file, used to resume after a restart. */
+  readonly piSessionId: string;
+  /** Switches the model for the next call. Throws when the provider has no credentials. */
+  setModel(model: Model<Api>): Promise<void>;
   dispose(): void;
 }
 
@@ -140,9 +147,11 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     model: opts.models.model,
     thinkingLevel: "medium",
     resourceLoader,
-    sessionManager: opts.sessionDir
-      ? SessionManager.create(opts.cwd, opts.sessionDir)
-      : SessionManager.inMemory(opts.cwd),
+    sessionManager: !opts.sessionDir
+      ? SessionManager.inMemory(opts.cwd)
+      : opts.resumeFile
+        ? SessionManager.open(opts.resumeFile, opts.sessionDir)
+        : SessionManager.create(opts.cwd, opts.sessionDir),
     settingsManager: SettingsManager.inMemory({
       compaction: { enabled: true },
       retry: { enabled: false },
@@ -150,6 +159,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
   });
 
   let busy = false;
+  let model = opts.models.model;
   let seq = 0;
   let currentKey: string | undefined;
   const unsubscribe = session.subscribe((ev) => translate(ev));
@@ -181,6 +191,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
             output: m.usage.output,
             cacheRead: m.usage.cacheRead,
             cacheWrite: m.usage.cacheWrite,
+            ...(m.usage.cacheWrite1h ? { cacheWrite1h: m.usage.cacheWrite1h } : {}),
           },
           piCostUsd: m.usage.cost.total,
           ...(m.durationMs !== undefined ? { durationMs: m.durationMs } : {}),
@@ -221,7 +232,14 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       return busy;
     },
     get model() {
-      return `${opts.models.model.provider}/${opts.models.model.id}`;
+      return `${model.provider}/${model.id}`;
+    },
+    get piSessionId() {
+      return session.sessionId;
+    },
+    async setModel(next) {
+      await session.setModel(next);
+      model = next;
     },
     async prompt(text) {
       busy = true;

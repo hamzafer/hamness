@@ -14,17 +14,22 @@ export class ChatStore {
     return this.db.sqlite;
   }
 
-  createSession(cwd: string, model: string): { sessionId: string; agentId: string } {
+  /** `piSessionId` goes in `sessions.external_id`, so the session can resume after a restart. */
+  createSession(
+    cwd: string,
+    model: string,
+    piSessionId?: string,
+  ): { sessionId: string; agentId: string } {
     const now = Date.now();
     const sessionId = newId();
     const agentId = newId();
     this.sql.transaction(() => {
       this.sql
         .query(
-          `INSERT INTO sessions (id, source, cwd, model, started_at, created_at, updated_at)
-           VALUES (?, 'hamness', ?, ?, ?, ?, ?)`,
+          `INSERT INTO sessions (id, source, external_id, cwd, model, started_at, created_at, updated_at)
+           VALUES (?, 'hamness', ?, ?, ?, ?, ?, ?)`,
         )
-        .run(sessionId, cwd, model, now, now, now);
+        .run(sessionId, piSessionId ?? null, cwd, model, now, now, now);
       this.sql
         .query(
           `INSERT INTO agents (id, session_id, kind, model, status, started_at, created_at, updated_at)
@@ -33,6 +38,40 @@ export class ChatStore {
         .run(agentId, sessionId, model, now, now, now);
     })();
     return { sessionId, agentId };
+  }
+
+  /**
+   * The cwd's most recent hamness session that has a message and a Pi session id:
+   * the one to resume after a daemon restart.
+   */
+  latestSession(
+    cwd: string,
+  ): { sessionId: string; agentId: string; model: string | null; piSessionId: string } | undefined {
+    const row = this.sql
+      .query<{ id: string; agent_id: string; model: string | null; external_id: string }, [string]>(
+        `SELECT s.id, a.id AS agent_id, s.model, s.external_id
+         FROM sessions s JOIN agents a ON a.session_id = s.id AND a.kind = 'main'
+         WHERE s.source = 'hamness' AND s.cwd = ? AND s.external_id IS NOT NULL
+           AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)
+         ORDER BY s.started_at DESC, s.id DESC LIMIT 1`,
+      )
+      .get(cwd);
+    return row
+      ? { sessionId: row.id, agentId: row.agent_id, model: row.model, piSessionId: row.external_id }
+      : undefined;
+  }
+
+  /** The session's current model, on the session and its main agent. */
+  setModel(ids: { sessionId: string; agentId: string }, model: string): void {
+    const now = Date.now();
+    this.sql.transaction(() => {
+      this.sql
+        .query("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?")
+        .run(model, now, ids.sessionId);
+      this.sql
+        .query("UPDATE agents SET model = ?, updated_at = ? WHERE id = ?")
+        .run(model, now, ids.agentId);
+    })();
   }
 
   addMessage(
