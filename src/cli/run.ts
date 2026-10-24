@@ -2,6 +2,7 @@ import { type Env, resolveDataDir } from "../config/paths.ts";
 import { VERSION } from "../version.ts";
 import { daemonCommand } from "./commands/daemon.ts";
 import { statusCommand } from "./commands/status.ts";
+import { tuiCommand } from "./commands/tui.ts";
 import { type CliIo, processIo } from "./io.ts";
 
 export interface CliContext {
@@ -17,10 +18,14 @@ type Command = (ctx: CliContext) => Promise<number>;
 const commands: Record<string, { summary: string; run: Command }> = {
   daemon: { summary: "Run the hamness daemon in the foreground", run: daemonCommand },
   status: { summary: "Report whether the daemon is running", run: statusCommand },
+  tui: { summary: "Chat in the terminal (the default with no command)", run: tuiCommand },
 };
 
 export const USAGE = [
-  "Usage: hamness <command> [options]",
+  "Usage: hamness [command] [options]",
+  "",
+  "With no command, hamness opens the chat TUI for the current directory",
+  "and starts the daemon if it is not running.",
   "",
   "Commands:",
   ...Object.entries(commands).map(([name, c]) => `  ${name.padEnd(10)}${c.summary}`),
@@ -32,6 +37,8 @@ export const USAGE = [
   "Environment:",
   "  HAMNESS_HOME   Data dir (database, token, daemon state)",
   "  HAMNESS_PORT   API port for `hamness daemon` (0 picks a free one)",
+  "  HAMNESS_MODEL  Model for new sessions, as provider/id (default anthropic/claude-opus-5-5)",
+  "  ANTHROPIC_API_KEY  Claude API key (or put it in <data dir>/keys.json, mode 0600)",
 ].join("\n");
 
 /** Runs the CLI and returns the exit code. */
@@ -49,7 +56,7 @@ export async function runCli(
     io.out(VERSION);
     return 0;
   }
-  const command = name ? commands[name] : undefined;
+  const command = name ? commands[name] : commands.tui;
   if (!command) {
     if (name) io.err(`hamness: unknown command '${name}'`);
     io.err(USAGE);
