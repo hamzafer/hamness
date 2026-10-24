@@ -366,9 +366,11 @@ export class SessionHub {
   taskAction(sessionId: string, action: TaskAction): TaskView | undefined {
     const live = this.byId.get(sessionId);
     if (!live) return undefined;
-    this.persist(live);
     switch (action.kind) {
       case "start":
+        // The task row points at the session row. An unused session has no task, so
+        // override and abandon throw there and must not store it.
+        this.persist(live);
         return live.tasks.start(action.goal);
       case "override":
         return live.tasks.override(action.reason);

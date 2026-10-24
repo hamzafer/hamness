@@ -96,6 +96,17 @@ describe("sessions API", () => {
     expect(rows()).toEqual([{ id: s.session.id, cwd: work, status: "running" }]);
   });
 
+  test("a refused /override or /abandon on an unused session stores nothing", async () => {
+    const { d, call } = await start();
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    expect((await call("POST", `/v1/sessions/${s.session.id}/override`, {})).status).toBe(409);
+    expect((await call("POST", `/v1/sessions/${s.session.id}/abandon`, {})).status).toBe(409);
+    const n = d.db.sqlite
+      .query<{ n: number }, []>(`SELECT count(*) AS n FROM sessions WHERE source = 'hamness'`)
+      .get();
+    expect(n?.n).toBe(0);
+  });
+
   test("a cwd that is not an existing absolute directory is a 400", async () => {
     const { call } = await start();
     expect((await call("POST", "/v1/sessions", { cwd: "relative/dir" })).status).toBe(400);
