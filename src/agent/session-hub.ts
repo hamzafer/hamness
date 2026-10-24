@@ -156,6 +156,11 @@ interface LiveSession extends AgentState {
   stopStreak: number;
   /** Bumped by abort, so a Stop hook that answers after it doesn't restart the run. */
   runGen: number;
+  /**
+   * The session's rows wait for its first prompt or task (`persist`), so a client that attaches
+   * and leaves (a TUI opened in the wrong folder) leaves no empty session behind (#25).
+   */
+  unsaved?: { piSessionId: string | undefined; startedAt: number } | undefined;
 }
 
 interface Subagent {
@@ -225,6 +230,7 @@ export class SessionHub {
     const live = this.byId.get(sessionId);
     if (!live) return undefined;
     if (live.busy) throw new SessionBusyError();
+    this.persist(live);
 
     // Stored redacted (message and task goal); the live stream echoes the prompt as typed.
     live.tasks.beginTurn(redactText(text));
@@ -234,6 +240,17 @@ export class SessionHub {
     this.setBusy(live, live, true);
     this.send(live, text).catch((err: unknown) => this.failRun(live, err));
     return messageId;
+  }
+
+  /** Writes the session's rows on its first prompt or task; see `LiveSession.unsaved`. */
+  private persist(live: LiveSession): void {
+    const unsaved = live.unsaved;
+    if (!unsaved) return;
+    this.store.createSession(live.cwd, live.runner.model, unsaved.piSessionId, {
+      ids: { sessionId: live.id, agentId: live.agentId },
+      startedAt: unsaved.startedAt,
+    });
+    live.unsaved = undefined;
   }
 
   private failRun(live: LiveSession, err: unknown): void {
@@ -349,6 +366,7 @@ export class SessionHub {
   taskAction(sessionId: string, action: TaskAction): TaskView | undefined {
     const live = this.byId.get(sessionId);
     if (!live) return undefined;
+    this.persist(live);
     switch (action.kind) {
       case "start":
         return live.tasks.start(action.goal);
@@ -384,7 +402,8 @@ export class SessionHub {
         explainModelError((err as Error).message, this.opts.dataDir, model.provider),
       );
     }
-    this.store.setModel(this.ids(live), live.runner.model);
+    // An unsaved session stores its model when its row is written.
+    if (!live.unsaved) this.store.setModel(this.ids(live), live.runner.model);
     this.emit(live, { type: "agent.model", model: live.runner.model });
     return this.snapshotOf(live);
   }
@@ -505,7 +524,7 @@ export class SessionHub {
     });
     const { sessionId, agentId } = resume
       ? { sessionId: resume.sessionId, agentId: resume.agentId }
-      : this.store.createSession(cwd, model, runner.piSessionId);
+      : { sessionId: newId(), agentId: newId() };
     const tasks = new SessionTasks({
       db: this.opts.db,
       sessionId,
@@ -550,6 +569,7 @@ export class SessionHub {
       stopActive: false,
       stopStreak: 0,
       runGen: 0,
+      ...(resume ? {} : { unsaved: { piSessionId: runner.piSessionId, startedAt: Date.now() } }),
     };
     live.ready = this.sessionStartHooks(live, resume ? "resume" : "startup", model);
     this.byId.set(sessionId, live);
@@ -808,7 +828,9 @@ export class SessionHub {
       session: this.info(live),
       seq: live.seq,
       items,
-      agents: this.store.agentTotals(live.id),
+      agents: live.unsaved
+        ? [{ id: live.agentId, kind: "main", tokens: 0, costMicros: 0 }]
+        : this.store.agentTotals(live.id),
       ...(task ? { task } : {}),
       ...(context ? { context } : {}),
       approvals: [...live.approvals.values()].map((e) => e.approval),

@@ -22,15 +22,19 @@ export class ChatStore {
     return this.db.sqlite;
   }
 
-  /** `piSessionId` goes in `sessions.external_id`, so the session can resume after a restart. */
+  /**
+   * `piSessionId` goes in `sessions.external_id`, so the session can resume after a restart.
+   * `ids` and `startedAt` are given when the hub picked them before storing the row.
+   */
   createSession(
     cwd: string,
     model: string,
     piSessionId?: string,
+    opts: { ids?: { sessionId: string; agentId: string }; startedAt?: number } = {},
   ): { sessionId: string; agentId: string } {
-    const now = Date.now();
-    const sessionId = newId();
-    const agentId = newId();
+    const now = opts.startedAt ?? Date.now();
+    const sessionId = opts.ids?.sessionId ?? newId();
+    const agentId = opts.ids?.agentId ?? newId();
     this.sql.transaction(() => {
       this.sql
         .query(
