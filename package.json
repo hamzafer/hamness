@@ -1,0 +1,36 @@
+{
+  "name": "hamness",
+  "version": "0.0.0",
+  "description": "An AI coding harness you can see into and trust.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "hamness": "./src/cli/main.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/dashboard/client",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/bun": "1.4.3",
+    "playwright-core": "1.64.1",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.137.0",
+    "@earendil-works/pi-agent-core": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@opentui/core": "0.6.6",
+    "@opentui/solid": "0.6.6",
+    "solid-js": "1.9.12",
+    "typebox": "1.3.27"
+  }
+}

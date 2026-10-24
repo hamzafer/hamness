@@ -1,0 +1,10 @@
+# OpenTUI's Solid renderer compiles JSX through a Bun plugin.
+preload = ["@opentui/solid/preload"]
+
+[install]
+# Supply-chain guard: only resolve package versions published at least 3 days ago
+# (259200 seconds). Applies to new resolutions; bun.lock pins the rest.
+minimumReleaseAge = 259200
+
+[test]
+preload = ["@opentui/solid/preload", "./test/support/isolate.ts"]

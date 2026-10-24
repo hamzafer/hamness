@@ -5,14 +5,29 @@
 - **Session:** a conversation with a main agent in one working directory.
 - **Agent:** one running Pi agent loop. The main agent belongs to a session; **subagents** are started by an agent, often in the background.
 - **Worktree:** a git worktree a subagent can run in, so parallel agents don't edit the same checkout.
-- **Task:** the unit of work and of accounting: goal, agents, cost, tokens, time, evidence, outcome.
-- **Outcome:** a task's final state: `open`, `verified`, `unverified`, `overridden` (the user accepted it without proof), `abandoned`.
-- **Evidence:** a claim attached with the `prove` tool (`command`, `ci`, `file`, `url`), checked by a **checker**.
+- **Task:** the unit of work and of accounting: goal, agents, cost, tokens, time, evidence, outcome. Opened by the agent (`task_start`) or the user (`/task`).
+- **Implicit task:** the task hamness opens for a user turn when none is open, named after the prompt. `task_start` or `/task` during the turn **promotes** it to an explicit task. At turn end it closes by the proof gate, or is **dropped** (no task at all) when it had no evidence and no file edits (ADR 0012).
+- **Outcome:** a task's final state: `open`, `verified`, `unverified`, `overridden` (the user accepted it without proof, `/override`), `abandoned` (the user dropped it, `/abandon`).
+- **Evidence:** a claim attached with the `prove` tool (`command`, `ci`, `file`, `url`), checked by a **checker**. Its result is `passed`, `failed` or `error` (could not check: blocked by safety, aborted, `gh` missing); only `passed` counts.
 - **Checker:** hamness code that verifies a piece of evidence on its own. Only checkers write evidence results.
-- **Proof gate:** the rule that a task becomes `verified` only with at least one passing piece of evidence.
+- **Proof gate:** the rule that a task becomes `verified` only when its latest evidence passed after its last file change, and not only on weak evidence (ADR 0019).
+- **Proof command list:** the commands a `prove` re-run may run without asking: built-in test, build, lint and typecheck commands, the user's `proof.commands`, and the project's once trusted. Anything else asks whether it counts as proof.
+- **Weak evidence:** file evidence for a file the agent wrote with its own write / edit tools. It can pass but never verifies a task alone.
+- **Check:** one checker run on a piece of evidence; it has its own row on the side rail while it runs.
 - **Rule:** an allow / ask / deny pattern for a tool call.
 - **Judge:** the small model that decides tool calls no rule decides.
 - **Decision:** a safety verdict on one tool call, with source (`rule`, `judge`, `hook`, `user`, `mode`) and reason.
+- **Approval:** a tool call that asks, waiting for the user's answer: allow once, allow always (saves a rule to the project config) or deny. No answer before the timeout is a deny.
+- **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything).
 - **Audit log:** the stored list of decisions.
-- **Side rail:** the always-on right pane in the TUI showing agents, shells, checks, the current task and gauges.
+- **Hook:** a command from Claude Code's settings that hamness runs on an event (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop). A project's hooks run only as its repo **trusted** them.
+- **Side rail:** the always-on right pane in the TUI showing agents, checks, the current task and gauges (background shells once Pi has them).
 - **Source:** where a session came from: `hamness`, `claude-code` or `codex` (imported).
+- **Import:** reading Claude Code or Codex history, read-only and incremental, into the same tables. Each source file has an **import cursor** (byte offset, size, mtime) so a re-run reads only new lines.
+- **Active time:** the time an agent spent working in a session (sum of its turn durations), as opposed to wall time from first to last event.
+- **Verified rate:** verified tasks over closed tasks (every outcome but `open`) in a range. hamness only: imported history has no tasks.
+- **Cost per verified task:** all hamness spend in a range divided by its verified tasks, so failed and abandoned work counts against it.
+- **Instruction file:** a `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/*.md` or `AGENTS.md` that goes into the system prompt, found the way Claude Code finds it.
+- **Skill:** a folder with a `SKILL.md` (frontmatter plus instructions). Its name and description are in the prompt; the `skill` tool loads the body.
+- **Project MCP server:** an MCP server from a repo's `.mcp.json`. It starts only once the user trusts it for that repo (`hamness trust`).
+- **Repo trust:** the user's OK for what a repo brings that loosens safety or runs code: project allow rules, proof commands, hooks and MCP servers. Kept per item as a fingerprint, per **project** (the repo root, the main repo's for a worktree), in the user's config. An added or edited item is untrusted until trusted again (`hamness trust`, ADR 0020).
