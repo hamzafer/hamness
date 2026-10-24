@@ -13,6 +13,7 @@ import { MODELS_USAGE, modelsCommand } from "./commands/models.ts";
 import { STATS_USAGE, statsCommand } from "./commands/stats.ts";
 import { STATUS_USAGE, statusCommand } from "./commands/status.ts";
 import { STOP_USAGE, stopCommand } from "./commands/stop.ts";
+import { TRUST_USAGE, trustCommand } from "./commands/trust.ts";
 import { TUI_USAGE, tuiCommand } from "./commands/tui.ts";
 import { WORKTREES_USAGE, worktreesCommand } from "./commands/worktrees.ts";
 import { type CliIo, processIo } from "./io.ts";
@@ -96,8 +97,13 @@ const commands: Record<string, CommandEntry> = {
     usage: COMPAT_USAGE,
     run: compatCommand,
   },
+  trust: {
+    summary: "Trust a repo's allow rules, proof commands, hooks and MCP servers",
+    usage: TRUST_USAGE,
+    run: trustCommand,
+  },
   hooks: {
-    summary: "List Claude Code hooks; trust a project's hooks",
+    summary: "List Claude Code hooks (trust: same as `hamness trust`)",
     usage: HOOKS_USAGE,
     run: hooksCommand,
   },

@@ -272,8 +272,8 @@ export function loadMcpServers(opts: LoadMcpOptions): McpResult {
         server.status = "needs-approval";
         server.reason =
           name in approved
-            ? "changed since it was approved; run `hamness compat approve`"
-            : "a project server; run `hamness compat approve` to start it";
+            ? "changed since it was approved; review it, then run `hamness trust`"
+            : "a project server; run `hamness trust` to start it";
       }
       servers.push(server);
     }

@@ -8,10 +8,11 @@ import {
 } from "../../compat/index.ts";
 import { claudeDirOf } from "../../compat/paths.ts";
 import type { CliContext } from "../run.ts";
+import { trustCommand } from "./trust.ts";
 
 export const COMPAT_USAGE = [
   "Usage: hamness compat [--cwd <dir>] [--json]",
-  "       hamness compat approve [server...]",
+  "       hamness compat approve [server...]   (no server: same as `hamness trust`)",
   "       hamness compat revoke [server...]",
   "",
   "Shows what a session in this folder picks up from Claude Code: instruction files",
@@ -69,7 +70,7 @@ function report(setup: CompatSetup, configDir: string, out: (line: string) => vo
     out("  Their tools are named mcp__<server>__<tool> and pass the safety rules like any tool.");
   }
   if (mcp.servers.some((s) => s.status === "needs-approval")) {
-    out("  Run `hamness compat approve` to start the waiting project servers in new sessions.");
+    out("  Run `hamness trust` to start the waiting project servers in new sessions.");
   }
   if (mcp.errors.length) {
     out("");
@@ -107,6 +108,9 @@ export async function compatCommand({ args, env, dataDir, io }: CliContext): Pro
   const [sub, ...names] = positionals;
   const only = names.length ? names : undefined;
 
+  if (sub === "approve" && !only) {
+    return trustCommand({ args: [cwd], env, dataDir, io });
+  }
   if (sub === "approve") {
     const approved = approveProjectServers(dataDir, load().mcp.servers, only);
     io.out(

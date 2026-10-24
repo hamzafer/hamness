@@ -1,6 +1,6 @@
 # 0016: What hamness trusts from Claude Code's setup
 
-**Status:** accepted, 2026-10-24
+**Status:** accepted, 2026-10-24; trust and approvals refined by ADR 0020 (`hamness trust`, stored under `trust.projects`)
 
 ADR 0008 says hamness reads Claude Code's files as they are. Some of those files come with a repo, not from the user, and some of them run code. This ADR fixes what loads without asking.
 

@@ -1,15 +1,16 @@
 import { resolve } from "node:path";
-import { hookSources, isProjectTrusted, projectRoot, trustProject } from "../../compat/hooks.ts";
+import { hookSources, projectRoot } from "../../compat/hooks.ts";
 import { claudeConfigDir, claudeManagedDir, managedDirOption } from "../../compat/paths.ts";
 import type { CliContext } from "../run.ts";
+import { trustCommand } from "./trust.ts";
 
 export const HOOKS_USAGE = [
   "Usage: hamness hooks [dir]          List the Claude Code hooks hamness runs in dir",
-  "       hamness hooks trust [dir]    Let the repo holding dir run its project hooks",
+  "       hamness hooks trust [dir]    Same as `hamness trust [dir]`",
   "",
   "hamness runs command hooks from Claude Code's settings files: ~/.claude/settings.json",
   "(or $CLAUDE_CONFIG_DIR) always, and the project's .claude/settings.json and",
-  "settings.local.json once you trust the repo. It never edits those files.",
+  "settings.local.json as you trusted them (`hamness trust`). It never edits those files.",
 ].join("\n");
 
 export async function hooksCommand({ args, env, dataDir, io }: CliContext): Promise<number> {
@@ -20,9 +21,7 @@ export async function hooksCommand({ args, env, dataDir, io }: CliContext): Prom
   }
   const claudeDir = claudeConfigDir(env);
   if (first === "trust") {
-    const root = trustProject(dataDir, resolve(second ?? process.cwd()));
-    io.out(`Trusted ${root}: its Claude Code hooks run from the next event on.`);
-    return 0;
+    return trustCommand({ args: second ? [second] : [], env, dataDir, io });
   }
   const cwd = resolve(first ?? process.cwd());
   const sources = hookSources(
@@ -36,12 +35,13 @@ export async function hooksCommand({ args, env, dataDir, io }: CliContext): Prom
   for (const src of sources) {
     const state = src.runs
       ? "runs"
-      : src.scope === "project" && !isProjectTrusted(dataDir, cwd)
-        ? `not trusted (run \`hamness hooks trust ${projectRoot(cwd)}\`)`
+      : src.hooks.some((h) => !h.trusted)
+        ? `not trusted (review, then run \`hamness trust ${projectRoot(cwd)}\`)`
         : "off (disableAllHooks)";
     io.out(`${src.file}  [${src.scope}, ${state}]`);
     for (const h of src.hooks) {
-      io.out(`  ${h.event}${h.matcher ? ` ${h.matcher}` : ""}: ${h.command}`);
+      const note = h.trusted ? "" : "  (not trusted)";
+      io.out(`  ${h.event}${h.matcher ? ` ${h.matcher}` : ""}: ${h.command}${note}`);
     }
   }
   return 0;

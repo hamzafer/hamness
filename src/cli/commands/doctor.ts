@@ -145,7 +145,7 @@ export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<n
     const waiting = setup.mcp.servers.filter((s) => s.status === "needs-approval").length;
     checks.push({
       level: "info",
-      text: `Claude Code: ${plural(setup.instructions.files.length, "instruction file")}, ${plural(setup.skills.skills.length, "skill")}, ${plural(setup.mcp.servers.length, "MCP server")}${waiting ? ` (${waiting} waiting for \`hamness compat approve\`)` : ""}, ${plural(hooks, "hook")} (details: \`hamness compat\`)`,
+      text: `Claude Code: ${plural(setup.instructions.files.length, "instruction file")}, ${plural(setup.skills.skills.length, "skill")}, ${plural(setup.mcp.servers.length, "MCP server")}${waiting ? ` (${waiting} waiting for \`hamness trust\`)` : ""}, ${plural(hooks, "hook")} (details: \`hamness compat\`)`,
     });
   } catch (err) {
     checks.push({ level: "warn", text: `Claude Code setup: ${(err as Error).message}` });
