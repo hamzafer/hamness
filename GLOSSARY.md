@@ -16,3 +16,5 @@
 - **Audit log:** the stored list of decisions.
 - **Side rail:** the always-on right pane in the TUI showing agents, shells, checks, the current task and gauges.
 - **Source:** where a session came from: `hamness`, `claude-code` or `codex` (imported).
+- **Import:** reading Claude Code or Codex history, read-only and incremental, into the same tables. Each source file has an **import cursor** (byte offset, size, mtime) so a re-run reads only new lines.
+- **Active time:** the time an agent spent working in a session (sum of its turn durations), as opposed to wall time from first to last event.
