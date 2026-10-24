@@ -1,4 +1,5 @@
-import { dirname, isAbsolute, normalize, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { matchCommand, matchPath } from "./glob.ts";
 import { parseCommand, type Segment } from "./shell.ts";
 
@@ -168,12 +169,40 @@ function lookup(
   return last;
 }
 
-function resolvePath(raw: string, ctx: EvalContext): string {
+/** Pi's `UNICODE_SPACES` (utils/paths.ts): read as plain spaces. */
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/**
+ * The file a Pi tool opens for a `path` argument: Pi's `resolveToCwd` exactly (unicode spaces
+ * to spaces, `@` stripped, `~` expanded, `file://` URLs decoded, then resolved against the cwd;
+ * no trimming). Throws when Pi would (a `file:` URL that is not a local path).
+ */
+export function piToolPath(raw: string, cwd: string, home: string): string {
+  let p = raw.replace(UNICODE_SPACES, " ");
+  if (p.startsWith("@")) p = p.slice(1);
+  if (p === "~") p = home;
+  else if (p.startsWith("~/")) p = join(home, p.slice(2));
+  else if (/^file:\/\//.test(p)) p = fileURLToPath(p);
+  return isAbsolute(p) ? resolve(p) : resolve(cwd, p);
+}
+
+/** Pi's read tool also tries these when the path is missing (macOS screenshot names). */
+function piReadVariants(path: string): string[] {
+  const amPm = path.replace(/ (AM|PM)\./gi, "\u202F$1.");
+  const nfd = path.normalize("NFD");
+  const curly = (p: string) => p.replace(/'/g, "\u2019");
+  return [...new Set([amPm, nfd, curly(path), curly(nfd)])].filter((p) => p !== path);
+}
+
+/** A path word in a shell command: the shell expands `~` and `$HOME`; relative to the cwd. */
+function shellPath(raw: string, ctx: EvalContext): string {
   let p = raw.trim();
   if (p.startsWith("@")) p = p.slice(1);
   if (p === "~") p = ctx.home;
   else if (p.startsWith("~/")) p = ctx.home + p.slice(1);
   else if (p.startsWith("$HOME/") || p === "$HOME") p = ctx.home + p.slice(5);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's literal ${HOME}.
+  else if (p.startsWith("${HOME}/") || p === "${HOME}") p = ctx.home + p.slice(7);
   return normalize(isAbsolute(p) ? p : resolve(ctx.cwd, p));
 }
 
@@ -195,8 +224,27 @@ function pathSuggestion(tool: string, path: string, ctx: EvalContext): Rule {
   return { tool, pattern, verdict: "allow", layer: "project" };
 }
 
+/** Checks the file a tool's path argument opens (see `piToolPath`). */
+function checkToolPath(tool: string, raw: string, rules: Rule[], ctx: EvalContext): Part {
+  let path: string;
+  try {
+    path = piToolPath(raw, ctx.cwd, ctx.home);
+  } catch (err) {
+    return {
+      verdict: "deny",
+      reason: `could not resolve the path ${JSON.stringify(raw)} (${(err as Error).message})`,
+      suggestion: null,
+    };
+  }
+  const paths = tool === "read" ? [path, ...piReadVariants(path)] : [path];
+  return worstOf(paths.map((p) => checkResolved(tool, p, rules, ctx)));
+}
+
 function checkPath(tool: string, raw: string, rules: Rule[], ctx: EvalContext): Part {
-  const lexical = resolvePath(raw, ctx);
+  return checkResolved(tool, shellPath(raw, ctx), rules, ctx);
+}
+
+function checkResolved(tool: string, lexical: string, rules: Rule[], ctx: EvalContext): Part {
   const candidates: Array<[string, EvalContext]> = [[lexical, ctx]];
   const real = ctx.realpath?.(lexical);
   if (real && ctx.realpath && real !== lexical) {
@@ -392,7 +440,7 @@ function checkSegment(
       });
       continue;
     }
-    const target = resolvePath(r.target, ctx);
+    const target = shellPath(r.target, ctx);
     if (PATH_SAFE.has(target) || target.startsWith("/dev/fd/")) continue;
     parts.push(checkPath(r.op === "<" ? "read" : "write", r.target, rules, ctx));
   }
@@ -420,7 +468,7 @@ export function evaluate(
   } else if (READ_TOOLS.has(call.tool) || WRITE_TOOLS.has(call.tool)) {
     const path = subjectPath(call.args) ?? (READ_TOOLS.has(call.tool) ? ctx.cwd : undefined);
     parts = path
-      ? [checkPath(call.tool, path, rules, ctx)]
+      ? [checkToolPath(call.tool, path, rules, ctx)]
       : [{ verdict: "ask", reason: `${call.tool} without a path`, suggestion: null }];
   } else {
     const rule = lookup(rules, call.tool, (p) => p === "*" || p === "**");

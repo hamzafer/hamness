@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
+import { pathToFileURL } from "node:url";
+// Pi's own resolver, the tools' source of truth (not exported from the package index).
+import { resolveToCwd } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.js";
 import { defaultRules } from "./defaults.ts";
-import { type EvalContext, evaluate, parsePermission, type Rule } from "./rules.ts";
+import { type EvalContext, evaluate, parsePermission, piToolPath, type Rule } from "./rules.ts";
 
 const ctx: EvalContext = { cwd: "/work/proj", home: "/home/u", dataDir: "/data/hamness" };
 const defaults = defaultRules();
@@ -338,6 +342,65 @@ describe("hamness's task tools", () => {
   test("task_start, prove and task_done are allowed by default", () => {
     for (const name of ["task_start", "prove", "task_done"]) {
       expect(tool(name, { goal: "x" }).verdict).toBe("allow");
+    }
+  });
+});
+
+describe("paths resolve exactly as Pi's tools open them (S-H1)", () => {
+  const urlOf = (p: string) => pathToFileURL(p).href;
+
+  test("file:// URLs are the files they name, not names under the cwd", () => {
+    expect(verdict(tool("write", { path: urlOf("/home/u/.zshrc"), content: "" }))).toBe(
+      "undecided",
+    );
+    expect(verdict(tool("write", { path: urlOf("/data/hamness/config.json"), content: "" }))).toBe(
+      "deny",
+    );
+    expect(verdict(tool("read", { path: urlOf("/home/u/.aws/credentials") }))).toBe("deny");
+    expect(verdict(tool("read", { path: urlOf("/work/proj/.env") }))).toBe("deny");
+    expect(verdict(tool("write", { path: urlOf("/work/proj/src/a.ts"), content: "" }))).toBe(
+      "allow",
+    );
+  });
+
+  test("a file:// URL that does not name a local path is refused", () => {
+    const e = tool("read", { path: "file://other-host/etc/passwd" });
+    expect(e.verdict).toBe("deny");
+    expect(e.reason).toContain("could not resolve");
+  });
+
+  test("Unicode spaces are read as spaces, as Pi does", () => {
+    const dataDir = "/home/u/Library/Application Support/hamness";
+    const c = { ...ctx, dataDir };
+    for (const space of [" ", " ", "　"]) {
+      const path = `/home/u/Library/Application${space}Support/hamness/keys.json`;
+      expect(verdict(evaluate({ tool: "read", args: { path } }, defaults, c))).toBe("deny");
+    }
+  });
+
+  test("read checks the macOS screenshot variants Pi falls back to", () => {
+    const rules = [...defaults, ...user({ read: { "/work/proj/shots/a PM.png": "deny" } })];
+    expect(verdict(tool("read", { path: "shots/a PM.png" }, rules))).toBe("deny");
+  });
+
+  test("matches Pi's resolveToCwd for every form it accepts", () => {
+    const home = homedir();
+    const cwd = "/work/proj";
+    for (const input of [
+      "src/a.ts",
+      "@src/a.ts",
+      "~",
+      "~/x/y",
+      " lead",
+      "trail ",
+      "a b",
+      "../up",
+      "/abs/./p/../q",
+      urlOf("/abs/with space/é"),
+      "file:///tmp/%2e%2e/etc",
+      "$HOME/x",
+    ]) {
+      expect([input, piToolPath(input, cwd, home)]).toEqual([input, resolveToCwd(input, cwd)]);
     }
   });
 });
