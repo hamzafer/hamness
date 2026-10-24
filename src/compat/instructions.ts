@@ -153,9 +153,21 @@ class Loader {
 
   constructor(
     private readonly home: string,
-    /** Imports from project files must stay under this folder. */
+    /** Imports from project files, and project files themselves, must stay under this folder. */
     private readonly projectRoot: string,
+    /** The same folder as written (before symlinks are resolved). */
+    private readonly lexicalRoot: string,
   ) {}
+
+  /** A repo file whose real path leaves the repo (a symlink to `~/.aws/...`). */
+  private escapes(path: string): boolean {
+    const inside = (p: string, root: string) => {
+      const rel = relative(root, p);
+      return !rel.startsWith("..") && !isAbsolute(rel);
+    };
+    const inRepo = inside(resolve(path), this.lexicalRoot) || inside(path, this.projectRoot);
+    return inRepo && !inside(real(path), this.projectRoot);
+  }
 
   has(path: string): boolean {
     return this.loaded.has(real(path));
@@ -166,6 +178,13 @@ class Loader {
     if (!isFile(path)) return false;
     const key = real(path);
     if (this.loaded.has(key)) return true;
+    if ((scope === "project" || scope === "local") && this.escapes(path)) {
+      this.skipped.push({
+        path,
+        reason: "links outside the project; repo files must stay inside the repo",
+      });
+      return true;
+    }
     let text: string;
     try {
       text = readFileSync(path, "utf8");
@@ -309,7 +328,8 @@ export function findInstructions(opts: FindInstructionsOptions): InstructionsRes
   const { claude } = opts;
   const cwd = resolve(opts.cwd);
   const mode = instructionMode(claude);
-  const loader = new Loader(homeOf(claude), real(repoRoot(cwd) ?? cwd));
+  const root = repoRoot(cwd) ?? cwd;
+  const loader = new Loader(homeOf(claude), real(root), root);
 
   const managed = claudeManagedDir(claude);
   if (managed) loader.add(join(managed, "CLAUDE.md"), "managed");
