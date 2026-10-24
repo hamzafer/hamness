@@ -11,6 +11,8 @@ export interface SessionInfo {
   busy: boolean;
   /** The safety mode for this session's tool calls (ADR 0006). Absent when no rules apply (tests). */
   mode?: SafetyMode;
+  /** The session's main agent; events with this `agentId` (or none) are about it. */
+  mainAgentId?: string;
 }
 
 /** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: allow all. */
@@ -67,10 +69,33 @@ export interface SessionSnapshot {
   items: TranscriptItem[];
   /** Tool calls waiting for an answer. */
   approvals?: PendingApproval[];
+  /** Stored totals per agent, so a client's gauges start where the database is. */
+  agents?: AgentTotals[];
+  /** The main agent's last known context fill. */
+  context?: ContextFill;
 }
 
-/** Events about one session. `seq` counts up per session. */
-export type AgentEvent = { sessionId: string; seq: number } & (
+/** One agent's stored usage. `tokens` adds input, output, cache read and cache write. */
+export interface AgentTotals {
+  id: string;
+  kind: "main" | "subagent";
+  name?: string;
+  tokens: number;
+  costMicros: number;
+}
+
+/** How full an agent's context window is (Pi's estimate). `tokens` is null right after compaction. */
+export interface ContextFill {
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+}
+
+/**
+ * Events about one session. `seq` counts up per session. `agentId` names the agent the event
+ * is about; when it is missing the event is about the session's main agent.
+ */
+export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & (
   | { type: "agent.status"; busy: boolean }
   | { type: "agent.message.start"; messageId: string; role: "user" | "assistant" }
   | { type: "agent.message.delta"; messageId: string; text: string }
@@ -109,6 +134,7 @@ export type AgentEvent = { sessionId: string; seq: number } & (
       /** False when hamness's price table has no entry and the cost is Pi's estimate. */
       priced: boolean;
     }
+  | ({ type: "agent.context" } & ContextFill)
   | { type: "agent.error"; message: string }
   | { type: "safety.approval.request"; approval: PendingApproval }
   | {
@@ -118,6 +144,8 @@ export type AgentEvent = { sessionId: string; seq: number } & (
       /** `user` answered, `timeout` ran out, `abort`: the run was stopped. */
       by: "user" | "timeout" | "abort";
     }
+  /** The session switched models (`provider/id`); the next model call uses it. */
+  | { type: "agent.model"; model: string }
 );
 
 export type HamnessEvent =

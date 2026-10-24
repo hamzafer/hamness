@@ -41,6 +41,8 @@ function fakeClient() {
       prompts.push(text);
     },
     abort: async () => {},
+    models: async () => [],
+    setModel: async () => snapshot,
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};

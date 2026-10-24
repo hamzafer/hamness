@@ -3,6 +3,10 @@ import { VERSION } from "../version.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { daemonCommand } from "./commands/daemon.ts";
 import { importCommand } from "./commands/import.ts";
+import { keysCommand } from "./commands/keys.ts";
+import { loginCommand, logoutCommand } from "./commands/login.ts";
+import { modelsCommand } from "./commands/models.ts";
+import { statsCommand } from "./commands/stats.ts";
 import { statusCommand } from "./commands/status.ts";
 import { tuiCommand } from "./commands/tui.ts";
 import { type CliIo, processIo } from "./io.ts";
@@ -22,7 +26,12 @@ const commands: Record<string, { summary: string; run: Command }> = {
   status: { summary: "Report whether the daemon is running", run: statusCommand },
   import: { summary: "Import Claude Code and Codex history (read-only)", run: importCommand },
   audit: { summary: "List recent safety decisions and why they were made", run: auditCommand },
+  stats: { summary: "Summarize sessions, tasks, cost, models and decisions", run: statsCommand },
   tui: { summary: "Chat in the terminal (the default with no command)", run: tuiCommand },
+  models: { summary: "List the models you can use (--all: the whole catalog)", run: modelsCommand },
+  keys: { summary: "Store API keys (set <provider>, list)", run: keysCommand },
+  login: { summary: "Sign in to a provider (openai: ChatGPT plan)", run: loginCommand },
+  logout: { summary: "Remove a provider sign-in", run: logoutCommand },
 };
 
 export const USAGE = [
@@ -42,7 +51,8 @@ export const USAGE = [
   "  HAMNESS_HOME   Data dir (database, token, daemon state)",
   "  HAMNESS_PORT   API port for `hamness daemon` (0 picks a free one)",
   "  HAMNESS_MODEL  Model for new sessions, as provider/id (default anthropic/claude-opus-5-5)",
-  "  ANTHROPIC_API_KEY  Claude API key (or put it in <data dir>/keys.json, mode 0600)",
+  "  ANTHROPIC_API_KEY  Claude API key (or `hamness keys set anthropic`); env vars win over the key file",
+  "  OPENAI_API_KEY     OpenAI API key (or `hamness keys set openai`, or `hamness login openai`)",
 ].join("\n");
 
 /** Runs the CLI and returns the exit code. */

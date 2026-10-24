@@ -1,10 +1,14 @@
 import type { InputRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/solid";
-import { For, onCleanup, Show } from "solid-js";
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import { createSignal, For, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
+import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient } from "../client/client.ts";
 import type { SessionSnapshot, TranscriptItem } from "../events/types.ts";
 import { applyEvent, argSummary, initialState, STATUS_GLYPH } from "./chat-state.ts";
+import { ModelPicker } from "./model-picker.tsx";
+import { RAIL_WIDTH, Rail } from "./rail.tsx";
+import { applyRailEvent, initialRail, type RailTask } from "./rail-state.ts";
 
 const COLORS = {
   user: "#7aa2f7",
@@ -15,28 +19,69 @@ const COLORS = {
   warn: "#e0af68",
 };
 
-/** Width kept for the side rail (ticket #3 fills it). */
-export const RAIL_WIDTH = 32;
+export { RAIL_WIDTH };
 
 export interface AppProps {
   client: DaemonClient;
   snapshot: SessionSnapshot;
   /** Ctrl+C: leave the TUI. The session keeps running in the daemon. */
   onExit?: () => void;
+  /** Clock for the rail's elapsed times; tests pass a fake one. */
+  now?: () => number;
+  /** The current task for the rail's top slot (ticket #6). */
+  task?: RailTask;
 }
 
 export function App(props: AppProps) {
   const [state, setState] = createStore(initialState(props.snapshot));
-  const off = props.client.subscribe((e) => setState(produce((s) => applyEvent(s, e))));
-  onCleanup(off);
+  const now = props.now ?? Date.now;
+  const [rail, setRail] = createStore(initialRail(props.snapshot, now()));
+  const [clock, setClock] = createSignal(now());
+  const tick = setInterval(() => setClock(now()), 1000);
+  const [railFull, setRailFull] = createSignal(false);
+  const off = props.client.subscribe((e) => {
+    setState(produce((s) => applyEvent(s, e)));
+    setRail(produce((r) => applyRailEvent(r, e, now())));
+    setClock(now());
+  });
+  onCleanup(() => {
+    off();
+    clearInterval(tick);
+  });
 
+  const dims = useTerminalDimensions();
   let input: InputRenderable | undefined;
+  /** The `/model` picker's list while it is open. */
+  const [picker, setPicker] = createSignal<ModelInfo[] | undefined>();
+
+  const switchModel = (model: string) => {
+    setPicker(undefined);
+    props.client
+      .setModel(state.session.id, model)
+      .then((snap) => setState("session", "model", snap.session.model))
+      .catch((err: Error) => setState("notice", err.message));
+  };
+
+  /** `/model` opens the picker; `/model provider/id` switches straight away. */
+  const modelCommand = (arg: string) => {
+    if (arg) return switchModel(arg);
+    props.client
+      .models()
+      .then((models) =>
+        models.length
+          ? setPicker(models)
+          : setState("notice", "No models available: add a key with `hamness keys set <provider>`"),
+      )
+      .catch((err: Error) => setState("notice", err.message));
+  };
 
   const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
     if (input) input.value = "";
     setState("notice", undefined);
+    const command = /^\/model(?:\s+(.*))?$/.exec(text);
+    if (command) return modelCommand((command[1] ?? "").trim());
     props.client
       .prompt(state.session.id, text)
       .catch((err: Error) => setState("notice", err.message));
@@ -44,14 +89,23 @@ export function App(props: AppProps) {
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") props.onExit?.();
-    if (key.name === "escape" && state.session.busy) {
+    // Ctrl+R: the side rail full screen, and back.
+    if (key.ctrl && key.name === "r") setRailFull((full) => !full);
+    if (key.name === "escape" && state.session.busy && !picker()) {
       props.client.abort(state.session.id).catch(() => {});
     }
   });
 
   return (
     <box flexDirection="row" flexGrow={1} minHeight={0}>
-      <box flexDirection="column" flexGrow={1} minHeight={0} paddingLeft={1} paddingRight={1}>
+      <box
+        visible={!railFull()}
+        flexDirection="column"
+        flexGrow={1}
+        minHeight={0}
+        paddingLeft={1}
+        paddingRight={1}
+      >
         <box flexDirection="row" height={1}>
           <text fg={COLORS.muted}>
             hamness · {state.session.cwd} · {state.session.model}
@@ -70,20 +124,34 @@ export function App(props: AppProps) {
         <Show when={state.notice}>
           <text fg={COLORS.error}>{state.notice}</text>
         </Show>
+        <Show when={picker()}>
+          {(models: () => ModelInfo[]) => (
+            <ModelPicker
+              models={models()}
+              current={state.session.model}
+              onPick={switchModel}
+              onClose={() => setPicker(undefined)}
+            />
+          )}
+        </Show>
         <box border height={3}>
           <input
             ref={(r: InputRenderable) => {
               input = r;
             }}
-            placeholder="Ask hamness… (Enter sends, Esc stops, Ctrl+C leaves)"
-            focused
+            placeholder="Ask hamness… (Enter sends, Esc stops, /model switches, Ctrl+C leaves)"
+            focused={!picker()}
             onSubmit={(v: unknown) => submit(typeof v === "string" ? v : (input?.value ?? ""))}
           />
         </box>
       </box>
-      <box width={RAIL_WIDTH} border title="side rail" flexDirection="column" paddingLeft={1}>
-        <text fg={COLORS.muted}>agents, tools, task and cost show here soon</text>
-      </box>
+      <Rail
+        state={rail}
+        now={clock()}
+        full={railFull()}
+        {...(props.task ? { task: props.task } : {})}
+        {...(railFull() ? { width: Math.max(20, dims().width - 4) } : {})}
+      />
     </box>
   );
 }

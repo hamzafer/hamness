@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   type AgentSessionEvent,
   createAgentSession,
@@ -7,6 +7,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { ContextFill } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
 import type { ModelChoice } from "./models.ts";
 
@@ -65,6 +66,8 @@ export type RunnerEvent =
       summary: string;
       durationMs?: number;
     }
+  /** After each turn (reply plus its tool results are in the session): how full the context is. */
+  | ({ type: "context" } & ContextFill)
   | { type: "run.settled"; aborted: boolean };
 
 export interface RunnerOptions {
@@ -78,13 +81,22 @@ export interface RunnerOptions {
   contextFiles?: boolean;
   /** Where Pi writes its session JSONL. In memory when unset. */
   sessionDir?: string;
+  /** A Pi session file to continue (its messages become the context). Needs `sessionDir`. */
+  resumeFile?: string;
 }
 
 export interface AgentRunner {
   prompt(text: string): Promise<void>;
   abort(): Promise<void>;
   readonly busy: boolean;
+  /** `provider/id` of the model the next call uses. */
   readonly model: string;
+  /** Pi's session id: the name of its JSONL file, used to resume after a restart. */
+  readonly piSessionId: string;
+  /** Switches the model for the next call. Throws when the provider has no credentials. */
+  setModel(model: Model<Api>): Promise<void>;
+  /** How full the context window is now (Pi's estimate), or undefined when Pi can't tell. */
+  contextUsage(): ContextFill | undefined;
   dispose(): void;
 }
 
@@ -140,16 +152,24 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     model: opts.models.model,
     thinkingLevel: "medium",
     resourceLoader,
-    sessionManager: opts.sessionDir
-      ? SessionManager.create(opts.cwd, opts.sessionDir)
-      : SessionManager.inMemory(opts.cwd),
+    sessionManager: !opts.sessionDir
+      ? SessionManager.inMemory(opts.cwd)
+      : opts.resumeFile
+        ? SessionManager.open(opts.resumeFile, opts.sessionDir)
+        : SessionManager.create(opts.cwd, opts.sessionDir),
     settingsManager: SettingsManager.inMemory({
       compaction: { enabled: true },
       retry: { enabled: false },
     }),
   });
 
+  const contextFill = (): ContextFill | undefined => {
+    const u = session.getContextUsage();
+    return u && { tokens: u.tokens, contextWindow: u.contextWindow, percent: u.percent };
+  };
+
   let busy = false;
+  let model = opts.models.model;
   let seq = 0;
   let currentKey: string | undefined;
   const unsubscribe = session.subscribe((ev) => translate(ev));
@@ -181,6 +201,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
             output: m.usage.output,
             cacheRead: m.usage.cacheRead,
             cacheWrite: m.usage.cacheWrite,
+            ...(m.usage.cacheWrite1h ? { cacheWrite1h: m.usage.cacheWrite1h } : {}),
           },
           piCostUsd: m.usage.cost.total,
           ...(m.durationMs !== undefined ? { durationMs: m.durationMs } : {}),
@@ -207,6 +228,14 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
           ...(ev.durationMs !== undefined ? { durationMs: ev.durationMs } : {}),
         });
         return;
+      case "turn_end": {
+        // Pi stores the turn's messages only after listeners ran; read the fill once it has.
+        queueMicrotask(() => {
+          const fill = contextFill();
+          if (fill) emit({ type: "context", ...fill });
+        });
+        return;
+      }
       case "agent_settled":
         busy = false;
         emit({ type: "run.settled", aborted: ev.aborted });
@@ -221,7 +250,14 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       return busy;
     },
     get model() {
-      return `${opts.models.model.provider}/${opts.models.model.id}`;
+      return `${model.provider}/${model.id}`;
+    },
+    get piSessionId() {
+      return session.sessionId;
+    },
+    async setModel(next) {
+      await session.setModel(next);
+      model = next;
     },
     async prompt(text) {
       busy = true;
@@ -232,6 +268,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       }
     },
     abort: () => session.abort(),
+    contextUsage: contextFill,
     dispose() {
       unsubscribe();
       session.dispose();

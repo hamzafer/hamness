@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ModelInfo } from "../agent/models.ts";
 import type { Env } from "../config/paths.ts";
 import { dataPaths } from "../config/paths.ts";
 import { getStatus } from "../daemon/status.ts";
@@ -11,6 +12,10 @@ export interface DaemonClient {
   attach(cwd: string): Promise<SessionSnapshot>;
   prompt(sessionId: string, text: string): Promise<void>;
   abort(sessionId: string): Promise<void>;
+  /** The models a session can switch to. */
+  models(): Promise<ModelInfo[]>;
+  /** Switches the session to `provider/id`; rejects with the daemon's reason. */
+  setModel(sessionId: string, model: string): Promise<SessionSnapshot>;
   /** Opens the event stream; returns a function that closes it. */
   subscribe(onEvent: (event: HamnessEvent) => void): () => void;
   /** Resolves once the event stream is open (after `subscribe`). */
@@ -83,6 +88,9 @@ export function httpClient(url: string, token: string): DaemonClient {
     abort: async (id) => {
       await call("POST", `/v1/sessions/${encodeURIComponent(id)}/abort`);
     },
+    models: async () => (await call<{ models: ModelInfo[] }>("GET", "/v1/models")).models,
+    setModel: (id, model) =>
+      call<SessionSnapshot>("POST", `/v1/sessions/${encodeURIComponent(id)}/model`, { model }),
     subscribe(onEvent) {
       const ws = new WebSocket(`${url.replace(/^http/, "ws")}/v1/events?token=${token}`);
       ws.onopen = () => markReady();

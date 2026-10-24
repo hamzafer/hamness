@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { costMicros, estimateCostMicros, priceFor } from "./prices.ts";
+import { costMicros, estimateCostMicros, PRICE_NOTES, priceFor } from "./prices.ts";
 
 describe("priceFor", () => {
   test("finds a Claude model and ignores Claude Code's [1m] suffix", () => {
@@ -86,5 +86,56 @@ describe("costMicros", () => {
   test("is undefined, not 0, for a model without a price", () => {
     expect(costMicros("some-local-model", usage(1000, 1000))).toBeUndefined();
     expect(costMicros("constructor", usage(1, 1))).toBeUndefined();
+  });
+});
+
+describe("official Anthropic prices (platform.claude.com pricing page, 2026-10-24)", () => {
+  const usage = (
+    input: number,
+    output: number,
+    cacheRead = 0,
+    cacheWrite = 0,
+    cacheWrite1h = 0,
+  ) => ({
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    cacheWrite1h,
+  });
+
+  test("Sonnet 5.5 cache reads cost $0.10/MTok (0.05x of $2 input)", () => {
+    expect(costMicros("claude-sonnet-5-5", usage(0, 0, 1_000_000))).toBe(100_000);
+  });
+
+  test("a 1-hour cache write costs 2x input: Opus 5.5 at $8/MTok", () => {
+    // 1M cache-write tokens, all of them 1h: $8
+    expect(costMicros("claude-opus-5-5", usage(0, 0, 0, 1_000_000, 1_000_000))).toBe(8_000_000);
+  });
+
+  test("5-minute and 1-hour cache writes in one call are priced separately", () => {
+    // Sonnet 4.5: 5m write $3.75, 1h write $6 per MTok. 600K 5m + 400K 1h = 2.25 + 2.4 = $4.65
+    expect(costMicros("claude-sonnet-4-5", usage(0, 0, 0, 1_000_000, 400_000))).toBe(4_650_000);
+  });
+
+  test("Haiku 5.5 over 100K prompt tokens: $1/MTok for 1-hour writes", () => {
+    expect(costMicros("claude-haiku-5-5", usage(0, 0, 0, 200_000, 200_000))).toBe(200_000);
+  });
+
+  test("a usage without the 1-hour split treats every cache write as 5-minute", () => {
+    expect(
+      costMicros("claude-opus-5-5", { input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000 }),
+    ).toBe(5_000_000);
+  });
+
+  test("every Claude row has its 1-hour write price at 2x input", () => {
+    for (const id of ["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]) {
+      const price = priceFor(id);
+      expect(price?.cacheWrite1h).toBe((price?.input ?? Number.NaN) * 2);
+    }
+  });
+
+  test("no prices are left unconfirmed", () => {
+    expect(Object.keys(PRICE_NOTES)).toEqual([]);
   });
 });

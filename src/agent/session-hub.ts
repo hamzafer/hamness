@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
 import type {
@@ -18,7 +19,14 @@ import {
   redactArgs,
   type SafetyCheck,
 } from "../safety/index.ts";
-import { keyFilePath, type ModelChoice } from "./models.ts";
+import { envKeyHint } from "./keys.ts";
+import {
+  keyFilePath,
+  listModels,
+  type ModelChoice,
+  type ModelInfo,
+  parseModelSpec,
+} from "./models.ts";
 import { type AgentRunner, type RunnerEvent, startAgentRunner } from "./runner.ts";
 import { ChatStore } from "./store.ts";
 
@@ -44,11 +52,18 @@ export interface SessionHubOptions {
 
 /** Pi's "No API key" error points at its own `/login`; say what works in hamness instead. */
 function explainError(message: string, dataDir: string): string {
-  const missing = /No API key found for ([\w-]+)/.exec(message);
+  const missing = /No API key (?:found )?for ([\w-]+)/.exec(message);
   if (!missing) return message;
   const provider = missing[1] ?? "anthropic";
-  const envVar = `${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
-  return `No API key for ${provider}. Set ${envVar}, or put {"${provider}": "<key>"} in ${keyFilePath(dataDir)} (mode 0600), then restart the daemon.`;
+  return `No API key for ${provider}. Set ${envKeyHint(provider)}, or run \`hamness keys set ${provider}\` (stored in ${keyFilePath(dataDir)}, mode 0600), then restart the daemon.`;
+}
+
+/** A model the session cannot switch to: not in the catalog, or no credentials for it. */
+export class ModelSwitchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelSwitchError";
+  }
 }
 
 export class SessionBusyError extends Error {
@@ -63,6 +78,8 @@ interface LiveSession {
   agentId: string;
   cwd: string;
   runner: AgentRunner;
+  /** The Pi runtime (and starting model) the session was built with; switches use its catalog. */
+  models: ModelChoice;
   seq: number;
   busy: boolean;
   /** Assistant message rows by the runner's key, with their text so far. */
@@ -130,6 +147,34 @@ export class SessionHub {
     return messageId;
   }
 
+  /** The models a session can switch to: Pi's catalog, for providers with credentials. */
+  async models(): Promise<ModelInfo[]> {
+    const first = this.byId.values().next().value as LiveSession | undefined;
+    const runtime = first?.models.runtime ?? (await this.opts.models()).runtime;
+    return listModels(runtime);
+  }
+
+  /**
+   * Switches the session's model (`provider/id`); the next model call uses it, and each call
+   * records its own model. Throws `ModelSwitchError` or `SessionBusyError`.
+   */
+  async setModel(sessionId: string, spec: string): Promise<SessionSnapshot | undefined> {
+    const live = this.byId.get(sessionId);
+    if (!live) return undefined;
+    if (live.busy) throw new SessionBusyError();
+    const parsed = parseModelSpec(spec);
+    const model = parsed && live.models.runtime.getModel(parsed.provider, parsed.id);
+    if (!model) throw new ModelSwitchError(`unknown model ${spec.trim() || "(empty)"}`);
+    try {
+      await live.runner.setModel(model);
+    } catch (err) {
+      throw new ModelSwitchError(explainError((err as Error).message, this.opts.dataDir));
+    }
+    this.store.setModel(this.ids(live), live.runner.model);
+    this.emit(live, { type: "agent.model", model: live.runner.model });
+    return this.snapshotOf(live);
+  }
+
   async abort(sessionId: string): Promise<boolean> {
     const live = this.byId.get(sessionId);
     if (!live) return false;
@@ -160,15 +205,32 @@ export class SessionHub {
     this.byCwd.clear();
   }
 
+  /**
+   * The cwd's last session from before a daemon restart, when SQLite has its rows and Pi
+   * still has its JSONL (so the model gets the conversation back as context).
+   */
+  private resumable(cwd: string, sessionDir: string) {
+    const last = this.store.latestSession(cwd);
+    if (!last) return undefined;
+    const file = SessionManager.findById(cwd, last.piSessionId, sessionDir);
+    return file ? { ...last, file } : undefined;
+  }
+
   private async create(cwd: string): Promise<LiveSession> {
-    const models = await this.opts.models();
+    const base = await this.opts.models();
+    const sessionDir = join(this.opts.dataDir, "pi", "sessions");
+    const resume = this.resumable(cwd, sessionDir);
+    const saved = resume?.model ? parseModelSpec(resume.model) : undefined;
+    const savedModel = saved && base.runtime.getModel(saved.provider, saved.id);
+    const models: ModelChoice = savedModel ? { ...base, model: savedModel } : base;
     const model = `${models.model.provider}/${models.model.id}`;
     // `live` is filled in before the runner can emit anything: events only follow a prompt.
     let live: LiveSession | undefined;
     const runner = await startAgentRunner({
       cwd,
       agentDir: join(this.opts.dataDir, "pi"),
-      sessionDir: join(this.opts.dataDir, "pi", "sessions"),
+      sessionDir,
+      ...(resume ? { resumeFile: resume.file } : {}),
       models,
       contextFiles: this.opts.contextFiles ?? true,
       onEvent: (e) => live && this.onRunnerEvent(live, e),
@@ -187,12 +249,15 @@ export class SessionHub {
         }
       },
     });
-    const { sessionId, agentId } = this.store.createSession(cwd, model);
+    const { sessionId, agentId } = resume
+      ? { sessionId: resume.sessionId, agentId: resume.agentId }
+      : this.store.createSession(cwd, model, runner.piSessionId);
     live = {
       id: sessionId,
       agentId,
       cwd,
       runner,
+      models: base,
       seq: 0,
       busy: false,
       replies: new Map(),
@@ -214,8 +279,15 @@ export class SessionHub {
       const partial = streaming.get(item.id);
       return partial === undefined ? item : { ...item, text: partial, streaming: true };
     });
-    const approvals = [...live.approvals.values()].map((e) => e.approval);
-    return { session: this.info(live), seq: live.seq, items, approvals };
+    const context = live.runner.contextUsage();
+    return {
+      session: this.info(live),
+      seq: live.seq,
+      items,
+      agents: this.store.agentTotals(live.id),
+      ...(context ? { context } : {}),
+      approvals: [...live.approvals.values()].map((e) => e.approval),
+    };
   }
 
   private info(live: LiveSession): SessionInfo {
@@ -225,6 +297,7 @@ export class SessionHub {
       cwd: live.cwd,
       model: live.runner.model,
       busy: live.busy,
+      mainAgentId: live.agentId,
       ...(mode ? { mode } : {}),
     };
   }
@@ -272,7 +345,12 @@ export class SessionHub {
 
   private emit(live: LiveSession, body: EventBody): void {
     live.seq += 1;
-    this.opts.publish({ ...body, sessionId: live.id, seq: live.seq } as AgentEvent);
+    this.opts.publish({
+      ...body,
+      sessionId: live.id,
+      agentId: live.agentId,
+      seq: live.seq,
+    } as AgentEvent);
   }
 
   private setBusy(live: LiveSession, busy: boolean): void {
@@ -388,6 +466,11 @@ export class SessionHub {
         live.tools.delete(e.toolCallId);
         live.denied.delete(e.toolCallId);
         this.emit(live, { type: "agent.tool.end", toolCallId: id, ...end });
+        return;
+      }
+      case "context": {
+        const { type: _, ...fill } = e;
+        this.emit(live, { type: "agent.context", ...fill });
         return;
       }
       case "run.settled":
