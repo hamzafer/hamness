@@ -6,6 +6,10 @@ import { ChatStore } from "../agent/store.ts";
 import { type HamnessDb, openDatabase } from "../db/open.ts";
 import { SessionTasks, type TaskEventBody, TaskStateError } from "./session-tasks.ts";
 
+/** Real checks that pass and fail: the shape test refuses `true` and `exit 1` (ADR 0019). */
+const PASS = "bun -e 'process.exit(0)'";
+const FAIL = "bun -e 'process.exit(1)'";
+
 let home: ReturnType<typeof tempHome>;
 let db: HamnessDb;
 let chat: ChatStore;
@@ -62,7 +66,7 @@ describe("explicit tasks", () => {
   test("task_done with a passing command is verified", async () => {
     const t = tasks();
     const task = t.start("make the tests pass");
-    const proof = await t.prove({ kind: "command", command: "true" });
+    const proof = await t.prove({ kind: "command", command: PASS });
     expect(proof.result.status).toBe("passed");
     const done = t.done("tests pass");
     expect(done.outcome).toBe("verified");
@@ -80,7 +84,7 @@ describe("explicit tasks", () => {
   test("task_done with only failing evidence is unverified", async () => {
     const t = tasks();
     t.start("fix the build");
-    const proof = await t.prove({ kind: "command", command: "exit 1" });
+    const proof = await t.prove({ kind: "command", command: FAIL });
     expect(proof.result.status).toBe("failed");
     expect(t.done("fixed").outcome).toBe("unverified");
   });
@@ -88,8 +92,8 @@ describe("explicit tasks", () => {
   test("one passing piece among failures is enough", async () => {
     const t = tasks();
     t.start("fix");
-    await t.prove({ kind: "command", command: "false" });
-    await t.prove({ kind: "command", command: "true" });
+    await t.prove({ kind: "command", command: FAIL });
+    await t.prove({ kind: "command", command: PASS });
     const done = t.done("fixed");
     expect(done.outcome).toBe("verified");
     expect(done).toMatchObject({ evidence: 2, passed: 1 });
@@ -113,7 +117,7 @@ describe("explicit tasks", () => {
   test("task_done and prove need an open task", async () => {
     const t = tasks();
     expect(() => t.done("x")).toThrow(TaskStateError);
-    await expect(t.prove({ kind: "command", command: "true" })).rejects.toThrow(TaskStateError);
+    await expect(t.prove({ kind: "command", command: PASS })).rejects.toThrow(TaskStateError);
   });
 });
 
@@ -132,7 +136,7 @@ describe("the agent cannot set a result", () => {
   test("the stored result is what the checker found, not what the agent claimed", async () => {
     const t = tasks();
     t.start("x");
-    await t.prove({ kind: "command", command: "echo all good; exit 2" });
+    await t.prove({ kind: "command", command: "echo all good && bun -e 'process.exit(2)'" });
     const ev = db.sqlite
       .query<{ status: string; result_json: string; claim_json: string }, []>(
         "SELECT status, result_json, claim_json FROM evidence",
@@ -142,7 +146,7 @@ describe("the agent cannot set a result", () => {
     expect(JSON.parse(ev?.result_json ?? "{}").exitCode).toBe(2);
     expect(JSON.parse(ev?.claim_json ?? "{}")).toEqual({
       kind: "command",
-      command: "echo all good; exit 2",
+      command: "echo all good && bun -e 'process.exit(2)'",
     });
   });
 
@@ -197,7 +201,7 @@ describe("user actions", () => {
   test("/override of a verified task is refused", async () => {
     const t = tasks();
     t.start("x");
-    await t.prove({ kind: "command", command: "true" });
+    await t.prove({ kind: "command", command: PASS });
     t.done("x");
     expect(() => t.override()).toThrow(TaskStateError);
   });
@@ -265,13 +269,13 @@ describe("the implicit task per turn", () => {
     const t = tasks();
     t.beginTurn("try");
     const failed = t.attributionId() as string;
-    await t.prove({ kind: "command", command: "false" });
+    await t.prove({ kind: "command", command: FAIL });
     t.endTurn();
     expect(row(failed)?.outcome).toBe("unverified");
 
     t.beginTurn("again");
     const passed = t.attributionId() as string;
-    await t.prove({ kind: "command", command: "true" });
+    await t.prove({ kind: "command", command: PASS });
     t.endTurn();
     expect(row(passed)?.outcome).toBe("verified");
   });
@@ -346,7 +350,7 @@ describe("events", () => {
   test("start, evidence and end, in order, with the roll-up on end", async () => {
     const t = tasks();
     const task = t.start("watch me");
-    await t.prove({ kind: "command", command: "true" });
+    await t.prove({ kind: "command", command: PASS });
     t.done("ok");
     expect(events.map((e) => e.type)).toEqual(["task.start", "task.evidence", "task.end"]);
     expect(events[1]).toMatchObject({

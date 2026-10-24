@@ -24,7 +24,16 @@ export interface Segment {
   pipedFrom: boolean;
 }
 
-export type ParsedCommand = { ok: true; segments: Segment[] } | { ok: false; error: string };
+/** A control operator between commands, `;` standing for newlines too. */
+export type Operator = "&&" | "||" | ";" | "&" | "|";
+
+/**
+ * `operators`: every control operator outside substitutions (inside `(...)` too), in order.
+ * Substitutions are left out: the command holding one is `dynamic` anyway.
+ */
+export type ParsedCommand =
+  | { ok: true; segments: Segment[]; operators: Operator[] }
+  | { ok: false; error: string };
 
 const PLACEHOLDER = "$(…)";
 
@@ -32,6 +41,9 @@ class ParseError extends Error {}
 
 class Parser {
   i = 0;
+  readonly operators: Operator[] = [];
+  /** Inside `$(...)` / `<(...)`: operators there are not the command's own. */
+  private inSubstitution = 0;
   constructor(private readonly src: string) {}
 
   /** Parses until `terminator` (consumed) or the end of input. Returns every segment found. */
@@ -83,8 +95,17 @@ class Parser {
       nextPiped = false;
     };
 
+    const op = (o: Operator) => {
+      if (this.inSubstitution === 0) this.operators.push(o);
+    };
+
     const substitution = () => {
-      nested.push(...this.list(")"));
+      this.inSubstitution++;
+      try {
+        nested.push(...this.list(")"));
+      } finally {
+        this.inSubstitution--;
+      }
       word += PLACEHOLDER;
       started = true;
       dynamic = true;
@@ -136,12 +157,14 @@ class Parser {
         continue;
       }
       if (c === "\n" || c === ";") {
+        if (words.length > 0 || started || redirects.length > 0) op(";");
         endSegment(false);
         this.i++;
         continue;
       }
       if (c === "&") {
         if (next === "&") {
+          op("&&");
           endSegment(false);
           this.i += 2;
         } else if (next === ">") {
@@ -150,6 +173,7 @@ class Parser {
           if (this.src[this.i] === ">") this.i++;
           pending = ">";
         } else {
+          op("&");
           endSegment(false);
           this.i++;
         }
@@ -157,9 +181,11 @@ class Parser {
       }
       if (c === "|") {
         if (next === "|") {
+          op("||");
           endSegment(false);
           this.i += 2;
         } else {
+          op("|");
           nextPiped = true;
           endSegment(true);
           this.i += next === "&" ? 2 : 1;
@@ -296,7 +322,9 @@ class Parser {
 
 export function parseCommand(command: string): ParsedCommand {
   try {
-    return { ok: true, segments: new Parser(command).list(null) };
+    const parser = new Parser(command);
+    const segments = parser.list(null);
+    return { ok: true, segments, operators: parser.operators };
   } catch (err) {
     if (err instanceof ParseError) return { ok: false, error: err.message };
     throw err;

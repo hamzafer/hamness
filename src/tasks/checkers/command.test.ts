@@ -60,7 +60,7 @@ describe("command checker", () => {
     expect(existsSync(join(home.dir, "late"))).toBe(false);
   });
 
-  test("asks the safety check first, as a bash call, and does not run a denied command", async () => {
+  test("asks the safety check first, as a proof re-run, and does not run a denied command", async () => {
     const seen: GuardedCall[] = [];
     const r = await checkCommand(
       { kind: "command", command: "touch ran" },
@@ -76,7 +76,7 @@ describe("command checker", () => {
       {
         sessionId: "s-test",
         toolCallId: "tc-9",
-        tool: "bash",
+        tool: "prove_command",
         args: { command: "touch ran" },
         cwd: home.dir,
       },
@@ -105,6 +105,35 @@ describe("command checker", () => {
       checkContext(home.dir),
     );
     expect(String(r.details.outputTail)).not.toContain("abc123def456");
+  });
+
+  test("a pipe does not hide a failing check (pipefail)", async () => {
+    const r = await checkCommand(
+      { kind: "command", command: "sh -c 'exit 3' | tail -1" },
+      checkContext(home.dir),
+    );
+    expect(r.status).toBe("failed");
+  });
+
+  test("a test run that ran no tests fails", async () => {
+    for (const out of [
+      "Ran 0 tests across 0 files.",
+      "testing: warning: no tests to run\nPASS\nok  \tpkg\t0.1s [no tests to run]",
+      "No tests found, exiting with code 0",
+      "running 0 tests\ntest result: ok. 0 passed; 0 failed",
+    ]) {
+      const r = await checkCommand(
+        { kind: "command", command: `printf '%s\\n' '${out.replace(/'/g, "")}'` },
+        checkContext(home.dir),
+      );
+      expect(r.status).toBe("failed");
+      expect(r.summary).toContain("no tests ran");
+    }
+    const some = await checkCommand(
+      { kind: "command", command: "printf 'running 0 tests\\nrunning 3 tests\\n'" },
+      checkContext(home.dir),
+    );
+    expect(some.status).toBe("passed");
   });
 
   test("stops when the check is aborted", async () => {

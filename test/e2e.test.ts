@@ -18,7 +18,8 @@ import { tempHome } from "./support/temp-home.ts";
  *
  *  1. A daemon starts in a fresh data dir; a session opens in a fresh git repo.
  *  2. Turn one: the agent opens a task, writes a file (the rules allow writes in the repo),
- *     proves it with a command that hamness re-runs itself, and closes the task: verified.
+ *     proves it with the repo's own tests (`bun test`, on the proof command list, so hamness
+ *     re-runs it without asking), and closes the task: verified.
  *  3. Turn two: the agent runs a bash command no rule allows. Auto mode with no judge key
  *     asks the user, who answers through the API; the command then runs.
  *  4. `hamness stats --json` and the dashboard's /v1/tasks show the verified task and its
@@ -75,6 +76,16 @@ beforeAll(async () => {
   const git = Bun.spawnSync(["git", "init", "-q", repo]);
   expect(git.exitCode).toBe(0);
   writeFileSync(join(repo, "README.md"), "# demo\n");
+  // The repo's test, which the agent's work has to make pass.
+  writeFileSync(
+    join(repo, "greeting.test.ts"),
+    `import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+test("the greeting greets", () => {
+  expect(readFileSync(new URL("./greeting.txt", import.meta.url), "utf8")).toContain("hello");
+});
+`,
+  );
 
   fake = await fakeModel(home.dir);
   daemon = await startDaemon({ dataDir, port: 0, models: async () => fake, contextFiles: false });
@@ -102,7 +113,7 @@ describe("a day with hamness", () => {
         usage: usage(1200, 80),
       },
       {
-        tools: [{ name: "prove", args: { kind: "command", command: "grep hello greeting.txt" } }],
+        tools: [{ name: "prove", args: { kind: "command", command: "bun test" } }],
         usage: usage(1400, 40),
       },
       {
@@ -185,7 +196,7 @@ describe("a day with hamness", () => {
     expect(task?.costMicros).toBe(31_200);
   });
 
-  test("`hamness audit` shows each decision: the rules allowed the write and the re-run, the user the bash", async () => {
+  test("`hamness audit` shows each decision: the rules allowed the write, the proof list the re-run, the user the bash", async () => {
     const r = await cli("audit", "--json");
     expect(r.code).toBe(0);
     const rows = JSON.parse(r.out) as DecisionRow[];
@@ -195,8 +206,9 @@ describe("a day with hamness", () => {
     expect(
       rows.some(
         (d) =>
-          d.tool === "bash" &&
-          d.args.command === "grep hello greeting.txt" &&
+          d.tool === "prove_command" &&
+          d.args.command === "bun test" &&
+          d.source === "rule" &&
           d.verdict === "allow",
       ),
     ).toBe(true);

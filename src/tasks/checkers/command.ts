@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import type { SafetyVerdict } from "../../safety/index.ts";
+import { PROVE_COMMAND } from "../../safety/proof.ts";
+import { hasPipe } from "../proof-shape.ts";
 import { redactOutput } from "../redact.ts";
 import type { CheckResult, EvidenceClaim } from "../types.ts";
 import type { CheckContext } from "./context.ts";
@@ -13,9 +15,11 @@ const BUFFER = 64_000;
 type CommandClaim = Extract<EvidenceClaim, { kind: "command" }>;
 
 /**
- * Re-runs the agent's command itself, in the session folder, after the same safety check a
- * `bash` call gets. Passes on exit 0 within the timeout. Stores exit code, duration and the
- * redacted output tail.
+ * Re-runs the agent's command itself, in the session folder, after its safety check as a
+ * proof re-run (`prove_command`, ADR 0019: bash's deny / ask rules plus the proof command
+ * list). Passes on exit 0 within the timeout, unless the output shows that no tests ran.
+ * A command with a pipe runs under bash's `pipefail`, so `bun test | tail` fails when the
+ * tests do. Stores exit code, duration and the redacted output tail.
  */
 export async function checkCommand(claim: CommandClaim, ctx: CheckContext): Promise<CheckResult> {
   let verdict: SafetyVerdict;
@@ -23,7 +27,7 @@ export async function checkCommand(claim: CommandClaim, ctx: CheckContext): Prom
     verdict = await ctx.safety({
       sessionId: ctx.sessionId,
       toolCallId: ctx.toolCallId,
-      tool: "bash",
+      tool: PROVE_COMMAND,
       args: { command: claim.command },
       cwd: ctx.cwd,
     });
@@ -40,7 +44,15 @@ export async function checkCommand(claim: CommandClaim, ctx: CheckContext): Prom
 
   const timeoutMs = (claim.timeoutSeconds ?? DEFAULT_COMMAND_TIMEOUT_S) * 1000;
   const started = performance.now();
-  const run = await runShell(claim.command, ctx.cwd, timeoutMs, ctx.signal);
+  const shell = shellFor(claim.command);
+  if (!shell) {
+    return {
+      status: "error",
+      summary: "not run: a command with a pipe needs bash (for pipefail), and none was found",
+      details: { command: claim.command },
+    };
+  }
+  const run = await runShell(shell, claim.command, ctx.cwd, timeoutMs, ctx.signal);
   const durationMs = Math.round(performance.now() - started);
   const outputTail = redactOutput(run.output).slice(-OUTPUT_TAIL);
   const details = {
@@ -58,6 +70,9 @@ export async function checkCommand(claim: CommandClaim, ctx: CheckContext): Prom
     return { status: "failed", summary: `timed out after ${timeoutMs / 1000}s`, details };
   }
   const passed = run.exitCode === 0;
+  if (passed && noTestsRan(run.output)) {
+    return { status: "failed", summary: "exit 0, but no tests ran", details };
+  }
   return {
     status: passed ? "passed" : "failed",
     summary: `exit ${run.exitCode ?? `signal ${run.signal}`} in ${durationMs}ms`,
@@ -74,7 +89,32 @@ interface ShellRun {
   spawnError?: string;
 }
 
+/**
+ * Test runners that exit 0 without running a test say so. `cargo test` prints one
+ * `running N tests` line per target, so it counts only when every one is 0.
+ */
+const NO_TESTS = [
+  /\bRan 0 tests\b/,
+  /\bno tests to run\b/,
+  /\bNo tests? (files )?found\b/i,
+  /\bno tests ran\b/i,
+];
+
+export function noTestsRan(output: string): boolean {
+  if (NO_TESTS.some((re) => re.test(output))) return true;
+  const cargo = [...output.matchAll(/^running (\d+) tests?$/gm)].map((m) => Number(m[1]));
+  return cargo.length > 0 && cargo.every((n) => n === 0);
+}
+
+/** `/bin/sh -c`, or bash with pipefail when the command has a pipe. Undefined: no bash. */
+function shellFor(command: string): string[] | undefined {
+  if (!hasPipe(command)) return ["/bin/sh", "-c"];
+  const bash = Bun.which("bash");
+  return bash ? [bash, "-o", "pipefail", "-c"] : undefined;
+}
+
 function runShell(
+  shell: string[],
   command: string,
   cwd: string,
   timeoutMs: number,
@@ -85,7 +125,8 @@ function runShell(
     let timedOut = false;
     let aborted = false;
     // Its own process group, so a timeout kills the command's children too.
-    const child = spawn("/bin/sh", ["-c", command], {
+    const [bin = "/bin/sh", ...flags] = shell;
+    const child = spawn(bin, [...flags, command], {
       cwd,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],

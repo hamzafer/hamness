@@ -230,7 +230,7 @@ const verbFor = (v: RuleVerdict) => (v === "allow" ? "allowed" : v === "deny" ? 
 // bash
 
 /** Strips env assignments and wrapper commands (`env`, `timeout 5`, `xargs -0`, ...). */
-function unwrap(words: string[]): { words: string[]; wrapped: boolean } {
+export function unwrap(words: string[]): { words: string[]; wrapped: boolean } {
   let w = [...words];
   let wrapped = false;
   for (;;) {
