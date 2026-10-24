@@ -9,6 +9,7 @@ import { modelsCommand } from "./commands/models.ts";
 import { statsCommand } from "./commands/stats.ts";
 import { statusCommand } from "./commands/status.ts";
 import { tuiCommand } from "./commands/tui.ts";
+import { worktreesCommand } from "./commands/worktrees.ts";
 import { type CliIo, processIo } from "./io.ts";
 
 export interface CliContext {
@@ -32,6 +33,10 @@ const commands: Record<string, { summary: string; run: Command }> = {
   keys: { summary: "Store API keys (set <provider>, list)", run: keysCommand },
   login: { summary: "Sign in to a provider (openai: ChatGPT plan)", run: loginCommand },
   logout: { summary: "Remove a provider sign-in", run: logoutCommand },
+  worktrees: {
+    summary: "List subagent worktrees (--prune: remove finished ones)",
+    run: worktreesCommand,
+  },
 };
 
 export const USAGE = [

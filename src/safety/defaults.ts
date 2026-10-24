@@ -93,6 +93,9 @@ export const DEFAULT_PERMISSION = {
     "mkfs*": "deny",
     "*{curl,wget} * | {sh,bash,zsh,dash,fish} *": "deny",
   },
+  // Subagents (ADR 0015): starting one is safe to allow, since each of its tool calls passes
+  // these same rules in its own cwd; status and wait only read.
+  "{agent_start,agent_status,agent_wait}": "allow",
 } as const;
 
 export function defaultRules(): Rule[] {

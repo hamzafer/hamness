@@ -27,8 +27,23 @@ import {
   type ModelInfo,
   parseModelSpec,
 } from "./models.ts";
-import { type AgentRunner, type RunnerEvent, startAgentRunner } from "./runner.ts";
-import { ChatStore } from "./store.ts";
+import {
+  type AgentRunner,
+  type RunnerEvent,
+  startAgentRunner,
+  type ToolGuard,
+  type ToolVerdict,
+} from "./runner.ts";
+import { ChatStore, type RowIds } from "./store.ts";
+import {
+  noticeText,
+  type SubagentControl,
+  type SubagentReport,
+  type SubagentStart,
+  type SubagentStatus,
+  subagentTools,
+} from "./subagent-tools.ts";
+import { createWorktree } from "./worktrees.ts";
 
 /** Distributive Omit, so each event keeps its own fields. */
 type EventBody = AgentEvent extends infer E
@@ -48,7 +63,11 @@ export interface SessionHubOptions {
   safetyMode?: (cwd: string) => SafetyMode | undefined;
   publish: (event: AgentEvent) => void;
   contextFiles?: boolean;
+  /** How many subagents run at once across the daemon; more wait in a queue. Default 4. */
+  maxSubagents?: number;
 }
+
+export const DEFAULT_MAX_SUBAGENTS = 4;
 
 /** Pi's "No API key" error points at its own `/login`; say what works in hamness instead. */
 function explainError(message: string, dataDir: string): string {
@@ -73,14 +92,11 @@ export class SessionBusyError extends Error {
   }
 }
 
-interface LiveSession {
-  id: string;
+/** One running agent loop's state: the session's main agent, or a subagent. */
+interface AgentState {
   agentId: string;
   cwd: string;
   runner: AgentRunner;
-  /** The Pi runtime (and starting model) the session was built with; switches use its catalog. */
-  models: ModelChoice;
-  seq: number;
   busy: boolean;
   /** Assistant message rows by the runner's key, with their text so far. */
   replies: Map<string, { rowId: string; text: string; done: boolean }>;
@@ -89,9 +105,48 @@ interface LiveSession {
   /** `tool_calls` row ids by Pi's tool call id. */
   tools: Map<string, string>;
   denied: Map<string, string>;
-  /** Tool calls waiting for the user, by approval id. */
-  approvals: Map<string, PendingEntry>;
+  /** The newest finished reply: a subagent's result. */
+  lastText?: string;
+  lastError?: string;
+  /** Tags this agent's model calls (subagents: the parent's task when started). */
+  taskId?: string;
+  /** Subagents: the name the parent gave it. */
+  name?: string;
 }
+
+/** The session is its main agent's state, plus what the session shares. */
+interface LiveSession extends AgentState {
+  id: string;
+  /** The Pi runtime (and starting model) the session was built with; switches use its catalog. */
+  models: ModelChoice;
+  seq: number;
+  /** Tool calls waiting for the user, by approval id (any agent of the session). */
+  approvals: Map<string, PendingEntry>;
+  /** The main agent's subagents, by agent id. */
+  subagents: Map<string, Subagent>;
+}
+
+interface Subagent {
+  id: string;
+  name: string;
+  prompt: string;
+  model: string;
+  wantsWorktree: boolean;
+  session: LiveSession;
+  taskId?: string;
+  status: SubagentStatus;
+  /** Set once it runs. */
+  agent?: AgentState;
+  result?: string;
+  error?: string;
+  worktree?: string;
+  branch?: string;
+  stopping: boolean;
+  /** `agent_wait` calls waiting for it; when there are none at the end, a notice goes out. */
+  waiters: Set<() => void>;
+}
+
+const FINISHED: ReadonlySet<SubagentStatus> = new Set(["done", "error", "aborted"]);
 
 interface PendingEntry {
   approval: PendingApproval;
@@ -107,10 +162,14 @@ export class SessionHub {
   private readonly byId = new Map<string, LiveSession>();
   private readonly byCwd = new Map<string, Promise<LiveSession>>();
   private readonly safety: SafetyCheck;
+  /** Subagents waiting for a slot, oldest first, and how many run now. */
+  private readonly queue: Subagent[] = [];
+  private running = 0;
 
   constructor(private readonly opts: SessionHubOptions) {
     this.store = new ChatStore(opts.db);
     this.safety = opts.safety ?? allowAll;
+    this.store.abortStaleSubagents();
   }
 
   /** The live session for `cwd`, created if there is none. */
@@ -138,11 +197,11 @@ export class SessionHub {
     const messageId = this.store.addMessage(this.ids(live), "user", text);
     this.emit(live, { type: "agent.message.start", messageId, role: "user" });
     this.emit(live, { type: "agent.message.end", messageId, role: "user", text });
-    this.setBusy(live, true);
+    this.setBusy(live, live, true);
     live.runner.prompt(text).catch((err: unknown) => {
       const message = (err as Error).message ?? String(err);
       this.emit(live, { type: "agent.error", message: explainError(message, this.opts.dataDir) });
-      this.setBusy(live, false);
+      this.setBusy(live, live, false);
     });
     return messageId;
   }
@@ -175,12 +234,16 @@ export class SessionHub {
     return this.snapshotOf(live);
   }
 
+  /** Stops the main agent and every subagent it started (queued ones never start). */
   async abort(sessionId: string): Promise<boolean> {
     const live = this.byId.get(sessionId);
     if (!live) return false;
     // Pi waits for a pending tool_call handler, so answer the approvals first.
     this.cancelApprovals(live);
-    await live.runner.abort();
+    await Promise.all([
+      live.runner.abort(),
+      ...[...live.subagents.values()].map((sub) => this.stopSubagent(sub)),
+    ]);
     return true;
   }
 
@@ -197,8 +260,14 @@ export class SessionHub {
   }
 
   stop(): void {
+    this.queue.length = 0;
     for (const live of this.byId.values()) {
       this.cancelApprovals(live);
+      for (const sub of live.subagents.values()) {
+        sub.stopping = true;
+        sub.agent?.runner.dispose();
+        if (!FINISHED.has(sub.status)) this.store.setAgentStatus(sub.id, "aborted");
+      }
       live.runner.dispose();
     }
     this.byId.clear();
@@ -226,6 +295,17 @@ export class SessionHub {
     const model = `${models.model.provider}/${models.model.id}`;
     // `live` is filled in before the runner can emit anything: events only follow a prompt.
     let live: LiveSession | undefined;
+    const control: SubagentControl = {
+      start: (req) => this.startSubagent(live as LiveSession, req),
+      status: (id) => {
+        const sub = live?.subagents.get(id);
+        return sub && this.report(sub);
+      },
+      wait: (id, timeoutMs, signal) => {
+        const sub = live?.subagents.get(id);
+        return sub ? this.waitFor(sub, timeoutMs, signal) : Promise.resolve(undefined);
+      },
+    };
     const runner = await startAgentRunner({
       cwd,
       agentDir: join(this.opts.dataDir, "pi"),
@@ -233,21 +313,10 @@ export class SessionHub {
       ...(resume ? { resumeFile: resume.file } : {}),
       models,
       contextFiles: this.opts.contextFiles ?? true,
-      onEvent: (e) => live && this.onRunnerEvent(live, e),
-      guard: async (call) => {
-        if (!live) return { allow: false, reason: "session not ready" };
-        const toolCallId = this.toolRow(live, call.toolCallId, call.tool, call.args);
-        try {
-          const target = live;
-          const verdict = await this.safety(
-            { sessionId: live.id, toolCallId, tool: call.tool, args: call.args, cwd: live.cwd },
-            { cwd: live.cwd, askUser: (req) => this.requestApproval(target, req) },
-          );
-          return verdict;
-        } catch (err) {
-          return { allow: false, reason: `safety check failed: ${(err as Error).message}` };
-        }
-      },
+      tools: subagentTools(control),
+      onEvent: (e) => live && this.onRunnerEvent(live, live, e),
+      guard: (call) =>
+        live ? this.guard(live, live, call) : Promise.resolve(notReady("session not ready")),
     });
     const { sessionId, agentId } = resume
       ? { sessionId: resume.sessionId, agentId: resume.agentId }
@@ -265,16 +334,208 @@ export class SessionHub {
       tools: new Map(),
       denied: new Map(),
       approvals: new Map(),
+      subagents: new Map(),
     };
     this.byId.set(sessionId, live);
     return live;
+  }
+
+  /** Every tool call of any agent of the session passes the same safety check, in its cwd. */
+  private async guard(
+    live: LiveSession,
+    agent: AgentState,
+    call: Parameters<ToolGuard>[0],
+  ): Promise<ToolVerdict> {
+    const toolCallId = this.toolRow(live, agent, call.toolCallId, call.tool, call.args);
+    try {
+      return await this.safety(
+        { sessionId: live.id, toolCallId, tool: call.tool, args: call.args, cwd: agent.cwd },
+        {
+          cwd: agent.cwd,
+          askUser: (req) =>
+            this.requestApproval(
+              live,
+              req,
+              agent === live ? undefined : { id: agent.agentId, name: agent.name },
+            ),
+        },
+      );
+    } catch (err) {
+      return { allow: false, reason: `safety check failed: ${(err as Error).message}` };
+    }
+  }
+
+  // ---- subagents (ADR 0015) -----------------------------------------------------------------
+
+  private startSubagent(live: LiveSession, req: SubagentStart): SubagentReport {
+    const name = req.name.trim();
+    if (!name) throw new Error("a subagent needs a name");
+    if (!req.prompt.trim()) throw new Error("a subagent needs a prompt");
+    const model = req.model ? this.resolveModel(live, req.model) : live.runner.model;
+    const taskId = this.store.openTaskId(live.id);
+    const id = this.store.createSubagent({
+      sessionId: live.id,
+      parentAgentId: live.agentId,
+      ...(taskId ? { taskId } : {}),
+      name,
+      model,
+    });
+    const sub: Subagent = {
+      id,
+      name,
+      prompt: req.prompt,
+      model,
+      wantsWorktree: req.worktree === true,
+      session: live,
+      ...(taskId ? { taskId } : {}),
+      status: "queued",
+      stopping: false,
+      waiters: new Set(),
+    };
+    live.subagents.set(id, sub);
+    this.emit(live, { type: "agent.start", name, parentAgentId: live.agentId, model }, id);
+    this.queue.push(sub);
+    this.pump();
+    return this.report(sub);
+  }
+
+  /** `provider/id` of a model the session's runtime knows, or a thrown error. */
+  private resolveModel(live: LiveSession, spec: string): string {
+    const parsed = parseModelSpec(spec);
+    const model = parsed && live.models.runtime.getModel(parsed.provider, parsed.id);
+    if (!model) throw new Error(`unknown model ${spec.trim() || "(empty)"}`);
+    return `${model.provider}/${model.id}`;
+  }
+
+  private pump(): void {
+    const max = this.opts.maxSubagents ?? DEFAULT_MAX_SUBAGENTS;
+    while (this.running < max && this.queue.length > 0) {
+      const sub = this.queue.shift() as Subagent;
+      this.running += 1;
+      this.runSubagent(sub)
+        .catch((err: unknown) => {
+          sub.error ??= (err as Error).message ?? String(err);
+        })
+        .finally(() => {
+          this.running -= 1;
+          this.finishSubagent(sub);
+          this.pump();
+        });
+    }
+  }
+
+  private async runSubagent(sub: Subagent): Promise<void> {
+    if (sub.stopping) return;
+    const live = sub.session;
+    sub.status = "running";
+    this.store.setAgentStatus(sub.id, "running");
+    let cwd = live.cwd;
+    if (sub.wantsWorktree) {
+      const wt = await createWorktree(live.cwd, sub.name, sub.id);
+      sub.worktree = wt.path;
+      sub.branch = wt.branch;
+      this.store.setAgentWorktree(sub.id, wt.path);
+      cwd = wt.path;
+    }
+    if (sub.stopping) return;
+    const parsed = parseModelSpec(sub.model);
+    const model = parsed && live.models.runtime.getModel(parsed.provider, parsed.id);
+    if (!model) throw new Error(`unknown model ${sub.model}`);
+    let agent: AgentState | undefined;
+    const runner = await startAgentRunner({
+      cwd,
+      agentDir: join(this.opts.dataDir, "pi"),
+      models: { ...live.models, model },
+      contextFiles: this.opts.contextFiles ?? true,
+      onEvent: (e) => agent && this.onRunnerEvent(live, agent, e),
+      guard: (call) =>
+        agent ? this.guard(live, agent, call) : Promise.resolve(notReady("agent not ready")),
+    });
+    agent = {
+      agentId: sub.id,
+      cwd,
+      runner,
+      busy: false,
+      replies: new Map(),
+      currentReplyRow: undefined,
+      tools: new Map(),
+      denied: new Map(),
+      name: sub.name,
+      ...(sub.taskId ? { taskId: sub.taskId } : {}),
+    };
+    sub.agent = agent;
+    if (sub.stopping) return;
+    this.setBusy(live, agent, true);
+    await runner.prompt(sub.prompt);
+    if (agent.lastError) sub.error = agent.lastError;
+    else sub.result = agent.lastText ?? "";
+  }
+
+  /** Ends a subagent's run: its row, its rail row, then its result to the parent. */
+  private finishSubagent(sub: Subagent): void {
+    if (FINISHED.has(sub.status)) return;
+    const live = sub.session;
+    sub.status = sub.stopping ? "aborted" : sub.error !== undefined ? "error" : "done";
+    if (sub.status === "aborted") sub.error ??= "stopped";
+    this.store.setAgentStatus(sub.id, sub.status);
+    sub.agent?.runner.dispose();
+    if (sub.status !== "done") {
+      this.emit(live, { type: "agent.error", message: sub.error ?? sub.status }, sub.id);
+    }
+    if (sub.agent) this.setBusy(live, sub.agent, false);
+    if (!this.byId.has(live.id)) return;
+    if (sub.waiters.size > 0) {
+      for (const wake of sub.waiters) wake();
+    } else if (sub.status !== "aborted") {
+      live.runner.notify(noticeText(this.report(sub))).catch(() => {});
+    }
+  }
+
+  private async stopSubagent(sub: Subagent): Promise<void> {
+    if (FINISHED.has(sub.status)) return;
+    sub.stopping = true;
+    const queued = this.queue.indexOf(sub);
+    if (queued >= 0) {
+      this.queue.splice(queued, 1);
+      this.finishSubagent(sub);
+      return;
+    }
+    await sub.agent?.runner.abort();
+  }
+
+  private waitFor(sub: Subagent, timeoutMs: number, signal?: AbortSignal): Promise<SubagentReport> {
+    if (FINISHED.has(sub.status) || signal?.aborted) return Promise.resolve(this.report(sub));
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", done);
+        sub.waiters.delete(done);
+        resolve(this.report(sub));
+      };
+      const timer = setTimeout(done, timeoutMs);
+      signal?.addEventListener("abort", done, { once: true });
+      sub.waiters.add(done);
+    });
+  }
+
+  private report(sub: Subagent): SubagentReport {
+    return {
+      id: sub.id,
+      name: sub.name,
+      status: sub.status,
+      model: sub.model,
+      ...(sub.status === "done" ? { result: sub.result ?? "" } : {}),
+      ...(sub.error !== undefined && sub.status !== "done" ? { error: sub.error } : {}),
+      ...(sub.worktree ? { worktree: sub.worktree } : {}),
+      ...(sub.branch ? { branch: sub.branch } : {}),
+    };
   }
 
   private snapshotOf(live: LiveSession): SessionSnapshot {
     const streaming = new Map(
       [...live.replies.values()].filter((r) => !r.done).map((r) => [r.rowId, r.text]),
     );
-    const items = this.store.transcript(live.id).map((item): TranscriptItem => {
+    const items = this.store.transcript(live.id, live.agentId).map((item): TranscriptItem => {
       if (item.kind !== "message") return item;
       const partial = streaming.get(item.id);
       return partial === undefined ? item : { ...item, text: partial, streaming: true };
@@ -303,7 +564,12 @@ export class SessionHub {
   }
 
   /** Publishes an approval request and waits for an answer, the timeout or an abort. */
-  private requestApproval(live: LiveSession, req: ApprovalRequest): Promise<ApprovalAnswer> {
+  private requestApproval(
+    live: LiveSession,
+    req: ApprovalRequest,
+    subagent?: { id: string; name?: string | undefined },
+  ): Promise<ApprovalAnswer> {
+    const agentId = subagent?.id;
     return new Promise((resolve) => {
       const approval: PendingApproval = {
         id: newId(),
@@ -313,6 +579,8 @@ export class SessionHub {
         reason: req.reason,
         suggestions: req.suggestions,
         expiresAt: Date.now() + req.timeoutMs,
+        ...(subagent ? { agentId: subagent.id } : {}),
+        ...(subagent?.name ? { agentName: subagent.name } : {}),
       };
       const timer = setTimeout(
         () => settle({ decision: "deny", by: "timeout" }),
@@ -321,16 +589,20 @@ export class SessionHub {
       const settle = (answer: ApprovalAnswer) => {
         if (!live.approvals.delete(approval.id)) return;
         clearTimeout(timer);
-        this.emit(live, {
-          type: "safety.approval.resolved",
-          approvalId: approval.id,
-          decision: answer.decision === "deny" ? "deny" : "allow",
-          by: answer.by,
-        });
+        this.emit(
+          live,
+          {
+            type: "safety.approval.resolved",
+            approvalId: approval.id,
+            decision: answer.decision === "deny" ? "deny" : "allow",
+            by: answer.by,
+          },
+          agentId,
+        );
         resolve(answer);
       };
       live.approvals.set(approval.id, { approval, settle });
-      this.emit(live, { type: "safety.approval.request", approval });
+      this.emit(live, { type: "safety.approval.request", approval }, agentId);
     });
   }
 
@@ -339,78 +611,92 @@ export class SessionHub {
       entry.settle({ decision: "deny", by: "abort" });
   }
 
-  private ids(live: LiveSession) {
-    return { sessionId: live.id, agentId: live.agentId };
+  private ids(live: LiveSession, agent: AgentState = live): RowIds {
+    return {
+      sessionId: live.id,
+      agentId: agent.agentId,
+      ...(agent.taskId ? { taskId: agent.taskId } : {}),
+    };
   }
 
-  private emit(live: LiveSession, body: EventBody): void {
+  /** Publishes a session event about `agentId` (default: the main agent). */
+  private emit(live: LiveSession, body: EventBody, agentId: string = live.agentId): void {
     live.seq += 1;
     this.opts.publish({
       ...body,
       sessionId: live.id,
-      agentId: live.agentId,
+      agentId,
       seq: live.seq,
     } as AgentEvent);
   }
 
-  private setBusy(live: LiveSession, busy: boolean): void {
-    if (live.busy === busy) return;
-    live.busy = busy;
-    this.emit(live, { type: "agent.status", busy });
+  private setBusy(live: LiveSession, agent: AgentState, busy: boolean): void {
+    if (agent.busy === busy) return;
+    agent.busy = busy;
+    this.emit(live, { type: "agent.status", busy }, agent.agentId);
   }
 
   /** The `tool_calls` row for a Pi tool call, created (and announced) on first sight. */
   private toolRow(
     live: LiveSession,
+    agent: AgentState,
     piId: string,
     tool: string,
     rawArgs: Record<string, unknown>,
   ): string {
-    const existing = live.tools.get(piId);
+    const existing = agent.tools.get(piId);
     if (existing) return existing;
     const args = redactArgs(rawArgs);
-    const messageId = live.currentReplyRow;
-    const id = this.store.addToolCall(this.ids(live), {
+    const messageId = agent.currentReplyRow;
+    const id = this.store.addToolCall(this.ids(live, agent), {
       messageId,
       tool,
       argsJson: JSON.stringify(args),
     });
-    live.tools.set(piId, id);
-    this.emit(live, {
-      type: "agent.tool.start",
-      toolCallId: id,
-      ...(messageId ? { messageId } : {}),
-      tool,
-      args,
-    });
+    agent.tools.set(piId, id);
+    this.emit(
+      live,
+      {
+        type: "agent.tool.start",
+        toolCallId: id,
+        ...(messageId ? { messageId } : {}),
+        tool,
+        args,
+      },
+      agent.agentId,
+    );
     return id;
   }
 
-  private onRunnerEvent(live: LiveSession, e: RunnerEvent): void {
+  private onRunnerEvent(live: LiveSession, agent: AgentState, e: RunnerEvent): void {
+    const emit = (body: EventBody) => this.emit(live, body, agent.agentId);
     switch (e.type) {
       case "assistant.start": {
-        const rowId = this.store.addMessage(this.ids(live), "assistant", null);
-        live.replies.set(e.key, { rowId, text: "", done: false });
-        live.currentReplyRow = rowId;
-        this.emit(live, { type: "agent.message.start", messageId: rowId, role: "assistant" });
+        const rowId = this.store.addMessage(this.ids(live, agent), "assistant", null);
+        agent.replies.set(e.key, { rowId, text: "", done: false });
+        agent.currentReplyRow = rowId;
+        emit({ type: "agent.message.start", messageId: rowId, role: "assistant" });
         return;
       }
       case "assistant.delta": {
-        const reply = live.replies.get(e.key);
+        const reply = agent.replies.get(e.key);
         if (!reply) return;
         reply.text += e.text;
-        this.emit(live, { type: "agent.message.delta", messageId: reply.rowId, text: e.text });
+        emit({ type: "agent.message.delta", messageId: reply.rowId, text: e.text });
         return;
       }
       case "assistant.end": {
-        const reply = live.replies.get(e.key);
+        const reply = agent.replies.get(e.key);
         if (!reply) return;
         reply.text = e.text;
         reply.done = true;
+        agent.lastText = e.text;
+        if (e.error) agent.lastError = explainError(e.error, this.opts.dataDir);
+        else delete agent.lastError;
         this.store.setMessageContent(reply.rowId, e.text);
         const priced = costMicros(e.model, e.usage);
         const cost = priced ?? Math.round(e.piCostUsd * 1_000_000);
-        const modelCallId = this.store.addModelCall(this.ids(live), {
+        const modelCallId = this.store.addModelCall(this.ids(live, agent), {
           messageId: reply.rowId,
           provider: e.provider,
           model: e.model,
@@ -418,14 +704,14 @@ export class SessionHub {
           costMicros: cost,
           ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
         });
-        this.emit(live, {
+        emit({
           type: "agent.message.end",
           messageId: reply.rowId,
           role: "assistant",
           text: e.text,
           ...(e.error ? { error: explainError(e.error, this.opts.dataDir) } : {}),
         });
-        this.emit(live, {
+        emit({
           type: "agent.usage",
           modelCallId,
           messageId: reply.rowId,
@@ -439,19 +725,19 @@ export class SessionHub {
           priced: priced !== undefined,
         });
         // Finished replies no longer need their buffer; the row has the text.
-        live.replies.delete(e.key);
+        agent.replies.delete(e.key);
         return;
       }
       case "tool.start":
-        this.toolRow(live, e.toolCallId, e.tool, e.args);
+        this.toolRow(live, agent, e.toolCallId, e.tool, e.args);
         return;
       case "tool.denied":
-        live.denied.set(e.toolCallId, e.reason);
+        agent.denied.set(e.toolCallId, e.reason);
         return;
       case "tool.end": {
-        const id = live.tools.get(e.toolCallId);
+        const id = agent.tools.get(e.toolCallId);
         if (!id) return;
-        const reason = live.denied.get(e.toolCallId);
+        const reason = agent.denied.get(e.toolCallId);
         const end = {
           status:
             reason !== undefined
@@ -463,20 +749,24 @@ export class SessionHub {
           ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
         };
         this.store.finishToolCall(id, end);
-        live.tools.delete(e.toolCallId);
-        live.denied.delete(e.toolCallId);
-        this.emit(live, { type: "agent.tool.end", toolCallId: id, ...end });
+        agent.tools.delete(e.toolCallId);
+        agent.denied.delete(e.toolCallId);
+        emit({ type: "agent.tool.end", toolCallId: id, ...end });
         return;
       }
       case "context": {
         const { type: _, ...fill } = e;
-        this.emit(live, { type: "agent.context", ...fill });
+        if (agent !== live) return;
+        emit({ type: "agent.context", ...fill });
         return;
       }
       case "run.settled":
-        live.currentReplyRow = undefined;
-        this.setBusy(live, false);
+        agent.currentReplyRow = undefined;
+        // A subagent's last status waits for its result (`finishSubagent`).
+        if (agent === live) this.setBusy(live, live, false);
         return;
     }
   }
 }
+
+const notReady = (reason: string): ToolVerdict => ({ allow: false, reason });

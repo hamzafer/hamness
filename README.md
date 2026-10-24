@@ -27,6 +27,7 @@ bun src/cli/main.ts models   # models you can switch to, with prices (--all: who
 bun src/cli/main.ts keys set anthropic   # store an API key (hidden prompt, mode 0600)
 bun src/cli/main.ts login openai         # sign in with a ChatGPT plan (through Pi)
 bun src/cli/main.ts audit    # recent safety decisions and why (--session, --limit, --json)
+bun src/cli/main.ts worktrees           # subagent worktrees (--prune: remove finished ones)
 ```
 
 Data lives in `~/Library/Application Support/hamness` on macOS and `$XDG_DATA_HOME/hamness` (default `~/.local/share/hamness`) on Linux. Set `HAMNESS_HOME` to use another dir and `HAMNESS_PORT` to change the API port (default 7357).
@@ -56,6 +57,10 @@ Add rules under `safety` in `<data dir>/config.json` (yours) or `.hamness/config
 ```
 
 Modes (user config only): `ask` asks you about anything no rule decides, `auto` (the default) will ask a judge model first (until then it asks you), `yolo` allows everything and says so in a red banner. When a call asks, the TUI shows it above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. With no answer it is denied after the timeout. Every decision is stored with its source and reason; `hamness audit` lists them.
+
+### Subagents
+
+The main agent can start subagents in the background (`agent_start`), check on them (`agent_status`) and collect their final message (`agent_wait`); one it didn't wait for reports back as a notice on its next turn (ADR 0015). A subagent can use another model, and with `worktree: true` it runs in a new git worktree on its own branch, `hamness/<name>-<id>`, in `<repo>.hamness-worktrees/` next to the repo, so parallel agents don't edit the same checkout. Each subagent passes the same safety rules in its own dir, shows as a named row in the side rail, and its cost counts toward the session and the parent's task. Up to 4 run at once; more wait. Stopping the main agent stops its subagents. `hamness worktrees` lists the worktrees, and `--prune` removes finished ones (branches and uncommitted work are kept).
 
 ### TUI keys
 

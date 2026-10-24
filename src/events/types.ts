@@ -32,6 +32,9 @@ export interface PendingApproval {
   suggestions: Array<{ tool: string; pattern: string }>;
   /** When it turns into a deny (ms since the epoch). */
   expiresAt: number;
+  /** The agent whose call it is, when that is a subagent, and its name. */
+  agentId?: string;
+  agentName?: string;
 }
 
 export type ApprovalDecision = "allow-once" | "allow-always" | "deny";
@@ -80,6 +83,8 @@ export interface AgentTotals {
   id: string;
   kind: "main" | "subagent";
   name?: string;
+  /** Subagents only: `queued`, `running`, `done`, `error` or `aborted`. */
+  status?: "queued" | "running" | "done" | "error" | "aborted";
   tokens: number;
   costMicros: number;
 }
@@ -146,6 +151,11 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
     }
   /** The session switched models (`provider/id`); the next model call uses it. */
   | { type: "agent.model"; model: string }
+  /**
+   * A subagent was started (queued until a slot is free); `agentId` is the new agent.
+   * Its runs then show as `agent.status`, and a failure as `agent.error` before the last one.
+   */
+  | { type: "agent.start"; name: string; parentAgentId: string; model: string }
 );
 
 export type HamnessEvent =

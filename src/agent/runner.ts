@@ -3,10 +3,13 @@ import {
   type AgentSessionEvent,
   createAgentSession,
   DefaultResourceLoader,
+  defineTool,
   type ExtensionFactory,
   SessionManager,
   SettingsManager,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
 import type { ContextFill } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
 import type { ModelChoice } from "./models.ts";
@@ -70,6 +73,18 @@ export type RunnerEvent =
   | ({ type: "context" } & ContextFill)
   | { type: "run.settled"; aborted: boolean };
 
+/**
+ * A hamness tool the agent can call (the subagent tools, later `prove` and the task tools).
+ * Its calls go through the guard like any other. Throwing makes the result an error.
+ */
+export interface RunnerTool {
+  name: string;
+  description: string;
+  /** A TypeBox schema for the arguments. */
+  parameters: TSchema;
+  execute(args: Record<string, unknown>, signal: AbortSignal | undefined): Promise<string>;
+}
+
 export interface RunnerOptions {
   cwd: string;
   /** Pi's config dir. Kept under hamness's data dir, never the user's `~/.pi`. */
@@ -83,6 +98,8 @@ export interface RunnerOptions {
   sessionDir?: string;
   /** A Pi session file to continue (its messages become the context). Needs `sessionDir`. */
   resumeFile?: string;
+  /** hamness's own tools, added to Pi's built-in ones. */
+  tools?: RunnerTool[];
 }
 
 export interface AgentRunner {
@@ -97,6 +114,11 @@ export interface AgentRunner {
   setModel(model: Model<Api>): Promise<void>;
   /** How full the context window is now (Pi's estimate), or undefined when Pi can't tell. */
   contextUsage(): ContextFill | undefined;
+  /**
+   * Puts a note in the context without starting a turn: during a run it lands after the
+   * current turn, otherwise the next prompt's model call sees it.
+   */
+  notify(text: string): Promise<void>;
   dispose(): void;
 }
 
@@ -145,6 +167,19 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
   });
   await resourceLoader.reload();
 
+  const customTools: ToolDefinition[] = (opts.tools ?? []).map((t) =>
+    defineTool({
+      name: t.name,
+      label: t.name,
+      description: t.description,
+      parameters: t.parameters,
+      async execute(_id, params, signal) {
+        const text = await t.execute(params as Record<string, unknown>, signal);
+        return { content: [{ type: "text", text }], details: undefined };
+      },
+    }),
+  );
+
   const { session } = await createAgentSession({
     cwd: opts.cwd,
     agentDir: opts.agentDir,
@@ -152,6 +187,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     model: opts.models.model,
     thinkingLevel: "medium",
     resourceLoader,
+    ...(customTools.length ? { customTools } : {}),
     sessionManager: !opts.sessionDir
       ? SessionManager.inMemory(opts.cwd)
       : opts.resumeFile
@@ -269,6 +305,11 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     },
     abort: () => session.abort(),
     contextUsage: contextFill,
+    notify: (text) =>
+      session.sendCustomMessage(
+        { customType: "hamness.notice", content: text, display: true },
+        { triggerTurn: false },
+      ),
     dispose() {
       unsubscribe();
       session.dispose();
