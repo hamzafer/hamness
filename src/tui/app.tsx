@@ -1,4 +1,4 @@
-import type { InputRenderable } from "@opentui/core";
+import type { KeyBinding, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import { createSignal, For, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
@@ -64,7 +64,13 @@ export function App(props: AppProps) {
   });
 
   const dims = useTerminalDimensions();
-  let input: InputRenderable | undefined;
+  let input: TextareaRenderable | undefined;
+  /** Rows the prompt box shows: it grows with its lines, up to `PROMPT_MAX_ROWS`. */
+  const [promptRows, setPromptRows] = createSignal(1);
+  const fitPrompt = () =>
+    setPromptRows(
+      Math.min(PROMPT_MAX_ROWS, Math.max(1, input?.lineCount ?? 1, input?.virtualLineCount ?? 1)),
+    );
   /** The `/model` picker's list while it is open. */
   const [picker, setPicker] = createSignal<ModelInfo[] | undefined>();
   /** The `/help` list while it is open. */
@@ -94,7 +100,8 @@ export function App(props: AppProps) {
   const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
-    if (input) input.value = "";
+    input?.clear();
+    setPromptRows(1);
     setState("notice", undefined);
     setHelp(false);
     if (text === "/help" || text === "/?") return setHelp(true);
@@ -199,14 +206,17 @@ export function App(props: AppProps) {
             />
           )}
         </Show>
-        <box border height={3}>
-          <input
-            ref={(r: InputRenderable) => {
+        <box border height={promptRows() + 2}>
+          <textarea
+            ref={(r: TextareaRenderable) => {
               input = r;
             }}
-            placeholder="Ask hamness… (Enter sends, Esc stops, /help lists commands, Ctrl+C leaves)"
+            placeholder="Ask hamness… (Enter sends, Shift+Enter or Ctrl+J new line, Esc stops, /help lists commands, Ctrl+C leaves)"
             focused={!picker() && state.approvals.length === 0}
-            onSubmit={(v: unknown) => submit(typeof v === "string" ? v : (input?.value ?? ""))}
+            keyBindings={PROMPT_KEYS}
+            height={promptRows()}
+            onContentChange={fitPrompt}
+            onSubmit={() => submit(input?.plainText ?? "")}
           />
         </box>
       </box>
@@ -219,6 +229,19 @@ export function App(props: AppProps) {
     </box>
   );
 }
+
+/**
+ * The prompt box: Enter sends; Shift+Enter (terminals that report it) and Ctrl+J add a
+ * new line. Ctrl+J arrives as a linefeed in most terminals, or as `j` with Ctrl in kitty's.
+ */
+const PROMPT_MAX_ROWS = 8;
+const PROMPT_KEYS: KeyBinding[] = [
+  { name: "return", action: "submit" },
+  { name: "kpenter", action: "submit" },
+  { name: "return", shift: true, action: "newline" },
+  { name: "linefeed", action: "newline" },
+  { name: "j", ctrl: true, action: "newline" },
+];
 
 type MessageItem = Extract<TranscriptItem, { kind: "message" }>;
 type ToolItem = Extract<TranscriptItem, { kind: "tool" }>;

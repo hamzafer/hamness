@@ -59,6 +59,7 @@ The **side rail** on the right shows the current task (goal, outcome, evidence p
 | Key | Does |
 |---|---|
 | Enter | send the prompt |
+| Shift+Enter or Ctrl+J | new line in the prompt (Shift+Enter needs a terminal with the kitty keyboard protocol) |
 | Esc | stop the running prompt (deny, when an approval shows; close `/help`) |
 | y / a / n | answer an approval: allow once, allow always, deny |
 | Ctrl+R | the side rail full screen, and back |

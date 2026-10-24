@@ -78,10 +78,15 @@ function fakeClient() {
   return { client, prompts, resumed, actions, send, sendRaw: (e: HamnessEvent) => listener(e) };
 }
 
-async function render(client: DaemonClient, snap: SessionSnapshot = snapshot) {
+async function render(
+  client: DaemonClient,
+  snap: SessionSnapshot = snapshot,
+  opts: { kittyKeyboard?: boolean } = {},
+) {
   setup = await testRender(() => <App client={client} snapshot={snap} />, {
     width: 100,
     height: 24,
+    ...opts,
   });
   await setup.renderOnce();
   return setup;
@@ -152,6 +157,38 @@ describe("TUI chat layout (headless)", () => {
     s.mockInput.pressEnter();
     await s.waitFor(() => fake.prompts.length === 1);
     expect(fake.prompts).toEqual(["fix the bug"]);
+  });
+
+  test("Shift+Enter and Ctrl+J add a new line; Enter sends the whole prompt", async () => {
+    const fake = fakeClient();
+    // Shift+Enter needs a terminal that reports it (the kitty keyboard protocol, on by default).
+    const s = await render(fake.client, snapshot, { kittyKeyboard: true });
+    await s.mockInput.typeText("line one");
+    s.mockInput.pressEnter({ shift: true });
+    await s.mockInput.typeText("line two");
+    s.mockInput.pressKey("j", { ctrl: true });
+    await s.mockInput.typeText("line three");
+    await s.waitForFrame((f) => ["line one", "line two", "line three"].every((l) => f.includes(l)));
+    expect(fake.prompts).toEqual([]);
+    s.mockInput.pressEnter();
+    await s.waitFor(() => fake.prompts.length === 1);
+    expect(fake.prompts).toEqual(["line one\nline two\nline three"]);
+    // The box is empty again, ready for the next prompt.
+    await s.mockInput.typeText("next");
+    s.mockInput.pressEnter();
+    await s.waitFor(() => fake.prompts.length === 2);
+    expect(fake.prompts[1]).toBe("next");
+  });
+
+  test("without the kitty protocol, Ctrl+J (a linefeed) still adds a new line", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    await s.mockInput.typeText("one");
+    s.mockInput.pressKey("j", { ctrl: true });
+    await s.mockInput.typeText("two");
+    s.mockInput.pressEnter();
+    await s.waitFor(() => fake.prompts.length === 1);
+    expect(fake.prompts).toEqual(["one\ntwo"]);
   });
 
   test("auto mode: the header shows the judge's state; /judge resume turns it back on", async () => {

@@ -10,6 +10,7 @@ export const SLASH_COMMANDS: ReadonlyArray<readonly [string, string]> = [
 
 export const KEYS: ReadonlyArray<readonly [string, string]> = [
   ["Enter", "send the prompt"],
+  ["Shift+Enter, Ctrl+J", "new line in the prompt"],
   ["Esc", "stop the prompt; close this list"],
   ["y / a / n", "allow once, allow always, deny"],
   ["Ctrl+R", "rail full screen, and back"],
