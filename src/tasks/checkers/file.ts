@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import type { CheckResult, EvidenceClaim } from "../types.ts";
 import type { CheckContext } from "./context.ts";
 
@@ -8,7 +8,9 @@ type FileClaim = Extract<EvidenceClaim, { kind: "file" }>;
 
 /**
  * Checks an artifact itself: it exists, is a non-empty file, was written during the task,
- * and gets a sha256 so later changes show. Relative paths are from the session folder.
+ * and gets a sha256 so later changes show. Relative paths are from the session folder, and
+ * the file must be inside it once symlinks are resolved (C-2): evidence is about this work,
+ * and a checker must not read and hash files elsewhere on the machine.
  */
 export async function checkFile(claim: FileClaim, ctx: CheckContext): Promise<CheckResult> {
   const path = resolve(ctx.cwd, claim.path);
@@ -21,6 +23,13 @@ export async function checkFile(claim: FileClaim, ctx: CheckContext): Promise<Ch
       status: "failed",
       summary: `${claim.path} does not exist`,
       details: { ...base, exists: false },
+    };
+  }
+  if (!inside(path, ctx.cwd)) {
+    return {
+      status: "error",
+      summary: `${claim.path} is outside the session folder, so it is not evidence for this work`,
+      details: { ...base, outside: true },
     };
   }
   const details = { ...base, exists: true, size: st.size, mtimeMs: Math.round(st.mtimeMs) };
@@ -58,6 +67,20 @@ export async function checkFile(claim: FileClaim, ctx: CheckContext): Promise<Ch
     }`,
     details: { ...details, sha256, ...(weak ? { weak: true } : {}) },
   };
+}
+
+/** True when `path`, symlinks resolved, is `root` or below it. */
+function inside(path: string, root: string): boolean {
+  let real: string;
+  let realRoot: string;
+  try {
+    real = realpathSync(path);
+    realRoot = realpathSync(root);
+  } catch {
+    return false;
+  }
+  const rel = relative(realRoot, real);
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !rel.startsWith(sep));
 }
 
 function hashFile(path: string): Promise<string> {
