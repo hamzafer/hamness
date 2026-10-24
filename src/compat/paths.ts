@@ -75,7 +75,8 @@ export function repoRoot(cwd: string): string | undefined {
 
 /**
  * The project a folder belongs to: its repo root, and for a git worktree the main repo's root
- * (what `git rev-parse --git-common-dir` names), read from the `.git` file without running git.
+ * (what `git rev-parse --git-common-dir` names), read from the `.git` file without running git,
+ * and only when the worktree's admin folder points back at this `.git` file.
  * Outside a repo, the folder itself. Trust, MCP approvals and `.hamness/config.json` key on it,
  * so a subagent's worktree shares its repo's settings (ADR 0020).
  */
@@ -90,10 +91,22 @@ export function projectRoot(cwd: string): string {
     const dir = resolve(top, gitdir);
     const commondir = join(dir, "commondir");
     if (!existsSync(commondir)) return top; // a submodule: its own project
+    // A worktree's admin folder names the `.git` file that points at it (V-L10): a cloned repo
+    // can't claim another, trusted repo by writing a `.git` file that points into it.
+    const back = readFileSync(join(dir, "gitdir"), "utf8").trim();
+    if (!samePath(resolve(dir, back), dotGit)) return top;
     const common = resolve(dir, readFileSync(commondir, "utf8").trim());
     return basename(common) === ".git" ? dirname(common) : top;
   } catch {
     return top;
+  }
+}
+
+function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
   }
 }
 

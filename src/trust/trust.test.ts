@@ -62,6 +62,25 @@ describe("projectRoot and projectKey", () => {
     expect(projectRoot(join(wt, "sub"))).toBe(common);
     expect(projectKey(join(wt, "sub"))).toBe(projectKey(repo));
   });
+
+  test("a .git file that claims another repo's worktree, without its back-pointer, is its own project (V-L10)", () => {
+    const victim = join(root, "trusted");
+    mkdirSync(join(victim, ".git", "worktrees", "x"), { recursive: true });
+    writeFileSync(join(victim, ".git", "worktrees", "x", "commondir"), "../..\n");
+    const clone = join(root, "clone");
+    mkdirSync(clone);
+    writeFileSync(join(clone, ".git"), `gitdir: ${join(victim, ".git", "worktrees", "x")}\n`);
+    expect(projectRoot(clone)).toBe(clone);
+    // Pointing back at another folder's .git is not enough either.
+    writeFileSync(
+      join(victim, ".git", "worktrees", "x", "gitdir"),
+      `${join(root, "other", ".git")}\n`,
+    );
+    expect(projectRoot(clone)).toBe(clone);
+    // The real layout: the worktree's gitdir file names this .git file.
+    writeFileSync(join(victim, ".git", "worktrees", "x", "gitdir"), `${join(clone, ".git")}\n`);
+    expect(projectRoot(clone)).toBe(victim);
+  });
 });
 
 describe("trust store", () => {

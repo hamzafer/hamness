@@ -37,6 +37,7 @@ export function fakeWorktree(repo: string, wt: string): void {
   const gitdir = join(repo, ".git", "worktrees", name);
   mkdirSync(gitdir, { recursive: true });
   writeFileSync(join(gitdir, "commondir"), "../..\n");
+  writeFileSync(join(gitdir, "gitdir"), `${join(wt, ".git")}\n`);
   mkdirSync(wt, { recursive: true });
   writeFileSync(join(wt, ".git"), `gitdir: ${gitdir}\n`);
 }
