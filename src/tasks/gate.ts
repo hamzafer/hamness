@@ -4,7 +4,8 @@
  * 1. its latest decided piece of evidence (passed or failed; `error` means nothing was
  *    checked, so it is skipped) passed;
  * 2. its latest decided **strong** piece passed: file evidence the agent wrote itself with
- *    its own write / edit tools is weak and never verifies alone;
+ *    its own write / edit tools, and a command pass after the agent edited what the command
+ *    runs (package.json, a Makefile, a test config), are weak and never verify alone;
  * 3. that strong pass was submitted after the task's last file change through write / edit
  *    (a change still running counts as "now"), so the check saw the final code.
  *
@@ -44,7 +45,7 @@ export function decideGate(
     return {
       verified: false,
       reason:
-        "only weak evidence passed: a file the agent wrote itself proves nothing alone; add a command, URL or CI check",
+        "only weak evidence passed: a file the agent wrote itself, or a check whose config or scripts the agent changed, proves nothing alone; add a command, URL or CI check",
     };
   }
   if (strong.status !== "passed") {

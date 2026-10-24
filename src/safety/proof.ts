@@ -3,15 +3,16 @@ import { type Json, readJson, writeJsonAtomic } from "../config/json.ts";
 import { isTrusted, proofItem } from "../trust/index.ts";
 import { projectConfigPath, userConfigPath } from "./config.ts";
 import { matchCommand } from "./glob.ts";
-import { type EvalContext, type Evaluation, evaluate, PROVE_COMMAND, type Rule } from "./rules.ts";
+import { type EvalContext, evaluate, PROVE_COMMAND, type Rule } from "./rules.ts";
 
 /**
  * The safety side of the proof gate (ADR 0019).
  *
- * A `prove` command re-run is checked as its own tool, `prove_command`, not as `bash`:
- * - bash deny and ask rules still apply to every part of the command;
- * - bash allow rules from the user or the project do not: "safe to run" is not "proof";
- * - it runs without asking only when every part is on the **proof command list** (or is a
+ * A `prove` command re-run (tool `prove_command`) answers two questions:
+ * - **may it run?** Exactly what a `bash` call with that command would get: the rules (user
+ *   and trusted project allow rules included), then the judge in auto mode, then the user;
+ *   yolo runs it. Being on the proof list never lets a command run.
+ * - **does it count?** Only when every part is on the **proof command list** (or is a
  *   built-in read-only helper such as `cd` or `tail`); anything else asks the user whether it
  *   counts as proof, in every mode (the judge never decides it, and yolo does not skip it).
  *
@@ -139,19 +140,28 @@ export function addUserProofCommands(dataDir: string, patterns: string[]): strin
 
 const isBashRule = (r: Rule) => matchCommand(r.tool, "bash");
 
+export interface ProofListing {
+  /** Every part is on the proof list or is a read-only helper. */
+  listed: boolean;
+  /** Why it is not listed (empty when listed). */
+  reason: string;
+  /** What "allow always" adds to the user's proof list (tool `prove_command`). */
+  suggestions: Rule[];
+}
+
 /**
- * The rules for a proof re-run: helpers and the proof list first (so any later ask or deny
- * wins), then every rule except bash allows from the user and the project. The built-in
- * read-only bash allows stay, as harmless helpers: none of them is a check on its own, and the
- * claim parser refuses a command made only of them.
+ * Whether a proof re-run counts as evidence (ADR 0019): every part of the command is on the
+ * proof list, or is a read-only helper (`cd`, the built-in read-only bash commands). This says
+ * nothing about whether it may run: that is the bash decision (rules, judge, user).
  */
-export function evaluateProofCommand(
+export function proofListing(
   command: string,
   rules: Rule[],
   proof: ProofPattern[],
   ctx: EvalContext,
-): Evaluation {
+): ProofListing {
   const listed: Rule[] = [
+    ...rules.filter((r) => isBashRule(r) && r.verdict === "allow" && r.layer === "default"),
     ...HELPERS.map((pattern) => ({
       tool: "bash",
       pattern,
@@ -165,15 +175,11 @@ export function evaluateProofCommand(
       layer: p.layer,
     })),
   ];
-  const kept = rules.filter(
-    (r) => !(isBashRule(r) && r.verdict === "allow" && r.layer !== "default"),
-  );
-  const evaluation = evaluate({ tool: "bash", args: { command } }, [...listed, ...kept], ctx);
-  const suggestions = evaluation.suggestions.map((s) => ({ ...s, tool: PROVE_COMMAND }));
-  if (evaluation.verdict !== "undecided") return { ...evaluation, suggestions };
+  const evaluation = evaluate({ tool: "bash", args: { command } }, listed, ctx);
+  if (evaluation.verdict === "allow") return { listed: true, reason: "", suggestions: [] };
   return {
-    ...evaluation,
+    listed: false,
     reason: `count \`${command}\` as proof? It is not on the proof command list (${evaluation.reason})`,
-    suggestions,
+    suggestions: evaluation.suggestions.map((s) => ({ ...s, tool: PROVE_COMMAND })),
   };
 }

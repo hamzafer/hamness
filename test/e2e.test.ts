@@ -18,8 +18,9 @@ import { tempHome } from "./support/temp-home.ts";
  *
  *  1. A daemon starts in a fresh data dir; a session opens in a fresh git repo.
  *  2. Turn one: the agent opens a task, writes a file (the rules allow writes in the repo),
- *     proves it with the repo's own tests (`bun test`, on the proof command list, so hamness
- *     re-runs it without asking), and closes the task: verified.
+ *     proves it with the repo's own tests (`bun test`: the user's config allows it to run and
+ *     it is on the proof command list, so hamness re-runs it without asking), and closes the
+ *     task: verified.
  *  3. Turn two: the agent runs a bash command no rule allows. Auto mode with no judge key
  *     asks the user, who answers through the API; the command then runs.
  *  4. `hamness stats --json` and the dashboard's /v1/tasks show the verified task and its
@@ -85,6 +86,13 @@ test("the greeting greets", () => {
   expect(readFileSync(new URL("./greeting.txt", import.meta.url), "utf8")).toContain("hello");
 });
 `,
+  );
+
+  // The user lets `bun test` run; the proof command list makes it count (ADR 0019).
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(
+    join(dataDir, "config.json"),
+    JSON.stringify({ safety: { permission: { bash: { "bun test *": "allow" } } } }),
   );
 
   fake = await fakeModel(home.dir);
@@ -196,7 +204,7 @@ describe("a day with hamness", () => {
     expect(task?.costMicros).toBe(31_200);
   });
 
-  test("`hamness audit` shows each decision: the rules allowed the write, the proof list the re-run, the user the bash", async () => {
+  test("`hamness audit` shows each decision: the rules allowed the write and the re-run, the user the bash", async () => {
     const r = await cli("audit", "--json");
     expect(r.code).toBe(0);
     const rows = JSON.parse(r.out) as DecisionRow[];

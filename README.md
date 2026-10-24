@@ -91,7 +91,7 @@ A task is **verified** only when its latest evidence passed after its last file 
 
 **What counts as proof** (ADR 0019):
 - Commands that can't prove anything are refused: `echo`, `true`, `exit 0`, read-only commands like `cat` or `git status`, `|| true`, `;`, `&`, `$VAR`, `--help`. Join steps with `&&`; pipes run with `pipefail`.
-- A re-run goes without asking only when it is on the **proof command list**: built-in test, build, lint and typecheck commands (`bun test`, `npm test`, `npm run build`, `pnpm test`, `cargo test`, `go test`, `pytest`, `make test`, `tsc`, ...), your `proof.commands`, and the project's `proof.commands` once you trust the repo. Anything else asks "count `X` as proof?" in every mode, `yolo` included; "always" adds it to your list. bash's deny and ask rules still apply; bash allow rules don't make a command proof.
+- A re-run asks two things. **May it run?** The same answer a `bash` call with that command gets: your rules, then the judge in auto mode, then you (`yolo` runs it). **Does it count?** Only when it is on the **proof command list**: built-in test, build, lint and typecheck commands (`bun test`, `npm test`, `npm run build`, `pnpm test`, `cargo test`, `go test`, `pytest`, `make test`, `tsc`, ...), your `proof.commands`, and the project's `proof.commands` once you trust the repo. Anything else asks "count `X` as proof?" in every mode, `yolo` included; "always" adds it to your list. To let `bun test` run unasked in ask mode, add a bash allow rule for it. A pass after the agent edited what the command runs (`package.json`, a Makefile, a test config) is weak and does not verify alone.
 - A file the agent wrote itself with `write` / `edit` is **weak** evidence: it never verifies a task alone.
 
 ```json

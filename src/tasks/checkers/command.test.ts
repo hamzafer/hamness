@@ -147,3 +147,42 @@ describe("command checker", () => {
     expect(r.summary).toContain("aborted");
   });
 });
+
+describe("a pass is weak when the agent changed what the command runs (V-H1)", () => {
+  const passWith = (command: string, written: string[]) =>
+    checkCommand(
+      { kind: "command", command },
+      checkContext(home.dir, { writtenPaths: () => new Set(written) }),
+    );
+
+  test("an agent-written package.json, Makefile or test config makes it weak, with the reason", async () => {
+    for (const file of [
+      "package.json",
+      "sub/Makefile",
+      "bunfig.toml",
+      "vitest.config.ts",
+      "tsconfig.build.json",
+      ".eslintrc.cjs",
+      "conftest.py",
+    ]) {
+      const r = await passWith("exit 0", [join(home.dir, file)]);
+      expect(r.status).toBe("passed");
+      expect(r.details.weak).toBe(true);
+      expect(String(r.details.weakReason)).toContain(file.split("/").pop() as string);
+      expect(r.summary).toContain("weak");
+    }
+  });
+
+  test("a file passed with --preload, -exec or --config is a config file too", async () => {
+    const r = await passWith("true --preload ./setup.ts", [join(home.dir, "setup.ts")]);
+    expect(r.details.weak).toBe(true);
+    const eq = await passWith("true --config=lint/rules.js", [join(home.dir, "lint/rules.js")]);
+    expect(eq.details.weak).toBe(true);
+  });
+
+  test("source and test files the agent wrote leave the pass strong", async () => {
+    const r = await passWith("exit 0", [join(home.dir, "src/a.ts"), join(home.dir, "a.test.ts")]);
+    expect(r.status).toBe("passed");
+    expect(r.details.weak).toBeUndefined();
+  });
+});

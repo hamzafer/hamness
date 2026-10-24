@@ -19,7 +19,7 @@ export interface TaskToolHandle {
 export const PROOF_GATE_PROMPT = `## Tasks and proof (hamness)
 Work happens in tasks. Call task_start(goal) when you begin a piece of work, and task_done(summary) when it is finished.
 Before task_done, attach evidence with prove: a command hamness re-runs itself (tests, build, lint), a file you produced, a URL to fetch, or a PR/commit whose CI hamness reads. hamness checks the evidence; you cannot mark it passed.
-A task is verified only if its latest check passed after your last file change. Commands that prove nothing (echo, true, cat, ls, \`|| true\`) are refused; tests, builds, linters and typecheckers count. A file you wrote yourself is weak evidence and does not verify alone. Otherwise the task closes as unverified, shown in red to the user. Only the user can override that. If a check fails, fix the problem and prove again.`;
+A task is verified only if its latest check passed after your last file change. Commands that prove nothing (echo, true, cat, ls, \`|| true\`) are refused; tests, builds, linters and typecheckers count. A file you wrote yourself, or a check after you edited its package.json, Makefile or test config, is weak evidence and does not verify alone. Otherwise the task closes as unverified, shown in red to the user. Only the user can override that. If a check fails, fix the problem and prove again.`;
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 

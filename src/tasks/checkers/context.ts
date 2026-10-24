@@ -22,6 +22,8 @@ export interface CheckContext {
   taskStartedAt: number;
   /** Whether the agent wrote this (real, absolute) path with its own write / edit tools in the task. */
   writtenByAgent?: (path: string) => boolean;
+  /** Every path (absolute, and real) the agent wrote with its own write / edit tools in the task. */
+  writtenPaths?: () => Set<string>;
   /** The session's safety check, bound to its approval prompt. Throwing counts as a deny. */
   safety: (call: GuardedCall) => Promise<SafetyVerdict>;
   gh: GhRunner;

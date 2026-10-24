@@ -56,8 +56,14 @@ const approvalOf = async (l: NonNullable<typeof log>, n = 1) => {
   ).approval;
 };
 
+/** Lets `bun test` run (a bash allow rule) unless the test wrote its own user config. */
+const RUN_BUN_TEST = { bash: { "bun test *": "allow" } };
+
 async function start() {
   const dataDir = join(home.dir, "data");
+  if (!existsSync(join(dataDir, "config.json"))) {
+    userConfig({ safety: { permission: RUN_BUN_TEST } });
+  }
   daemon = await startDaemon({ dataDir, port: 0, models: async () => fake, contextFiles: false });
   const token = readFileSync(dataPaths(dataDir).token, "utf8").trim();
   const l = await eventLog(daemon.wsUrl, token);
@@ -221,8 +227,22 @@ describe("the agent's task tools", () => {
 });
 
 describe("the proof command list (ADR 0019)", () => {
-  test("a command on the default list runs without asking, even in ask mode", async () => {
+  test("in ask mode, a listed command no bash rule allows asks to run (V-H1)", async () => {
     userConfig({ safety: { mode: "ask" } });
+    testFile();
+    fake.script([tool("prove", { kind: "command", command: "bun test" }), { text: "ok" }]);
+    const { call, id, log } = await start();
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: "check it" });
+    const approval = await approvalOf(log);
+    expect(approval).toMatchObject({ tool: "prove_command", args: { command: "bun test" } });
+    expect(approval.reason).not.toContain("as proof?");
+    await call("POST", `/v1/approvals/${approval.id}`, { decision: "allow-once" });
+    await log.waitFor((e) => e.type === "task.evidence");
+    expect(log.ofType("task.evidence")[0]).toMatchObject({ status: "passed" });
+  });
+
+  test("a listed command a bash rule allows runs without asking, in ask mode too", async () => {
+    userConfig({ safety: { mode: "ask", permission: RUN_BUN_TEST } });
     testFile();
     fake.script([tool("prove", { kind: "command", command: "bun test" }), { text: "ok" }]);
     const { run, log } = await start();
@@ -270,13 +290,18 @@ describe("the proof command list (ADR 0019)", () => {
     const { call, id, log } = await start();
     await call("POST", `/v1/sessions/${id}/prompt`, { text: "go" });
     const approval = await approvalOf(log);
-    expect(approval.suggestions).toEqual([{ tool: "prove_command", pattern: "mkdir *" }]);
+    expect(approval.suggestions).toEqual([
+      { tool: "bash", pattern: "mkdir *" },
+      { tool: "prove_command", pattern: "mkdir *" },
+    ]);
     await call("POST", `/v1/approvals/${approval.id}`, { decision: "allow-always" });
     await log.waitFor(() => log.ofType("agent.status").filter((e) => !e.busy).length >= 1);
     const saved = JSON.parse(readFileSync(join(home.dir, "data", "config.json"), "utf8"));
     expect(saved.proof.commands).toEqual(["mkdir *"]);
-    // The project's safety rules were not touched.
-    expect(existsSync(join(work, ".hamness"))).toBe(false);
+    // Running it is saved like any bash allow; the proof list never goes to the project.
+    const project = JSON.parse(readFileSync(join(work, ".hamness", "config.json"), "utf8"));
+    expect(project.safety.permission.bash).toEqual({ "mkdir *": "allow" });
+    expect(project.proof).toBeUndefined();
 
     await call("POST", `/v1/sessions/${id}/prompt`, { text: "again" });
     await log.waitFor(() => log.ofType("task.evidence").length >= 2);
@@ -285,7 +310,10 @@ describe("the proof command list (ADR 0019)", () => {
   });
 
   test("user proof commands count without asking", async () => {
-    userConfig({ proof: { commands: ["mkdir *"] } });
+    userConfig({
+      safety: { permission: { bash: { "mkdir *": "allow" } } },
+      proof: { commands: ["mkdir *"] },
+    });
     fake.script([tool("prove", { kind: "command", command: "mkdir made" }), { text: "ok" }]);
     const { run, log } = await start();
     await run("go");

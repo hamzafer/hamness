@@ -221,6 +221,7 @@ export class SessionTasks {
         toolCallId: opts.toolCallId ?? "",
         taskStartedAt: this.store.startedAt(open.id),
         writtenByAgent: (path) => this.store.writtenPaths(open.id, this.opts.cwd).has(path),
+        writtenPaths: () => this.store.writtenPaths(open.id, this.opts.cwd),
         safety: this.opts.safety,
         gh: this.opts.gh,
         git: this.opts.git ?? runGit,

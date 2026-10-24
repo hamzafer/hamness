@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import type { SafetyVerdict } from "../../safety/index.ts";
 import { PROVE_COMMAND } from "../../safety/proof.ts";
+import { parseCommand } from "../../safety/shell.ts";
 import { hasPipe } from "../proof-shape.ts";
 import { redactOutput } from "../redact.ts";
 import type { CheckResult, EvidenceClaim } from "../types.ts";
@@ -73,11 +76,91 @@ export async function checkCommand(claim: CommandClaim, ctx: CheckContext): Prom
   if (passed && noTestsRan(run.output)) {
     return { status: "failed", summary: "exit 0, but no tests ran", details };
   }
-  return {
-    status: passed ? "passed" : "failed",
-    summary: `exit ${run.exitCode ?? `signal ${run.signal}`} in ${durationMs}ms`,
-    details,
+  const summary = `exit ${run.exitCode ?? `signal ${run.signal}`} in ${durationMs}ms`;
+  const changed = passed ? changedConfig(claim.command, ctx) : [];
+  if (changed.length > 0) {
+    const weakReason = `the agent changed ${changed.join(", ")} in this task, which defines what the command runs`;
+    return {
+      status: "passed",
+      summary: `${summary} (weak: ${weakReason}, so it does not verify alone)`,
+      details: { ...details, weak: true, weakReason },
+    };
+  }
+  return { status: passed ? "passed" : "failed", summary, details };
+}
+
+/**
+ * Files that decide what a test, build or lint command runs (V-H1): its scripts, its runner's
+ * config, its build manifest. A pass after the agent edited one of them is weak evidence.
+ */
+const CONFIG_FILE =
+  /^(?:package\.json|bunfig\.toml|[Mm]akefile|GNUmakefile|.+\.mk|conftest\.py|pytest\.ini|pyproject\.toml|setup\.cfg|setup\.py|tox\.ini|noxfile\.py|(?:jest|vitest|vitest\.workspace|playwright|karma|cypress|ava|webpack|vite|rollup|babel)\.config\.[cm]?[jt]sx?(?:on)?|\.mocharc.*|\.babelrc.*|Cargo\.toml|build\.rs|go\.mod|\.eslintrc.*|eslint\.config\.[cm]?[jt]s|tsconfig.*\.json|jsconfig.*\.json|biome\.jsonc?|deno\.jsonc?|pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mix\.exs|Rakefile|\.rspec|justfile|Justfile|Taskfile\.ya?ml)$/;
+
+/** Flags whose value is a file the command loads or runs: `--preload x`, `-exec=x`, `-c x`. */
+const FILE_FLAGS = new Set([
+  "--preload",
+  "-r",
+  "--require",
+  "--import",
+  "--loader",
+  "-exec",
+  "--exec",
+  "-toolexec",
+  "--config",
+  "-c",
+  "--config-path",
+  "--rcfile",
+  "-p",
+  "--project",
+  "-f",
+  "--file",
+  "--makefile",
+  "--setupFiles",
+  "--setup-files",
+  "--globalSetup",
+  "--rootdir",
+  "--confcutdir",
+]);
+
+/** The agent-written files (by its write / edit tools) that define what `command` runs. */
+function changedConfig(command: string, ctx: CheckContext): string[] {
+  const written = ctx.writtenPaths?.();
+  if (!written || written.size === 0) return [];
+  const real = (p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
   };
+  const named = new Set<string>();
+  const parsed = parseCommand(command.trim());
+  let dir = ctx.cwd;
+  for (const seg of parsed.ok ? parsed.segments : []) {
+    const [head, ...rest] = seg.words;
+    if (head === "cd" && rest[0]) {
+      dir = resolve(dir, rest[0]);
+      continue;
+    }
+    for (let i = 0; i < rest.length; i++) {
+      const w = rest[i] as string;
+      const eq = w.indexOf("=");
+      const flag = eq > 0 ? w.slice(0, eq) : w;
+      if (!FILE_FLAGS.has(flag)) continue;
+      const value = eq > 0 ? w.slice(eq + 1) : rest[i + 1];
+      if (value && !value.startsWith("-")) {
+        named.add(resolve(dir, value));
+        named.add(real(resolve(dir, value)));
+      }
+    }
+  }
+  const out = new Set<string>();
+  for (const path of written) {
+    if (CONFIG_FILE.test(basename(path)) || named.has(path) || named.has(real(path))) {
+      out.add(basename(path));
+    }
+  }
+  return [...out].sort();
 }
 
 interface ShellRun {

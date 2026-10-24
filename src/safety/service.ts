@@ -7,12 +7,7 @@ import { stableJson } from "../trust/index.ts";
 import { addProjectRules, loadSafetyConfig } from "./config.ts";
 import { type DecisionRecord, DecisionStore } from "./decisions.ts";
 import type { GuardedCall, SafetyCheck, SafetyVerdict } from "./index.ts";
-import {
-  addUserProofCommands,
-  evaluateProofCommand,
-  loadProofConfig,
-  PROVE_COMMAND,
-} from "./proof.ts";
+import { addUserProofCommands, loadProofConfig, PROVE_COMMAND, proofListing } from "./proof.ts";
 import { redactArgs, redactText } from "./redact.ts";
 import { type Evaluation, evaluate, type Rule } from "./rules.ts";
 
@@ -29,6 +24,11 @@ import { type Evaluation, evaluate, type Rule } from "./rules.ts";
  *                     │                    └─ skipped ────▶ user (source: mode; paused, budget, no key)
  *                     └─ ask mode (or no judge) ─────────▶ user
  *   user ── allow once / allow always (saved) / deny / timeout
+ *
+ * A `prove` command re-run (`prove_command`, ADR 0019) takes the same path as the bash
+ * command it is (yolo runs it, bash denies still apply), then must be on the proof command
+ * list to count: if not, the user is asked "count it as proof?" in every mode (one question
+ * when the run needs the user too).
  *
  * Every step is a row in the decisions table.
  */
@@ -155,7 +155,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
 
     const config = loadSafetyConfig(opts.dataDir, cwd);
     const mode = config.mode;
-    // A `prove` command re-run (ADR 0019): bash's deny and ask rules, the proof list for allow.
+    // A `prove` command re-run (ADR 0019): the bash decision to run, the proof list to count.
     const proving = call.tool === PROVE_COMMAND;
     const command = typeof call.args.command === "string" ? call.args.command : "";
     const record = (
@@ -195,29 +195,64 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       realpath: realpathNearest,
       glob: expandGlob,
     };
-    const evaluation = proving
-      ? evaluateProofCommand(
-          command,
-          config.rules,
-          loadProofConfig(opts.dataDir, cwd).commands,
-          evalCtx,
-        )
-      : evaluate({ tool: call.tool, args: call.args }, config.rules, evalCtx);
+    // A proof re-run may run exactly when the same bash command could (V-H1); the proof list
+    // only decides whether it counts as evidence.
+    const subject = proving ? { tool: "bash", args: { command } } : call;
+    const evaluation = evaluate({ tool: subject.tool, args: subject.args }, config.rules, evalCtx);
+    const listing = proving
+      ? proofListing(command, config.rules, loadProofConfig(opts.dataDir, cwd).commands, evalCtx)
+      : undefined;
     const ruleOf = evaluation.rule ? { rule: ruleLabel(evaluation.rule) } : {};
     // Reasons quote the command, so they are redacted like the args.
     const because = redactText(evaluation.reason);
     const looping = repeats(call) >= DOOM_LOOP;
 
+    const ask = async (reason: string, suggestions: Rule[]): Promise<SafetyVerdict> => {
+      if (!ctx) {
+        const r = "no client can be asked";
+        record({ verdict: "deny", source: "mode", reason: r });
+        return { allow: false, reason: r };
+      }
+      const tu = performance.now();
+      const answer = await ctx.askUser({
+        toolCallId: call.toolCallId,
+        tool: call.tool,
+        args,
+        reason,
+        suggestions: suggestions.map((s) => ({ tool: s.tool, pattern: s.pattern })),
+        timeoutMs: config.approvalTimeoutMs,
+      });
+      return settle(
+        answer,
+        suggestions,
+        cwd,
+        (d) => record(d, tu),
+        call.sessionId,
+        config.approvalTimeoutMs,
+      );
+    };
+    /** Allowed to run: a proof re-run still has to be on the proof list to count. */
+    const ran = (): Promise<SafetyVerdict> | SafetyVerdict => {
+      if (!listing || listing.listed) return { allow: true };
+      const reason = redactText(listing.reason);
+      record({ verdict: "ask", source: "rule", reason, rule: "proof command list" });
+      return ask(reason, listing.suggestions);
+    };
+
     if (evaluation.verdict === "deny") {
       record({ verdict: "deny", source: "rule", reason: because, ...ruleOf });
       return { allow: false, reason: because };
     }
-    if (hook?.verdict === "allow" && evaluation.verdict !== "ask" && !looping && !proving) {
-      return { allow: true };
+    if (proving && mode === "yolo" && hook?.verdict !== "ask") {
+      record({ verdict: "allow", source: "mode", reason: "yolo mode runs it" });
+      return ran();
+    }
+    if (hook?.verdict === "allow" && evaluation.verdict !== "ask" && !looping) {
+      return ran();
     }
     if (evaluation.verdict === "allow" && !looping && hook?.verdict !== "ask") {
       record({ verdict: "allow", source: "rule", reason: because, ...ruleOf });
-      return { allow: true };
+      return ran();
     }
 
     let reason = because;
@@ -232,9 +267,6 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       // The hook's ask is already recorded; like an explicit ask rule, it offers no "always".
       reason = hook.reason;
       suggestions = [];
-    } else if (proving) {
-      // Whether a command counts as proof is the user's call, never the judge's.
-      record({ verdict: "ask", source: "rule", reason, rule: "proof command list" });
     } else {
       // Undecided: the judge's turn in auto mode.
       if (mode === "auto" && opts.judge) {
@@ -244,7 +276,8 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
           judged = await opts.judge({
             sessionId: call.sessionId,
             cwd,
-            tool: call.tool,
+            // The judge sees a proof re-run as the shell command it is.
+            tool: subject.tool,
             args,
             evaluation: { ...evaluation, reason: because },
           });
@@ -261,7 +294,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
           },
           tj,
         );
-        if (judged.verdict === "allow") return { allow: true };
+        if (judged.verdict === "allow") return ran();
         reason = judged.reason;
       } else {
         const why = mode === "auto" ? "no judge, so it asks" : "ask mode";
@@ -269,29 +302,13 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       }
     }
 
-    if (!ctx) {
-      const r = "no client can be asked";
-      record({ verdict: "deny", source: "mode", reason: r });
-      return { allow: false, reason: r };
+    // A proof re-run that needs the user to run it and is not listed: one question for both.
+    if (listing && !listing.listed) {
+      const both = `${redactText(listing.reason)}. Running it also needs your OK: ${reason}`;
+      record({ verdict: "ask", source: "rule", reason: both, rule: "proof command list" });
+      return ask(both, [...suggestions, ...listing.suggestions]);
     }
-
-    const tu = performance.now();
-    const answer = await ctx.askUser({
-      toolCallId: call.toolCallId,
-      tool: call.tool,
-      args,
-      reason,
-      suggestions: suggestions.map((s) => ({ tool: s.tool, pattern: s.pattern })),
-      timeoutMs: config.approvalTimeoutMs,
-    });
-    return settle(
-      answer,
-      suggestions,
-      cwd,
-      (d) => record(d, tu),
-      call.sessionId,
-      config.approvalTimeoutMs,
-    );
+    return ask(reason, suggestions);
   };
 
   function settle(
@@ -320,27 +337,29 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       return { allow: false, reason };
     }
     recent.delete(sessionId);
-    const proofSaves = suggestions.filter((s) => s.tool === PROVE_COMMAND);
-    if (answer.decision === "allow-always" && proofSaves.length > 0) {
-      addUserProofCommands(
-        opts.dataDir,
-        proofSaves.map((s) => s.pattern),
-      );
-      const saved = proofSaves.map((s) => `"${s.pattern}"`).join(", ");
-      record({
-        verdict: "allow",
-        source: "user",
-        reason: `allowed always: saved ${saved} to the user's proof command list`,
-      });
-      return { allow: true };
-    }
     if (answer.decision === "allow-always" && suggestions.length > 0) {
-      addProjectRules(opts.dataDir, cwd, suggestions);
-      const saved = suggestions.map((s) => `${s.tool} "${s.pattern}"`).join(", ");
+      // Proof patterns go to the user's proof list, never the project's (ADR 0019); run
+      // permissions to the project config, as for any call.
+      const proofSaves = suggestions.filter((s) => s.tool === PROVE_COMMAND);
+      const ruleSaves = suggestions.filter((s) => s.tool !== PROVE_COMMAND);
+      const saved: string[] = [];
+      if (ruleSaves.length > 0) {
+        addProjectRules(opts.dataDir, cwd, ruleSaves);
+        const list = ruleSaves.map((s) => `${s.tool} "${s.pattern}"`).join(", ");
+        saved.push(`${list} to the project config`);
+      }
+      if (proofSaves.length > 0) {
+        addUserProofCommands(
+          opts.dataDir,
+          proofSaves.map((s) => s.pattern),
+        );
+        const list = proofSaves.map((s) => `"${s.pattern}"`).join(", ");
+        saved.push(`${list} to the user's proof command list`);
+      }
       record({
         verdict: "allow",
         source: "user",
-        reason: `allowed always: saved ${saved} to the project config`,
+        reason: `allowed always: saved ${saved.join(" and ")}`,
       });
       return { allow: true };
     }

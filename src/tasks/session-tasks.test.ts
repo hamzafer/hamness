@@ -484,6 +484,21 @@ describe("file evidence the agent wrote itself is weak (S-H4)", () => {
   });
 });
 
+describe("a check whose config the agent edited is weak (V-H1)", () => {
+  test("editing package.json then passing a command does not verify alone", async () => {
+    const t = tasks();
+    t.start("make tests pass");
+    fileTool(t, "edit", "package.json");
+    await tick();
+    const r = await t.prove({ kind: "command", command: PASS });
+    expect(r.result.status).toBe("passed");
+    expect(r.result.details.weakReason).toContain("package.json");
+    expect(t.gate().verified).toBe(false);
+    expect(t.gate().reason).toContain("weak");
+    expect(t.done("done").outcome).toBe("unverified");
+  });
+});
+
 describe("implicit tasks and checks that could not run (R-L3)", () => {
   test("a turn whose only evidence is an error and no edits is dropped", async () => {
     const t = new SessionTasks({

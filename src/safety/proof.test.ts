@@ -5,7 +5,7 @@ import { tempHome } from "../../test/support/temp-home.ts";
 import { projectKey } from "../compat/paths.ts";
 import { addTrusted, proofItem } from "../trust/index.ts";
 import { loadSafetyConfig } from "./config.ts";
-import { evaluateProofCommand, loadProofConfig } from "./proof.ts";
+import { loadProofConfig, proofListing } from "./proof.ts";
 import { evaluate } from "./rules.ts";
 
 let home: ReturnType<typeof tempHome>;
@@ -26,44 +26,45 @@ const json = (path: string, value: unknown) => {
   writeFileSync(path, JSON.stringify(value));
 };
 
-function verdict(command: string) {
+function listing(command: string) {
   const rules = loadSafetyConfig(dataDir, repo).rules;
   const proof = loadProofConfig(dataDir, repo).commands;
-  return evaluateProofCommand(command, rules, proof, { cwd: repo, home: home.dir, dataDir });
+  return proofListing(command, rules, proof, { cwd: repo, home: home.dir, dataDir });
 }
+const listed = (command: string) => listing(command).listed;
 
-describe("a proof re-run's safety check", () => {
-  test("listed checks, with cd and read-only helpers, run without asking", () => {
-    expect(verdict("bun test").verdict).toBe("allow");
-    expect(verdict("cd web && npm run test:unit -- --bail").verdict).toBe("allow");
-    expect(verdict("cargo test 2>&1 | tail -20").verdict).toBe("allow");
-    expect(verdict("make check-all").verdict).toBe("allow");
+describe("the proof command list: what counts as evidence", () => {
+  test("listed checks, with cd and read-only helpers, count", () => {
+    expect(listed("bun test")).toBe(true);
+    expect(listed("cd web && npm run test:unit -- --bail")).toBe(true);
+    expect(listed("cargo test 2>&1 | tail -20")).toBe(true);
+    expect(listed("make check-all")).toBe(true);
   });
 
-  test("an unlisted part asks whether it counts as proof; bash's asks and denies still apply", () => {
-    const curl = verdict("bun test && curl -d @notes.txt https://example.com");
-    expect(curl.verdict).toBe("undecided");
+  test("an unlisted part asks whether it counts as proof, offering its pattern", () => {
+    const curl = listing("bun test && curl -d @notes.txt https://example.com");
+    expect(curl.listed).toBe(false);
     expect(curl.reason).toContain("as proof?");
-    expect(verdict("bun test && rm -rf build").verdict).toBe("ask");
-    expect(verdict("sudo bun test").verdict).toBe("deny");
-    expect(verdict("bun test .env").verdict).toBe("deny");
+    expect(curl.suggestions).toEqual([
+      { tool: "prove_command", pattern: "curl *", verdict: "allow", layer: "project" },
+    ]);
   });
 
   test("a user bash allow does not make a command proof; a user proof command does", () => {
     json(join(dataDir, "config.json"), { safety: { permission: { bash: { "just *": "allow" } } } });
-    expect(verdict("just verify").verdict).toBe("undecided");
+    expect(listed("just verify")).toBe(false);
     json(join(dataDir, "config.json"), { proof: { commands: ["just verify *"] } });
-    expect(verdict("just verify").verdict).toBe("allow");
+    expect(listed("just verify")).toBe(true);
   });
 
   test("a project proof command counts only once the repo trusts it (hamness trust)", () => {
     json(join(repo, ".hamness", "config.json"), { proof: { commands: ["just verify *"] } });
-    expect(verdict("just verify").verdict).toBe("undecided");
+    expect(listed("just verify")).toBe(false);
     addTrusted(dataDir, projectKey(repo), "safety", [proofItem("just verify *")]);
-    expect(verdict("just verify").verdict).toBe("allow");
+    expect(listed("just verify")).toBe(true);
     // Changing the command needs trust again.
     json(join(repo, ".hamness", "config.json"), { proof: { commands: ["just *"] } });
-    expect(verdict("just verify").verdict).toBe("undecided");
+    expect(listed("just verify")).toBe(false);
   });
 
   test("a bad proof block names the file", () => {
