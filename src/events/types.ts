@@ -1,3 +1,5 @@
+import type { EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
+
 /**
  * Everything the daemon streams to clients over `/v1/events`, and the session shapes its HTTP API returns.
  * Later tickets add task and decision events to this union.
@@ -82,6 +84,8 @@ export interface SessionSnapshot {
   agents?: AgentTotals[];
   /** The main agent's last known context fill. */
   context?: ContextFill;
+  /** The session's current task, or its last one. */
+  task?: TaskView;
 }
 
 /** One agent's stored usage. `tokens` adds input, output, cache read and cache write. */
@@ -157,7 +161,29 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
   | { type: "safety.judge"; state: JudgeState; reason: string }
   /** The session switched models (`provider/id`); the next model call uses it. */
   | { type: "agent.model"; model: string }
+  | TaskEvent
 );
+
+/**
+ * Task events (ticket #6). `task.start` also announces a promotion (the turn's implicit task
+ * got a goal: same id, `implicit: false`). `task.drop`: an implicit turn task that held no
+ * evidence and no edits was removed; it never counts as a task.
+ */
+export type TaskEvent =
+  | { type: "task.start"; task: TaskView }
+  | {
+      type: "task.evidence";
+      taskId: string;
+      evidenceId: string;
+      kind: EvidenceKind;
+      status: Exclude<EvidenceStatus, "pending">;
+      summary: string;
+      /** The task's counts after this result. */
+      evidence: number;
+      passed: number;
+    }
+  | { type: "task.end"; task: TaskView }
+  | { type: "task.drop"; taskId: string };
 
 export type HamnessEvent =
   | { type: "daemon.hello"; version: string; pid: number; schemaVersion: number }

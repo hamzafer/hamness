@@ -301,3 +301,11 @@ describe("parsing permission config", () => {
     expect(() => user(["bash"])).toThrow();
   });
 });
+
+describe("hamness's task tools", () => {
+  test("task_start, prove and task_done are allowed by default", () => {
+    for (const name of ["task_start", "prove", "task_done"]) {
+      expect(tool(name, { goal: "x" }).verdict).toBe("allow");
+    }
+  });
+});

@@ -2,6 +2,8 @@ import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { ModelSwitchError, SessionBusyError, type SessionHub } from "../agent/session-hub.ts";
 import type { ApprovalDecision } from "../events/types.ts";
+import { TaskStateError } from "../tasks/session-tasks.ts";
+import type { TaskAction } from "../tasks/types.ts";
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const MAX_BODY = 1_000_000;
@@ -36,6 +38,10 @@ function isDirectory(path: string): boolean {
  * - `POST /v1/sessions/:id/model {model}`: switch to `provider/id`; returns the snapshot
  * - `POST /v1/sessions/:id/judge {paused: false}`: resumes a paused judge; returns `{judge}`
  * - `GET /v1/models`: the models a session can switch to
+ * - `POST /v1/sessions/:id/task {goal}`: the user opens a task (`/task`); 201 `{task}`
+ * - `POST /v1/sessions/:id/override {reason?}`: the user accepts the open or unverified task
+ * - `POST /v1/sessions/:id/abandon {reason?}`: the user drops the open task
+ *   (all three: 409 when the task state doesn't allow it)
  * - `POST /v1/approvals/:id {decision}`: answers an approval (`allow-once`, `allow-always`, `deny`)
  */
 export function sessionRoutes(hub: SessionHub) {
@@ -102,6 +108,31 @@ export function sessionRoutes(hub: SessionHub) {
       if (body?.paused !== false) return json({ error: 'send {"paused": false}' }, 400);
       const judge = hub.resumeJudge(id);
       return judge ? json({ judge }) : json({ error: "this session has no judge" }, 409);
+    }
+    if (
+      (action === "task" || action === "override" || action === "abandon") &&
+      req.method === "POST"
+    ) {
+      if (!hub.snapshot(id)) return json({ error: "no such session" }, 404);
+      const body = await readJson(req);
+      if (!body) return json({ error: "body must be a JSON object" }, 400);
+      const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+      let taskAction: TaskAction;
+      if (action === "task") {
+        const goal = text(body.goal);
+        if (!goal) return json({ error: "goal must be a non-empty string" }, 400);
+        taskAction = { kind: "start", goal };
+      } else {
+        const reason = text(body.reason);
+        taskAction = { kind: action, ...(reason ? { reason } : {}) };
+      }
+      try {
+        const task = hub.taskAction(id, taskAction);
+        return json({ task }, action === "task" ? 201 : 200);
+      } catch (err) {
+        if (err instanceof TaskStateError) return json({ error: err.message }, 409);
+        throw err;
+      }
     }
     if (action === "abort" && req.method === "POST") {
       return (await hub.abort(id)) ? json({ ok: true }) : json({ error: "no such session" }, 404);

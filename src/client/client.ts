@@ -11,6 +11,7 @@ import type {
   JudgeState,
   SessionSnapshot,
 } from "../events/types.ts";
+import type { TaskAction, TaskView } from "../tasks/types.ts";
 
 /** What a client (TUI, later the dashboard) needs from the daemon. */
 export interface DaemonClient {
@@ -25,6 +26,8 @@ export interface DaemonClient {
   answerApproval(approvalId: string, decision: ApprovalDecision): Promise<void>;
   /** Unpauses the session's judge (`/judge resume`); resolves with its state now. */
   resumeJudge(sessionId: string): Promise<JudgeState>;
+  /** `/task`, `/override`, `/abandon`: the user's task actions. Rejects with the daemon's reason. */
+  task(sessionId: string, action: TaskAction): Promise<TaskView>;
   /** Opens the event stream; returns a function that closes it. */
   subscribe(onEvent: (event: HamnessEvent) => void): () => void;
   /** Resolves once the event stream is open (after `subscribe`). */
@@ -109,6 +112,16 @@ export function httpClient(url: string, token: string): DaemonClient {
           paused: false,
         })
       ).judge,
+    task: async (id, action) => {
+      const base = `/v1/sessions/${encodeURIComponent(id)}`;
+      const res =
+        action.kind === "start"
+          ? await call<{ task: TaskView }>("POST", `${base}/task`, { goal: action.goal })
+          : await call<{ task: TaskView }>("POST", `${base}/${action.kind}`, {
+              ...(action.reason ? { reason: action.reason } : {}),
+            });
+      return res.task;
+    },
     subscribe(onEvent) {
       const ws = new WebSocket(`${url.replace(/^http/, "ws")}/v1/events?token=${token}`);
       ws.onopen = () => markReady();

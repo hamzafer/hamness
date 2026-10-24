@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent, SessionSnapshot } from "../events/types.ts";
-import { applyRailEvent, initialRail, sessionCostMicros } from "./rail-state.ts";
+import type { TaskView } from "../tasks/types.ts";
+import { applyRailEvent, initialRail, type RailState, sessionCostMicros } from "./rail-state.ts";
 
 const SID = "s-1";
 const MAIN = "a-main";
@@ -147,5 +148,81 @@ describe("rail state", () => {
     applyRailEvent(f.state, { sessionId: "other", seq: 99, type: "agent.status", busy: true }, 2);
     applyRailEvent(f.state, { sessionId: SID, seq: 1, type: "agent.status", busy: true }, 2);
     expect(main(f.state)?.status).toBe("idle");
+  });
+});
+
+describe("the current task", () => {
+  const SID2 = "s-task";
+  const snap = (task?: TaskView): SessionSnapshot => ({
+    session: { id: SID2, cwd: "/w", model: "fake/m", busy: false, mainAgentId: "a-main" },
+    seq: 0,
+    items: [],
+    ...(task ? { task } : {}),
+  });
+  const view = (over: Partial<TaskView> = {}): TaskView => ({
+    id: "t1",
+    goal: "fix the parser",
+    implicit: false,
+    outcome: "open",
+    evidence: 0,
+    passed: 0,
+    costMicros: 0,
+    tokens: 0,
+    startedAt: 0,
+    durationMs: 0,
+    ...over,
+  });
+  const apply = (s: RailState, seq: number, body: Record<string, unknown>) =>
+    applyRailEvent(s, { sessionId: SID2, seq, ...body } as AgentEvent, 0);
+
+  test("starts from the snapshot's task", () => {
+    const s = initialRail(snap(view({ outcome: "unverified", evidence: 2, passed: 0 })), 0);
+    expect(s.task).toEqual({
+      id: "t1",
+      goal: "fix the parser",
+      implicit: false,
+      outcome: "unverified",
+      evidence: 2,
+      passed: 0,
+    });
+    expect(initialRail(snap(), 0).task).toBeUndefined();
+  });
+
+  test("follows start, evidence, end and drop", () => {
+    const s = initialRail(snap(), 0);
+    apply(s, 1, { type: "task.start", task: view() });
+    expect(s.task).toMatchObject({ goal: "fix the parser", outcome: "open", evidence: 0 });
+    apply(s, 2, {
+      type: "task.evidence",
+      taskId: "t1",
+      evidenceId: "e1",
+      kind: "command",
+      status: "failed",
+      summary: "exit 1",
+      evidence: 1,
+      passed: 0,
+    });
+    expect(s.task).toMatchObject({ evidence: 1, passed: 0 });
+    apply(s, 3, { type: "task.end", task: view({ outcome: "unverified", evidence: 1 }) });
+    expect(s.task?.outcome).toBe("unverified");
+    apply(s, 4, { type: "task.start", task: view({ id: "t2", goal: "hi", implicit: true }) });
+    expect(s.task?.id).toBe("t2");
+    apply(s, 5, { type: "task.drop", taskId: "t2" });
+    expect(s.task).toBeUndefined();
+  });
+
+  test("evidence for another task does not change the shown one", () => {
+    const s = initialRail(snap(view()), 0);
+    apply(s, 1, {
+      type: "task.evidence",
+      taskId: "other",
+      evidenceId: "e1",
+      kind: "file",
+      status: "passed",
+      summary: "ok",
+      evidence: 1,
+      passed: 1,
+    });
+    expect(s.task).toMatchObject({ evidence: 0, passed: 0 });
   });
 });

@@ -14,7 +14,8 @@ import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
 import { applyEvent, argSummary, initialState, STATUS_GLYPH } from "./chat-state.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
-import { applyRailEvent, initialRail, type RailTask } from "./rail-state.ts";
+import { applyRailEvent, initialRail } from "./rail-state.ts";
+import { parseTaskCommand } from "./task-commands.ts";
 
 const COLORS = {
   user: "#7aa2f7",
@@ -42,8 +43,6 @@ export interface AppProps {
   onExit?: () => void;
   /** Clock for the rail's elapsed times; tests pass a fake one. */
   now?: () => number;
-  /** The current task for the rail's top slot (ticket #6). */
-  task?: RailTask;
 }
 
 export function App(props: AppProps) {
@@ -100,6 +99,14 @@ export function App(props: AppProps) {
       props.client
         .resumeJudge(state.session.id)
         .then((judge) => setState("session", "judge", judge))
+        .catch((err: Error) => setState("notice", err.message));
+      return;
+    }
+    const taskAction = parseTaskCommand(text);
+    if (taskAction) {
+      if ("error" in taskAction) return setState("notice", taskAction.error);
+      props.client
+        .task(state.session.id, taskAction)
         .catch((err: Error) => setState("notice", err.message));
       return;
     }
@@ -193,7 +200,6 @@ export function App(props: AppProps) {
         state={rail}
         now={clock()}
         full={railFull()}
-        {...(props.task ? { task: props.task } : {})}
         {...(railFull() ? { width: Math.max(20, dims().width - 4) } : {})}
       />
     </box>
