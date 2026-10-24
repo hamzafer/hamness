@@ -26,14 +26,8 @@ import { type GhRunner, runGh } from "../tasks/checkers/index.ts";
 import { SessionTasks } from "../tasks/session-tasks.ts";
 import { PROOF_GATE_PROMPT, taskTools } from "../tasks/tools.ts";
 import type { TaskAction, TaskView } from "../tasks/types.ts";
-import { envKeyHint } from "./keys.ts";
-import {
-  keyFilePath,
-  listModels,
-  type ModelChoice,
-  type ModelInfo,
-  parseModelSpec,
-} from "./models.ts";
+import { explainModelError } from "./errors.ts";
+import { listModels, type ModelChoice, type ModelInfo, parseModelSpec } from "./models.ts";
 import {
   type AgentRunner,
   type RunnerEvent,
@@ -84,17 +78,12 @@ export interface SessionHubOptions {
   hooks?: Omit<ClaudeHooks, "preToolUse">;
 }
 
+/** `provider/id` to its provider. */
+const providerOf = (model: string) => model.split("/")[0];
+
 export const DEFAULT_MAX_SUBAGENTS = 4;
 /** Stop hooks may continue a turn this many times in a row (Claude Code's cap). */
 export const STOP_HOOK_CAP = 8;
-
-/** Pi's "No API key" error points at its own `/login`; say what works in hamness instead. */
-function explainError(message: string, dataDir: string): string {
-  const missing = /No API key (?:found )?for ([\w-]+)/.exec(message);
-  if (!missing) return message;
-  const provider = missing[1] ?? "anthropic";
-  return `No API key for ${provider}. Set ${envKeyHint(provider)}, or run \`hamness keys set ${provider}\` (stored in ${keyFilePath(dataDir)}, mode 0600), then restart the daemon.`;
-}
 
 /** A model the session cannot switch to: not in the catalog, or no credentials for it. */
 export class ModelSwitchError extends Error {
@@ -240,7 +229,10 @@ export class SessionHub {
 
   private failRun(live: LiveSession, err: unknown): void {
     const message = (err as Error).message ?? String(err);
-    this.emit(live, { type: "agent.error", message: explainError(message, this.opts.dataDir) });
+    this.emit(live, {
+      type: "agent.error",
+      message: explainModelError(message, this.opts.dataDir, providerOf(live.runner.model)),
+    });
     live.tasks.endTurn();
     this.setBusy(live, live, false);
   }
@@ -372,7 +364,9 @@ export class SessionHub {
     try {
       await live.runner.setModel(model);
     } catch (err) {
-      throw new ModelSwitchError(explainError((err as Error).message, this.opts.dataDir));
+      throw new ModelSwitchError(
+        explainModelError((err as Error).message, this.opts.dataDir, model.provider),
+      );
     }
     this.store.setModel(this.ids(live), live.runner.model);
     this.emit(live, { type: "agent.model", model: live.runner.model });
@@ -941,7 +935,7 @@ export class SessionHub {
         reply.text = e.text;
         reply.done = true;
         agent.lastText = e.text;
-        if (e.error) agent.lastError = explainError(e.error, this.opts.dataDir);
+        if (e.error) agent.lastError = explainModelError(e.error, this.opts.dataDir, e.provider);
         else delete agent.lastError;
         if (agent === live) live.lastReply = e.text;
         this.store.setMessageContent(reply.rowId, e.text);
@@ -960,7 +954,7 @@ export class SessionHub {
           messageId: reply.rowId,
           role: "assistant",
           text: e.text,
-          ...(e.error ? { error: explainError(e.error, this.opts.dataDir) } : {}),
+          ...(e.error ? { error: explainModelError(e.error, this.opts.dataDir, e.provider) } : {}),
         });
         emit({
           type: "agent.usage",

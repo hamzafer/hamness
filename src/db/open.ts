@@ -11,7 +11,12 @@ export interface HamnessDb {
 
 /** Opens (creating if needed) and migrates the hamness database. */
 export function openDatabase(path: string): HamnessDb {
-  const sqlite = new Database(path, { create: true, strict: true });
+  let sqlite: Database;
+  try {
+    sqlite = new Database(path, { create: true, strict: true });
+  } catch (err) {
+    throw new Error(`${path}: ${(err as Error).message}`, { cause: err });
+  }
   try {
     sqlite.run("PRAGMA journal_mode = WAL");
     sqlite.run("PRAGMA foreign_keys = ON");
@@ -19,6 +24,14 @@ export function openDatabase(path: string): HamnessDb {
     migrate(sqlite, migrations);
   } catch (err) {
     sqlite.close();
+    const message = (err as Error).message;
+    // "file is not a database" and the like: say which file, and what to do about it.
+    if (/not a database|malformed|corrupt/i.test(message)) {
+      throw new Error(
+        `${path} is not a usable hamness database (${message}); move it aside and run again`,
+        { cause: err },
+      );
+    }
     throw err;
   }
   return {

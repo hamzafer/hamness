@@ -8,6 +8,13 @@ import {
 } from "../../agent/models.ts";
 import type { CliContext } from "../run.ts";
 
+export const MODELS_USAGE = [
+  "Usage: hamness models [--all]",
+  "",
+  "Lists the models you have a key or login for, with prices; * marks the default.",
+  "  --all  The whole catalog, keyed or not",
+].join("\n");
+
 const money = (usd: number) => `$${Number(usd.toFixed(4))}`;
 
 function contextLabel(tokens: number): string {
@@ -24,7 +31,7 @@ export function formatModel(m: ModelInfo, isDefault: boolean, width: number): st
 export async function modelsCommand({ args, env, dataDir, io }: CliContext): Promise<number> {
   const all = args.includes("--all");
   if (args.some((a) => a !== "--all")) {
-    io.err("Usage: hamness models [--all]");
+    io.err(MODELS_USAGE);
     return 2;
   }
   let resolved: Awaited<ReturnType<typeof resolveModels>>;

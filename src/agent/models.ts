@@ -3,7 +3,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Env } from "../config/paths.ts";
 import { priceFor } from "../models/prices.ts";
-import { envKeyName, readKeyFile } from "./keys.ts";
+import { envKeyHint, envKeyName, readKeyFile } from "./keys.ts";
 
 export { keyFilePath } from "./keys.ts";
 
@@ -140,4 +140,43 @@ export async function listModels(runtime: ModelRuntime): Promise<ModelInfo[]> {
   return available
     .map(modelInfo)
     .sort((a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id));
+}
+
+/** Where the default model's credential comes from. Names an env var, never its value. */
+export interface ModelCredential {
+  /** `provider/id` of the model new sessions use. */
+  model: string;
+  provider: string;
+  source: "env" | "file" | "login" | "none";
+  /** The env var that holds the key, when `source` is `env`. */
+  envName?: string;
+  /** The env var a user would set for this provider. */
+  envHint: string;
+}
+
+/**
+ * Does the default model (`HAMNESS_MODEL` or Claude) have a key or login? Reads only `env`
+ * and hamness's own files (never the Keychain), so setup and `hamness doctor` can say what to do.
+ */
+export async function defaultModelCredential(opts: {
+  dataDir: string;
+  env: Env;
+}): Promise<ModelCredential> {
+  const spec = parseModelSpec(opts.env.HAMNESS_MODEL || DEFAULT_MODEL);
+  if (!spec) throw new Error("HAMNESS_MODEL is empty; set it to provider/id or unset it");
+  const base = {
+    model: `${spec.provider}/${spec.id}`,
+    provider: spec.provider,
+    envHint: envKeyHint(spec.provider),
+  };
+  const envName = envKeyName(spec.provider, opts.env);
+  if (envName) return { ...base, source: "env", envName };
+  if (readKeyFile(opts.dataDir)[spec.provider]) return { ...base, source: "file" };
+  // Anthropic is API key only (ADR 0011), so a stored login never counts for it.
+  if (spec.provider !== "anthropic") {
+    const runtime = await createRuntime(opts.dataDir);
+    const stored = await runtime.listCredentials();
+    if (stored.some((c) => c.providerId === spec.provider)) return { ...base, source: "login" };
+  }
+  return { ...base, source: "none" };
 }

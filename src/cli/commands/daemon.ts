@@ -3,6 +3,15 @@ import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon } from "../../daem
 import { judgeFromKeys } from "../../safety/judge/index.ts";
 import type { CliContext } from "../run.ts";
 
+export const DAEMON_USAGE = [
+  "Usage: hamness daemon [--port <n>]",
+  "",
+  "Runs the daemon in the foreground until Ctrl+C or SIGTERM. You rarely need this:",
+  "`hamness` and `hamness dashboard` start it in the background when it is not running.",
+  "",
+  "  --port <n>  API port on 127.0.0.1 (default 7357, or HAMNESS_PORT; 0 picks a free one)",
+].join("\n");
+
 function parsePort(raw: string | undefined): number | null {
   if (raw === undefined || raw === "") return DEFAULT_PORT;
   const port = Number(raw);
@@ -40,7 +49,14 @@ export async function daemonCommand({ args, env, dataDir, io }: CliContext): Pro
       io.err(`hamness: ${err.message}`);
       return 1;
     }
-    io.err(`hamness daemon: failed to start: ${(err as Error).message}`);
+    const message = (err as Error).message;
+    if (/port \d+ in use|EADDRINUSE/i.test(message)) {
+      io.err(
+        `hamness daemon: port ${port} is in use; stop what holds it, or pick another with HAMNESS_PORT=<n> (0 picks a free one)`,
+      );
+      return 1;
+    }
+    io.err(`hamness daemon: failed to start: ${message}`);
     return 1;
   }
 

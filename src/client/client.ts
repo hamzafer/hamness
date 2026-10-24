@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync } from "node:fs";
+import { mkdirSync, openSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelInfo } from "../agent/models.ts";
 import type { Env } from "../config/paths.ts";
@@ -48,7 +48,9 @@ export async function ensureDaemon(
   if (now.running) return { url: now.url, started: false };
 
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  const log = openSync(join(dataDir, "daemon.log"), "a", 0o600);
+  const logPath = join(dataDir, "daemon.log");
+  const log = openSync(logPath, "a", 0o600);
+  const logStart = statSync(logPath).size;
   const child = spawn(process.execPath, [MAIN, "daemon"], {
     detached: true,
     stdio: ["ignore", log, log],
@@ -63,7 +65,23 @@ export async function ensureDaemon(
     if (child.exitCode !== null) break;
     await Bun.sleep(50);
   }
-  throw new Error(`the hamness daemon did not start; see ${join(dataDir, "daemon.log")}`);
+  const why = lastLogError(logPath, logStart);
+  throw new Error(
+    why
+      ? `the hamness daemon did not start: ${why}`
+      : `the hamness daemon did not start; see ${logPath}`,
+  );
+}
+
+/** The daemon's own last error line in its log, written after `from` (this start's output). */
+function lastLogError(path: string, from: number): string | undefined {
+  try {
+    const lines = readFileSync(path, "utf8").slice(from).split("\n");
+    const errors = lines.filter((l) => /^hamness( daemon)?: /.test(l) && !/judge is off/.test(l));
+    return errors.at(-1)?.replace(/^hamness( daemon)?: /, "");
+  } catch {
+    return undefined;
+  }
 }
 
 /** A client for the daemon that serves `dataDir`, using its token file. */

@@ -8,7 +8,7 @@ import {
 } from "../../agent/keys.ts";
 import type { CliContext } from "../run.ts";
 
-const USAGE = [
+export const KEYS_USAGE = [
   "Usage: hamness keys <set|list>",
   "  set <provider>  Store an API key (typed at a hidden prompt, or piped on stdin)",
   "  list            Show which providers have a key, and where it comes from",
@@ -28,7 +28,7 @@ export async function keysCommand(ctx: CliContext): Promise<number> {
     }
     throw err;
   }
-  ctx.io.err(USAGE);
+  ctx.io.err(KEYS_USAGE);
   return 2;
 }
 

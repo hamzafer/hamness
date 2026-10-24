@@ -12,6 +12,7 @@ import type {
 } from "../events/types.ts";
 import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
 import { applyEvent, argSummary, initialState, STATUS_GLYPH } from "./chat-state.ts";
+import { COMMAND_WORDS, HelpPanel } from "./help.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
 import { applyRailEvent, initialRail } from "./rail-state.ts";
@@ -66,6 +67,8 @@ export function App(props: AppProps) {
   let input: InputRenderable | undefined;
   /** The `/model` picker's list while it is open. */
   const [picker, setPicker] = createSignal<ModelInfo[] | undefined>();
+  /** The `/help` list while it is open. */
+  const [help, setHelp] = createSignal(false);
 
   const switchModel = (model: string) => {
     setPicker(undefined);
@@ -93,6 +96,8 @@ export function App(props: AppProps) {
     if (!text) return;
     if (input) input.value = "";
     setState("notice", undefined);
+    setHelp(false);
+    if (text === "/help" || text === "/?") return setHelp(true);
     const command = /^\/model(?:\s+(.*))?$/.exec(text);
     if (command) return modelCommand((command[1] ?? "").trim());
     if (/^\/judge\s+resume$/.test(text)) {
@@ -110,6 +115,11 @@ export function App(props: AppProps) {
         .catch((err: Error) => setState("notice", err.message));
       return;
     }
+    // `/word ...` that isn't a command is a typo, not a prompt (a path like /src/x.ts is).
+    const word = /^(\/[a-z][\w-]*)(?:\s|$)/.exec(text)?.[1];
+    if (word && !COMMAND_WORDS.has(word)) {
+      return setState("notice", `unknown command ${word}: /help lists them`);
+    }
     props.client
       .prompt(state.session.id, text)
       .catch((err: Error) => setState("notice", err.message));
@@ -119,6 +129,7 @@ export function App(props: AppProps) {
     if (key.ctrl && key.name === "c") props.onExit?.();
     // Ctrl+R: the side rail full screen, and back.
     if (key.ctrl && key.name === "r") setRailFull((full) => !full);
+    if (key.name === "escape" && help()) return setHelp(false);
     if (key.name === "escape" && state.session.busy && !picker() && !state.approvals.length) {
       props.client.abort(state.session.id).catch(() => {});
     }
@@ -162,6 +173,9 @@ export function App(props: AppProps) {
         <Show when={state.notice}>
           <text fg={COLORS.error}>{state.notice}</text>
         </Show>
+        <Show when={help()}>
+          <HelpPanel />
+        </Show>
         <Show when={picker()}>
           {(models: () => ModelInfo[]) => (
             <ModelPicker
@@ -190,7 +204,7 @@ export function App(props: AppProps) {
             ref={(r: InputRenderable) => {
               input = r;
             }}
-            placeholder="Ask hamness… (Enter sends, Esc stops, /model switches, Ctrl+C leaves)"
+            placeholder="Ask hamness… (Enter sends, Esc stops, /help lists commands, Ctrl+C leaves)"
             focused={!picker() && state.approvals.length === 0}
             onSubmit={(v: unknown) => submit(typeof v === "string" ? v : (input?.value ?? ""))}
           />

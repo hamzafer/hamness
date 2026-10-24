@@ -37,6 +37,16 @@ describe("ensureDaemon", () => {
     expect(second.started).toBe(false);
     expect(second.url).toBe(first.url);
   }, 15_000);
+
+  test("a daemon that can't start says why in one line", async () => {
+    const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    cleanups.push(() => blocker.stop(true));
+    const dataDir = join(home.dir, "data");
+    const env = { ...process.env, HAMNESS_PORT: String(blocker.port) };
+    await expect(ensureDaemon(dataDir, { env })).rejects.toThrow(
+      `the hamness daemon did not start: port ${blocker.port} is in use; stop what holds it, or pick another with HAMNESS_PORT=<n> (0 picks a free one)`,
+    );
+  }, 15_000);
 });
 
 describe("daemon client", () => {

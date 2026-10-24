@@ -206,4 +206,44 @@ describe("TUI chat layout (headless)", () => {
     await s.waitFor(() => s.captureCharFrame().includes("/task <goal>"));
     expect(fake.actions).toEqual([]);
   });
+
+  test("/help lists every slash command and key, without prompting the agent", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    await s.mockInput.typeText("/help");
+    s.mockInput.pressEnter();
+    await s.waitForFrame((f) => f.includes("/judge resume"));
+    const frame = s.captureCharFrame();
+    for (const text of [
+      "/task <goal>",
+      "/override [reason]",
+      "/abandon [reason]",
+      "/model",
+      "Ctrl+R",
+    ]) {
+      expect(frame).toContain(text);
+    }
+    expect(fake.prompts).toEqual([]);
+    // Esc closes it (a lone Esc is only known after the escape-sequence timeout).
+    s.mockInput.pressEscape();
+    const deadline = Date.now() + 2000;
+    while (s.captureCharFrame().includes("/judge resume") && Date.now() < deadline) {
+      await Bun.sleep(20);
+      await s.renderOnce();
+    }
+    expect(s.captureCharFrame()).not.toContain("/judge resume");
+  });
+
+  test("an unknown slash command says so instead of going to the agent", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    await s.mockInput.typeText("/frobnicate now");
+    s.mockInput.pressEnter();
+    await s.waitForFrame((f) => f.includes("unknown command /frobnicate"));
+    expect(fake.prompts).toEqual([]);
+    // A path is a prompt, not a command.
+    await s.mockInput.typeText("/work/demo/notes.txt what is in it?");
+    s.mockInput.pressEnter();
+    await s.waitFor(() => fake.prompts.length === 1);
+  });
 });
