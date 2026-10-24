@@ -10,6 +10,21 @@ Runs on Bun. Multi-model (Claude by default). Reads your Claude Code setup (CLAU
 
 **Status:** early, pre-release. See the [v1 design](docs/superpowers/specs/2026-10-24-hamness-v1-design.md).
 
+## Development
+
+Needs [Bun](https://bun.sh) 1.2.23 or newer.
+
+```sh
+bun install
+bun test            # unit + integration tests
+bun run typecheck   # strict TypeScript
+bun run lint        # Biome (bun run format to fix)
+bun src/cli/main.ts daemon   # run the daemon in the foreground
+bun src/cli/main.ts status   # is it running?
+```
+
+Data lives in `~/Library/Application Support/hamness` on macOS and `$XDG_DATA_HOME/hamness` (default `~/.local/share/hamness`) on Linux. Set `HAMNESS_HOME` to use another dir and `HAMNESS_PORT` to change the API port (default 7357).
+
 ## License
 
 MIT

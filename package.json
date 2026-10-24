@@ -1,0 +1,25 @@
+{
+  "name": "hamness",
+  "version": "0.0.0",
+  "description": "An AI coding harness you can see into and trust.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "hamness": "./src/cli/main.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "engines": {
+    "bun": ">=1.2.23"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.2",
+    "@types/bun": "1.2.23",
+    "typescript": "7.0.2"
+  }
+}
