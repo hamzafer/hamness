@@ -1,9 +1,24 @@
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
-import type { AgentEvent, SessionInfo, SessionSnapshot, TranscriptItem } from "../events/types.ts";
+import type {
+  AgentEvent,
+  ApprovalDecision,
+  PendingApproval,
+  SafetyMode,
+  SessionInfo,
+  SessionSnapshot,
+  TranscriptItem,
+} from "../events/types.ts";
 import { costMicros } from "../models/prices.ts";
-import { allowAll, redactArgs, type SafetyCheck } from "../safety/index.ts";
+import {
+  type ApprovalAnswer,
+  type ApprovalRequest,
+  allowAll,
+  redactArgs,
+  type SafetyCheck,
+} from "../safety/index.ts";
 import { envKeyHint } from "./keys.ts";
 import {
   keyFilePath,
@@ -29,6 +44,8 @@ export interface SessionHubOptions {
   /** Resolved on first use, so the daemon starts without an API key. */
   models: () => Promise<ModelChoice>;
   safety?: SafetyCheck;
+  /** The safety mode for a cwd, shown to clients (the yolo banner). */
+  safetyMode?: (cwd: string) => SafetyMode | undefined;
   publish: (event: AgentEvent) => void;
   contextFiles?: boolean;
 }
@@ -72,6 +89,13 @@ interface LiveSession {
   /** `tool_calls` row ids by Pi's tool call id. */
   tools: Map<string, string>;
   denied: Map<string, string>;
+  /** Tool calls waiting for the user, by approval id. */
+  approvals: Map<string, PendingEntry>;
+}
+
+interface PendingEntry {
+  approval: PendingApproval;
+  settle: (answer: ApprovalAnswer) => void;
 }
 
 /**
@@ -154,12 +178,29 @@ export class SessionHub {
   async abort(sessionId: string): Promise<boolean> {
     const live = this.byId.get(sessionId);
     if (!live) return false;
+    // Pi waits for a pending tool_call handler, so answer the approvals first.
+    this.cancelApprovals(live);
     await live.runner.abort();
     return true;
   }
 
+  /** Answers a pending approval. False when there is no such approval (unknown or answered). */
+  answerApproval(approvalId: string, decision: ApprovalDecision): boolean {
+    for (const live of this.byId.values()) {
+      const entry = live.approvals.get(approvalId);
+      if (entry) {
+        entry.settle({ decision, by: "user" });
+        return true;
+      }
+    }
+    return false;
+  }
+
   stop(): void {
-    for (const live of this.byId.values()) live.runner.dispose();
+    for (const live of this.byId.values()) {
+      this.cancelApprovals(live);
+      live.runner.dispose();
+    }
     this.byId.clear();
     this.byCwd.clear();
   }
@@ -197,12 +238,11 @@ export class SessionHub {
         if (!live) return { allow: false, reason: "session not ready" };
         const toolCallId = this.toolRow(live, call.toolCallId, call.tool, call.args);
         try {
-          const verdict = await this.safety({
-            sessionId: live.id,
-            toolCallId,
-            tool: call.tool,
-            args: call.args,
-          });
+          const target = live;
+          const verdict = await this.safety(
+            { sessionId: live.id, toolCallId, tool: call.tool, args: call.args, cwd: live.cwd },
+            { cwd: live.cwd, askUser: (req) => this.requestApproval(target, req) },
+          );
           return verdict;
         } catch (err) {
           return { allow: false, reason: `safety check failed: ${(err as Error).message}` };
@@ -224,6 +264,7 @@ export class SessionHub {
       currentReplyRow: undefined,
       tools: new Map(),
       denied: new Map(),
+      approvals: new Map(),
     };
     this.byId.set(sessionId, live);
     return live;
@@ -245,17 +286,57 @@ export class SessionHub {
       items,
       agents: this.store.agentTotals(live.id),
       ...(context ? { context } : {}),
+      approvals: [...live.approvals.values()].map((e) => e.approval),
     };
   }
 
   private info(live: LiveSession): SessionInfo {
+    const mode = this.opts.safetyMode?.(live.cwd);
     return {
       id: live.id,
       cwd: live.cwd,
       model: live.runner.model,
       busy: live.busy,
       mainAgentId: live.agentId,
+      ...(mode ? { mode } : {}),
     };
+  }
+
+  /** Publishes an approval request and waits for an answer, the timeout or an abort. */
+  private requestApproval(live: LiveSession, req: ApprovalRequest): Promise<ApprovalAnswer> {
+    return new Promise((resolve) => {
+      const approval: PendingApproval = {
+        id: newId(),
+        toolCallId: req.toolCallId,
+        tool: req.tool,
+        args: req.args,
+        reason: req.reason,
+        suggestions: req.suggestions,
+        expiresAt: Date.now() + req.timeoutMs,
+      };
+      const timer = setTimeout(
+        () => settle({ decision: "deny", by: "timeout" }),
+        Math.min(req.timeoutMs, 2_147_483_647),
+      );
+      const settle = (answer: ApprovalAnswer) => {
+        if (!live.approvals.delete(approval.id)) return;
+        clearTimeout(timer);
+        this.emit(live, {
+          type: "safety.approval.resolved",
+          approvalId: approval.id,
+          decision: answer.decision === "deny" ? "deny" : "allow",
+          by: answer.by,
+        });
+        resolve(answer);
+      };
+      live.approvals.set(approval.id, { approval, settle });
+      this.emit(live, { type: "safety.approval.request", approval });
+    });
+  }
+
+  private cancelApprovals(live: LiveSession): void {
+    for (const entry of [...live.approvals.values()])
+      entry.settle({ decision: "deny", by: "abort" });
   }
 
   private ids(live: LiveSession) {

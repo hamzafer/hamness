@@ -28,6 +28,7 @@ function fakeClient() {
     abort: async () => {},
     models: async () => [],
     setModel: async () => snapshot,
+    answerApproval: async () => {},
     subscribe(onEvent) {
       listener = onEvent;
       return () => {};

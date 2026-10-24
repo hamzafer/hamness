@@ -9,9 +9,32 @@ export interface SessionInfo {
   /** `provider/model`. */
   model: string;
   busy: boolean;
+  /** The safety mode for this session's tool calls (ADR 0006). Absent when no rules apply (tests). */
+  mode?: SafetyMode;
   /** The session's main agent; events with this `agentId` (or none) are about it. */
   mainAgentId?: string;
 }
+
+/** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: allow all. */
+export type SafetyMode = "ask" | "auto" | "yolo";
+
+/** A tool call waiting for the user's answer. Answer it with `POST /v1/approvals/:id`. */
+export interface PendingApproval {
+  id: string;
+  /** The `tool_calls` row. */
+  toolCallId: string;
+  tool: string;
+  /** Redacted. */
+  args: Record<string, unknown>;
+  /** Why it asks. */
+  reason: string;
+  /** What "allow always" saves to the project config. Empty: only once / deny are offered. */
+  suggestions: Array<{ tool: string; pattern: string }>;
+  /** When it turns into a deny (ms since the epoch). */
+  expiresAt: number;
+}
+
+export type ApprovalDecision = "allow-once" | "allow-always" | "deny";
 
 export type ToolStatus = "running" | "ok" | "error" | "denied";
 
@@ -44,6 +67,8 @@ export interface SessionSnapshot {
   session: SessionInfo;
   seq: number;
   items: TranscriptItem[];
+  /** Tool calls waiting for an answer. */
+  approvals?: PendingApproval[];
   /** Stored totals per agent, so a client's gauges start where the database is. */
   agents?: AgentTotals[];
   /** The main agent's last known context fill. */
@@ -111,6 +136,14 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
     }
   | ({ type: "agent.context" } & ContextFill)
   | { type: "agent.error"; message: string }
+  | { type: "safety.approval.request"; approval: PendingApproval }
+  | {
+      type: "safety.approval.resolved";
+      approvalId: string;
+      decision: "allow" | "deny";
+      /** `user` answered, `timeout` ran out, `abort`: the run was stopped. */
+      by: "user" | "timeout" | "abort";
+    }
   /** The session switched models (`provider/id`); the next model call uses it. */
   | { type: "agent.model"; model: string }
 );

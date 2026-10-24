@@ -13,6 +13,8 @@
 - **Rule:** an allow / ask / deny pattern for a tool call.
 - **Judge:** the small model that decides tool calls no rule decides.
 - **Decision:** a safety verdict on one tool call, with source (`rule`, `judge`, `hook`, `user`, `mode`) and reason.
+- **Approval:** a tool call that asks, waiting for the user's answer: allow once, allow always (saves a rule to the project config) or deny. No answer before the timeout is a deny.
+- **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything).
 - **Audit log:** the stored list of decisions.
 - **Side rail:** the always-on right pane in the TUI showing agents, shells, checks, the current task and gauges.
 - **Source:** where a session came from: `hamness`, `claude-code` or `codex` (imported).

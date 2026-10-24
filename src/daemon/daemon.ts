@@ -8,7 +8,7 @@ import { startApiServer } from "../api/server.ts";
 import { dataPaths } from "../config/paths.ts";
 import { type HamnessDb, openDatabase } from "../db/open.ts";
 import type { HamnessEvent } from "../events/types.ts";
-import type { SafetyCheck } from "../safety/index.ts";
+import { createSafetyService, type Judge, type SafetyCheck } from "../safety/index.ts";
 import { VERSION } from "../version.ts";
 import { claimState, type DaemonState, releaseState, writeState } from "./state.ts";
 import { getStatus } from "./status.ts";
@@ -21,8 +21,10 @@ export interface DaemonOptions {
   port?: number;
   /** The model for new sessions. Default: Claude, keyed from the env or the key file. Tests pass a fake. */
   models?: () => Promise<ModelChoice>;
-  /** The check every tool call passes before it runs (ticket #4). Default: allow all. */
+  /** Replaces the rules-based check every tool call passes (tests). */
   safety?: SafetyCheck;
+  /** Decides calls no rule decides, in `auto` mode (ticket #5). */
+  judge?: Judge;
   /** Load AGENTS.md / CLAUDE.md into sessions. Default true; tests turn it off. */
   contextFiles?: boolean;
 }
@@ -72,11 +74,19 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
     const startedAt = Date.now();
     let publish: (event: HamnessEvent) => void = () => {};
+    const rules = opts.safety
+      ? undefined
+      : createSafetyService({
+          db: openDb,
+          dataDir: paths.dataDir,
+          ...(opts.judge ? { judge: opts.judge } : {}),
+        });
     const hub = new SessionHub({
       db: openDb,
       dataDir: paths.dataDir,
       models: opts.models ?? (() => resolveModels({ dataDir: paths.dataDir, env: process.env })),
-      ...(opts.safety ? { safety: opts.safety } : {}),
+      safety: opts.safety ?? (rules as NonNullable<typeof rules>).check,
+      ...(rules ? { safetyMode: (cwd: string) => rules.modeFor(cwd) } : {}),
       ...(opts.contextFiles !== undefined ? { contextFiles: opts.contextFiles } : {}),
       publish: (event) => publish(event),
     });
