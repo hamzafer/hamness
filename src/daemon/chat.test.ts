@@ -7,6 +7,7 @@ import { tempHome } from "../../test/support/temp-home.ts";
 import { dataPaths } from "../config/paths.ts";
 import type { HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import type { SafetyCheck } from "../safety/index.ts";
+import { kpis } from "../stats/index.ts";
 import { type RunningDaemon, startDaemon } from "./daemon.ts";
 
 let home: ReturnType<typeof tempHome>;
@@ -225,6 +226,30 @@ describe("a prompt, end to end with a fake model", () => {
        WHERE mc.session_id = ? AND m.role IS NOT 'assistant'`,
     );
     expect(orphans).toEqual([{ n: 0 }]);
+  });
+
+  test("a finished run adds its time to the session, so stats show active and wall time", async () => {
+    fake.route(async () => {
+      await Bun.sleep(30);
+      return { text: "done" };
+    });
+    const { d, call, log } = await start();
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    await call("POST", `/v1/sessions/${s.session.id}/prompt`, { text: "go" });
+    await log.waitFor(settled(s.session.id));
+
+    const row = d.db.sqlite
+      .query<{ active_ms: number | null; ended_at: number | null; started_at: number }, [string]>(
+        "SELECT active_ms, ended_at, started_at FROM sessions WHERE id = ?",
+      )
+      .get(s.session.id);
+    expect(row?.active_ms ?? 0).toBeGreaterThanOrEqual(25);
+    expect(row?.ended_at ?? 0).toBeGreaterThanOrEqual(row?.started_at ?? Infinity);
+
+    const k = kpis(d.db.sqlite, { range: "24h", source: "hamness" });
+    expect(k.activeSessions).toBe(1);
+    expect(k.activeMs).toBeGreaterThanOrEqual(25);
+    expect(k.wallMs).toBeGreaterThanOrEqual(25);
   });
 
   test("detach and reattach: the snapshot shows the same session and transcript", async () => {

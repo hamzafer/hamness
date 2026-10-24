@@ -120,6 +120,8 @@ interface AgentState {
   taskId?: string;
   /** Subagents: the name the parent gave it. */
   name?: string;
+  /** When the current run started (busy since): its time goes to `sessions.active_ms`. */
+  runStartedAt?: number | undefined;
 }
 
 /** The session is its main agent's state, plus what the session shares. */
@@ -877,6 +879,13 @@ export class SessionHub {
   private setBusy(live: LiveSession, agent: AgentState, busy: boolean): void {
     if (agent.busy === busy) return;
     agent.busy = busy;
+    if (agent === live) {
+      if (busy) live.runStartedAt = Date.now();
+      else if (live.runStartedAt !== undefined) {
+        this.store.endRun(live.id, Date.now() - live.runStartedAt);
+        live.runStartedAt = undefined;
+      }
+    }
     this.emit(live, { type: "agent.status", busy }, agent.agentId);
   }
 

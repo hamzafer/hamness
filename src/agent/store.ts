@@ -132,6 +132,17 @@ export class ChatStore {
     })();
   }
 
+  /** A run of the main agent ended: its duration counts as active time, and the session ends now (for now). */
+  endRun(sessionId: string, durationMs: number): void {
+    const now = Date.now();
+    this.sql
+      .query(
+        `UPDATE sessions SET active_ms = coalesce(active_ms, 0) + ?, ended_at = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(Math.max(0, Math.round(durationMs)), now, now, sessionId);
+  }
+
   addMessage(ids: RowIds, role: "user" | "assistant", content: string | null): string {
     const id = newId();
     const now = Date.now();
