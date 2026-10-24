@@ -3,18 +3,20 @@
  * tables, marked with their source. Stores counts, tokens, models, tools and
  * timings, never message text (ADR 0007, ADR 0009).
  *
- * Incremental: each file's byte offset, size and mtime live in `import_files`,
- * so a re-run skips unchanged files and reads only lines appended since.
+ * Incremental: each file's byte offset, size, mtime and identity live in `import_files`,
+ * so a re-run skips unchanged files and reads only lines appended since. A file that
+ * was rewritten or replaced (other inode or birth time, or other bytes before the
+ * offset) is read again from the start, and its earlier active time undone.
  * Source files are only ever opened for reading.
  */
-import { existsSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { HamnessDb } from "../db/open.ts";
 import { claudeHandler } from "./claude.ts";
 import { codexHandler } from "./codex.ts";
 import type { HandlerState, Json, LineHandler } from "./handler.ts";
 import { readFileLines } from "./lines.ts";
-import { type ImportSource, ImportStore } from "./store.ts";
+import { type FileIdentity, type ImportSource, ImportStore } from "./store.ts";
 
 export interface ImportOptions {
   /** Claude Code config dirs (each holds `projects/`). */
@@ -72,6 +74,26 @@ export function findHistoryFiles(opts: ImportOptions): SourceFile[] {
   return files;
 }
 
+const TAIL_BYTES = 4096;
+
+/** sha256 of up to `TAIL_BYTES` just before `offset`, read-only. */
+function tailHash(path: string, offset: number): string {
+  const from = Math.max(0, offset - TAIL_BYTES);
+  const buf = new Uint8Array(offset - from);
+  const fd = openSync(path, "r");
+  try {
+    let got = 0;
+    while (got < buf.length) {
+      const n = readSync(fd, buf, got, buf.length - got, from + got);
+      if (n === 0) break;
+      got += n;
+    }
+    return new Bun.CryptoHasher("sha256").update(buf.subarray(0, got)).digest("hex");
+  } finally {
+    closeSync(fd);
+  }
+}
+
 const hashPath = (path: string) => new Bun.CryptoHasher("sha256").update(path).digest("hex");
 
 function counts(db: HamnessDb) {
@@ -124,7 +146,11 @@ async function importFile(
   const mtimeMs = Math.floor(stat.mtimeMs);
   const pathHash = hashPath(file.path);
   const cursor = store.cursor(pathHash);
-  if (cursor && cursor.size === size && cursor.mtimeMs === mtimeMs) {
+  const zst = file.path.endsWith(".zst");
+  const ino = Number(stat.ino);
+  const birthMs = Math.floor(stat.birthtimeMs);
+  const sameFile = !cursor?.file || (cursor.file.ino === ino && cursor.file.birthMs === birthMs);
+  if (cursor && sameFile && cursor.size === size && cursor.mtimeMs === mtimeMs) {
     return cursor.state.skipped ? "skipped" : "unchanged";
   }
 
@@ -132,8 +158,12 @@ async function importFile(
   try {
     let state: HandlerState = cursor?.state ?? {};
     let offset = cursor?.offset ?? 0;
-    // A plain file smaller than where we stopped was rewritten: start over.
-    if (!file.path.endsWith(".zst") && size < offset) offset = 0;
+    // A plain file smaller than where we stopped was rewritten: start over. So is
+    // another file at the same path, or one whose bytes before the offset changed.
+    if (!zst && size < offset) offset = 0;
+    if (!sameFile) offset = 0;
+    else if (!zst && offset > 0 && cursor?.file && tailHash(file.path, offset) !== cursor.file.tail)
+      offset = 0;
     const read = await readFileLines(file.path, offset);
     if (read.start !== (cursor?.offset ?? 0)) {
       // Undo the active time this file added before; every row is an upsert.
@@ -173,7 +203,8 @@ async function importFile(
       }
       handler.finish();
     }
-    store.saveCursor(file.source, pathHash, { offset, size, mtimeMs, state });
+    const identity: FileIdentity = { ino, birthMs, tail: zst ? "" : tailHash(file.path, offset) };
+    store.saveCursor(file.source, pathHash, { offset, size, mtimeMs, state, file: identity });
     db.sqlite.run("COMMIT");
     return state.skipped ? "skipped" : "read";
   } catch {

@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -308,6 +309,47 @@ describe("incremental import", () => {
 
     expect(all("SELECT active_ms FROM sessions")).toEqual([{ active_ms: 1000 }]);
     expect(totals()).toEqual({ calls: 2, output: 12 }); // rows already imported stay
+  });
+
+  test("a file rewritten in place at the same or larger size is read again from the start", async () => {
+    writeLines(session(), [
+      claudeAssistant(sid, "2026-03-01T10:00:01.000Z", { id: "m1", usage: { output: 5 } }),
+      claudeTurnDuration(sid, "2026-03-01T10:00:02.000Z", 1000),
+    ]);
+    await importHistory(db, opts());
+    const before = statSync(session()).size;
+    // New content, longer than before; the old offset lands mid-line in it.
+    writeLines(session(), [
+      claudeAssistant(sid, "2026-03-01T12:00:01.000Z", { id: "m3x", usage: { output: 9 } }),
+      claudeTurnDuration(sid, "2026-03-01T12:00:02.000Z", 2000),
+      claudeAssistant(sid, "2026-03-01T12:00:03.000Z", { id: "m4", usage: { output: 1 } }),
+    ]);
+    expect(statSync(session()).size).toBeGreaterThanOrEqual(before);
+
+    const again = await importHistory(db, opts());
+
+    expect(again.badLines).toBe(0);
+    expect(all("SELECT active_ms FROM sessions")).toEqual([{ active_ms: 2000 }]);
+    expect(totals()).toEqual({ calls: 3, output: 15 }); // m1 stays, m3x and m4 are added
+  });
+
+  test("a file replaced by a new one (same size) is read again from the start", async () => {
+    const line = (id: string, ms: number) => [
+      claudeAssistant(sid, "2026-03-01T10:00:01.000Z", { id, usage: { output: 5 } }),
+      claudeTurnDuration(sid, "2026-03-01T10:00:02.000Z", ms),
+    ];
+    writeLines(session(), line("m1", 1000));
+    await importHistory(db, opts());
+    const size = statSync(session()).size;
+    const fresh = `${session()}.new`;
+    writeLines(fresh, line("m2", 3000));
+    expect(statSync(fresh).size).toBe(size);
+    renameSync(fresh, session());
+
+    await importHistory(db, opts());
+
+    expect(all("SELECT active_ms FROM sessions")).toEqual([{ active_ms: 3000 }]);
+    expect(totals()).toEqual({ calls: 2, output: 10 });
   });
 
   test("a broken line is counted and skipped", async () => {

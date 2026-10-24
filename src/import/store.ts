@@ -23,6 +23,19 @@ export interface Cursor {
   size: number;
   mtimeMs: number;
   state: HandlerState;
+  /** Which file the offset is into; missing on cursors saved before it was tracked. */
+  file?: FileIdentity | undefined;
+}
+
+/**
+ * What tells a rewritten or replaced file from the one the cursor was saved for:
+ * inode and birth time, and a hash of the bytes just before the offset.
+ */
+export interface FileIdentity {
+  ino: number;
+  birthMs: number;
+  /** sha256 of up to 4 KiB before the offset ('' for `.zst`, which is read whole). */
+  tail: string;
 }
 
 /** Every write the importer makes. All upserts, so re-reading a line changes nothing. */
@@ -199,11 +212,16 @@ export class ImportStore {
   cursor(pathHash: string): Cursor | undefined {
     const row = this.q.cursor.get(pathHash);
     if (!row) return undefined;
+    // `state_json` holds the handler state, plus the file identity under `file`.
+    const { file, ...state } = row.state_json
+      ? (JSON.parse(row.state_json) as HandlerState & { file?: FileIdentity })
+      : {};
     return {
       offset: row.byte_offset,
       size: row.size,
       mtimeMs: row.mtime_ms,
-      state: row.state_json ? JSON.parse(row.state_json) : {},
+      state,
+      ...(file ? { file } : {}),
     };
   }
 
@@ -216,7 +234,7 @@ export class ImportStore {
       c.offset,
       c.size,
       c.mtimeMs,
-      JSON.stringify(c.state),
+      JSON.stringify(c.file ? { ...c.state, file: c.file } : c.state),
       now,
       now,
     );
