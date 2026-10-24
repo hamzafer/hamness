@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { type AddressInfo, createServer } from "node:net";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { dataPaths } from "../config/paths.ts";
 import { LATEST_SCHEMA_VERSION } from "../db/migrations/index.ts";
@@ -121,6 +122,19 @@ describe("daemon event stream", () => {
 });
 
 describe("daemon lifecycle", () => {
+  test("a port another process holds on every interface (0.0.0.0) counts as in use", async () => {
+    const other = createServer();
+    await new Promise<void>((resolve) => other.listen(0, "0.0.0.0", resolve));
+    const port = (other.address() as AddressInfo).port;
+    try {
+      await expect(startDaemon({ dataDir: home.dir, port })).rejects.toThrow(/port \d+ in use/);
+      // The failed start leaves no claim behind.
+      expect(existsSync(dataPaths(home.dir).daemonState)).toBe(false);
+    } finally {
+      other.close();
+    }
+  });
+
   test("a second start on the same data dir is refused", async () => {
     await start();
     await expect(startDaemon({ dataDir: home.dir, port: 0 })).rejects.toBeInstanceOf(

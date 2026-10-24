@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import type { Server } from "bun";
 import type { HamnessEvent } from "../events/types.ts";
 import { tokenFromRequest, tokensMatch } from "./auth.ts";
@@ -45,6 +46,27 @@ function isLocalHost(req: Request): boolean {
   if (!host) return false;
   const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
   return name !== undefined && LOCAL_HOSTS.has(name);
+}
+
+/**
+ * Throws `port N in use` when another process holds `port` on any interface. Binding
+ * 127.0.0.1 alone succeeds on macOS even while someone listens on 0.0.0.0 (or ::) there,
+ * so the API would share its port with a stranger (F3). Port 0 is always free.
+ */
+export async function assertPortFree(port: number): Promise<void> {
+  if (port === 0) return;
+  for (const host of ["0.0.0.0", "::"]) {
+    const probe = createServer();
+    const code = await new Promise<string | undefined>((resolve) => {
+      probe.once("error", (err: NodeJS.ErrnoException) => resolve(err.code ?? "ERROR"));
+      probe.listen({ port, host, exclusive: true }, () => resolve(undefined));
+    });
+    await new Promise<void>((resolve) =>
+      probe.listening ? probe.close(() => resolve()) : resolve(),
+    );
+    if (code === "EADDRINUSE") throw new Error(`port ${port} in use`);
+    // No IPv6 (EAFNOSUPPORT, EADDRNOTAVAIL): nothing can hold it there either.
+  }
 }
 
 export function startApiServer(opts: ApiOptions): ApiServer {

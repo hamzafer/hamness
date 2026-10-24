@@ -4,7 +4,7 @@ import { SessionHub } from "../agent/session-hub.ts";
 import { generateToken, writeTokenFile } from "../api/auth.ts";
 import { dashboardMount } from "../api/dashboard-routes.ts";
 import { sessionRoutes } from "../api/routes.ts";
-import { startApiServer } from "../api/server.ts";
+import { assertPortFree, startApiServer } from "../api/server.ts";
 import { claudePermissionMode, createClaudeHooks } from "../compat/hooks.ts";
 import { claudeConfigDir } from "../compat/paths.ts";
 import { dataPaths, ensureDataDir } from "../config/paths.ts";
@@ -75,6 +75,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
   let db: HamnessDb | undefined;
   try {
+    await assertPortFree(opts.port ?? DEFAULT_PORT);
     db = openDatabase(paths.database);
     const openDb = db;
     const token = generateToken();
