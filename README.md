@@ -27,6 +27,7 @@ bun src/cli/main.ts models   # models you can switch to, with prices (--all: who
 bun src/cli/main.ts keys set anthropic   # store an API key (hidden prompt, mode 0600)
 bun src/cli/main.ts login openai         # sign in with a ChatGPT plan (through Pi)
 bun src/cli/main.ts audit    # recent safety decisions and why (--session, --limit, --json)
+bun src/cli/main.ts hooks    # Claude Code hooks found for this dir (`hooks trust` runs project ones)
 ```
 
 Data lives in `~/Library/Application Support/hamness` on macOS and `$XDG_DATA_HOME/hamness` (default `~/.local/share/hamness`) on Linux. Set `HAMNESS_HOME` to use another dir and `HAMNESS_PORT` to change the API port (default 7357).
@@ -63,6 +64,10 @@ The judge (auto mode) is Claude Haiku 5.5 by default, keyed like chat (`ANTHROPI
 { "safety": { "judge": { "model": "claude-haiku-5-5", "dailyBudgetUsd": 1, "timeoutSec": 8 } } }
 ```
  When a call asks, the TUI shows it above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. With no answer it is denied after the timeout. Every decision is stored with its source and reason; `hamness audit` lists them.
+
+### Claude Code hooks
+
+hamness runs the `command` hooks in your Claude Code settings for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse and Stop, with the same matchers, JSON input and output, exit code 2 and timeouts (ADR 0017). Hooks see Claude Code's tool names and inputs (`Bash`, `Read` with `file_path`, ...). A PreToolUse deny is final and shows in `hamness audit` with source `hook`; an allow skips the ask but never beats a rule deny. Hooks in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) always run; a project's `.claude/settings.json` and `settings.local.json` hooks run once you trust the repo with `hamness hooks trust`. A hook that crashes or hangs is logged and skipped. hamness never edits Claude Code's files.
 
 ### TUI keys
 
