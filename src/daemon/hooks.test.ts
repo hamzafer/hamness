@@ -275,7 +275,7 @@ describe("Claude Code hooks in the daemon", () => {
     await prompt("hi");
     await settled();
     expect(fx.calls()).toHaveLength(0);
-    expect(log.ofType("agent.notice")[0]?.message).toContain("hamness hooks trust");
+    expect(log.ofType("agent.notice")[0]?.message).toContain("hamness trust");
     trustProject(dataDir, work);
     await prompt("hi");
     await settled(2);

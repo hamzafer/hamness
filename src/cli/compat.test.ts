@@ -54,7 +54,7 @@ describe("hamness compat", () => {
     expect(t).toContain("GH_TOKEN is not set");
     expect(t).toMatch(/team\s+project\s+needs approval/);
     expect(t).toMatch(/old\s+user\s+unsupported/);
-    expect(t).toContain("hamness compat approve");
+    expect(t).toContain("hamness trust");
   });
 
   test("--json prints the same as data", async () => {
@@ -71,7 +71,7 @@ describe("hamness compat", () => {
   test("approve starts the repo's project servers next time; revoke undoes it", async () => {
     const claudeBefore = snapshotTree(join(tmp.dir, "home"));
     expect(await run("approve")).toBe(0);
-    expect(text()).toContain("Approved team");
+    expect(text()).toMatch(/Trusted .*repo:\n\s+team/);
     out = [];
     await run();
     expect(text()).toMatch(/team\s+project\s+start/);
@@ -89,6 +89,9 @@ describe("hamness compat", () => {
     await run("approve");
     out = [];
     expect(await run("approve")).toBe(0);
+    expect(text()).toContain("nothing new");
+    out = [];
+    expect(await run("approve", "team")).toBe(0);
     expect(text()).toContain("No project MCP servers wait for approval");
   });
 

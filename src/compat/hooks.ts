@@ -1,13 +1,8 @@
 import { spawn } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, join, resolve } from "node:path";
+import { type Json, readJsonOr } from "../config/json.ts";
+import { addTrusted, isTrusted } from "../trust/index.ts";
+import { projectKey, projectRoot, repoRoot } from "./paths.ts";
 import { toClaudeCall, toClaudeResponse } from "./tools.ts";
 
 /**
@@ -15,16 +10,15 @@ import { toClaudeCall, toClaudeResponse } from "./tools.ts";
  * with Claude Code's matcher and JSON stdin/stdout contract for PreToolUse, PostToolUse,
  * UserPromptSubmit, Stop and SessionStart.
  *
- * Sources, all merged: `<claude dir>/settings.json` (user), `<cwd>/.claude/settings.json` and
- * `settings.local.json` (project; the local file also at the repo root). Project hooks run only
- * once the repo is trusted (`hamness hooks trust`), kept in hamness's own config. Files are read
+ * Sources, all merged: managed `managed-settings.json`, `<claude dir>/settings.json` (user), and
+ * `.claude/settings.json` and `settings.local.json` at the repo root and in the cwd (project).
+ * Project hooks run only as the user trusted them (`hamness trust`, ADR 0020): each hook's
+ * definition is fingerprinted, so an added or edited hook waits for trust again. Files are read
  * for every event, so edits and trust apply at once. hamness never writes Claude Code's files.
  *
  * A hook that crashes, prints junk or times out decides nothing (logged), unless it set
  * `onFailure: "block"`. Only `type: "command"` handlers run; other types are skipped.
  */
-
-type Json = Record<string, unknown>;
 
 export type HookEvent = "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "Stop" | "SessionStart";
 
@@ -84,6 +78,8 @@ export interface ClaudeHooksOptions {
   claudeDir: string;
   /** hamness's data dir: its `config.json` keeps the trusted projects. */
   dataDir: string;
+  /** Claude Code's managed policy folder (`managed-settings.json`); its hooks always run. */
+  managedDir?: string;
   /** Logs hook failures. Default: stderr. */
   log?: (message: string) => void;
 }
@@ -119,42 +115,23 @@ interface CommandHook {
   label: string;
 }
 
-function readJson(path: string, log: (m: string) => void): Json | undefined {
-  if (!existsSync(path)) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Json)
-      : undefined;
-  } catch (err) {
-    log(`${path}: not valid JSON (${(err as Error).message}); its hooks are skipped`);
-    return undefined;
-  }
-}
+const readJson = (path: string, log: (m: string) => void): Json | undefined =>
+  readJsonOr(path, (m) => log(`${m}; its hooks are skipped`));
 
-/** The repo root (nearest folder with `.git`), or the cwd outside a repo. */
-export function projectRoot(cwd: string): string {
-  let dir = cwd;
-  for (;;) {
-    if (existsSync(join(dir, ".git"))) return dir;
-    const up = dirname(dir);
-    if (up === dir) return cwd;
-    dir = up;
-  }
-}
+export { projectRoot };
 
+/**
+ * Project settings files, Claude Code's way: `.claude/settings.json` and `settings.local.json`
+ * at the repo root (for a worktree, its own top folder), and in the cwd when that differs.
+ */
 function projectSettingsFiles(cwd: string): string[] {
-  const files = [
-    join(cwd, ".claude", "settings.json"),
-    join(cwd, ".claude", "settings.local.json"),
-    join(projectRoot(cwd), ".claude", "settings.local.json"),
-  ];
+  const root = repoRoot(cwd) ?? resolve(cwd);
+  const dirs = [root, resolve(cwd)];
+  const files = dirs.flatMap((d) => [
+    join(d, ".claude", "settings.json"),
+    join(d, ".claude", "settings.local.json"),
+  ]);
   return [...new Set(files)];
-}
-
-function hasHooks(file: Json | undefined): boolean {
-  const hooks = file?.hooks;
-  return !!hooks && typeof hooks === "object" && Object.keys(hooks).length > 0;
 }
 
 function commandHooks(file: Json | undefined, event: HookEvent): CommandHook[] {
@@ -199,41 +176,17 @@ export function matcherMatches(matcher: string | undefined, value: string | unde
 
 // ---- trust ----
 
-const hamnessConfigPath = (dataDir: string) => join(dataDir, "config.json");
-
-function canonical(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
-function trustedProjects(dataDir: string): string[] {
-  const config = readJson(hamnessConfigPath(dataDir), () => {});
-  const list = (config?.hooks as Json | undefined)?.trustedProjects;
-  return Array.isArray(list) ? list.filter((p): p is string => typeof p === "string") : [];
-}
-
-export function isProjectTrusted(dataDir: string, cwd: string): boolean {
-  return trustedProjects(dataDir).includes(canonical(projectRoot(cwd)));
-}
-
-/** Lets the repo holding `cwd` run its project hooks. Returns the repo root it saved. */
-export function trustProject(dataDir: string, cwd: string): string {
-  const root = canonical(projectRoot(cwd));
-  const path = hamnessConfigPath(dataDir);
-  const config = readJson(path, () => {}) ?? {};
-  const hooks = { ...((config.hooks as Json | undefined) ?? {}) };
-  const list = trustedProjects(dataDir);
-  if (!list.includes(root)) list.push(root);
-  hooks.trustedProjects = list;
-  config.hooks = hooks;
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`);
-  renameSync(tmp, path);
-  return root;
+/** What a hook's trust covers: everything that decides what it runs and how (ADR 0020). */
+function hookItem(event: HookEvent, h: CommandHook) {
+  return {
+    event,
+    matcher: h.matcher,
+    command: h.command,
+    args: h.args,
+    timeoutSec: h.timeoutSec,
+    async: h.async,
+    blockOnFailure: h.blockOnFailure,
+  };
 }
 
 export const HOOK_EVENTS: readonly HookEvent[] = [
@@ -244,58 +197,125 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
   "Stop",
 ];
 
+/** Every project hook in `cwd`'s settings files, as trust items, with where it came from. */
+export function projectHookItems(
+  cwd: string,
+): Array<{ file: string; label: string; item: unknown }> {
+  return projectSettingsFiles(cwd).flatMap((file) => {
+    const json = readJson(file, () => {});
+    return HOOK_EVENTS.flatMap((event) =>
+      commandHooks(json, event).map((h) => ({
+        file,
+        label: `${event}${h.matcher ? ` ${h.matcher}` : ""}: ${h.label}`,
+        item: hookItem(event, h),
+      })),
+    );
+  });
+}
+
+/** True when every project hook in `cwd` is trusted as it is now (so with none, too). */
+export function isProjectTrusted(dataDir: string, cwd: string): boolean {
+  const key = projectKey(cwd);
+  return projectHookItems(cwd).every((h) => isTrusted(dataDir, key, "hooks", h.item));
+}
+
+/** Trusts the project hooks in `cwd` as they are now. Returns the project key it saved under. */
+export function trustProject(dataDir: string, cwd: string): string {
+  const key = projectKey(cwd);
+  addTrusted(
+    dataDir,
+    key,
+    "hooks",
+    projectHookItems(cwd).map((h) => h.item),
+  );
+  return key;
+}
+
 export interface HookSource {
   file: string;
-  scope: "user" | "project";
-  /** False for project files until the repo is trusted, or when `disableAllHooks` is set. */
+  scope: "managed" | "user" | "project";
+  /** False when `disableAllHooks` is set, or for a project file with a hook not trusted yet. */
   runs: boolean;
-  hooks: Array<{ event: HookEvent; matcher?: string; command: string }>;
+  hooks: Array<{ event: HookEvent; matcher?: string; command: string; trusted: boolean }>;
+}
+
+type Scope = HookSource["scope"];
+type HookOpts = { claudeDir: string; dataDir: string; managedDir?: string };
+
+function settingsFiles(opts: HookOpts, cwd: string): Array<[string, Scope]> {
+  return [
+    ...(opts.managedDir
+      ? [[join(opts.managedDir, "managed-settings.json"), "managed"] as [string, Scope]]
+      : []),
+    [join(opts.claudeDir, "settings.json"), "user"],
+    ...projectSettingsFiles(cwd).map((f): [string, Scope] => [f, "project"]),
+  ];
+}
+
+/** `disableAllHooks` in managed settings turns off every hook; elsewhere, all but managed. */
+function disabledScopes(parsed: Array<{ scope: Scope; json: Json | undefined }>): Set<Scope> {
+  const off = (scope: Scope) =>
+    parsed.some((p) => p.scope === scope && p.json?.disableAllHooks === true);
+  if (off("managed")) return new Set(["managed", "user", "project"]);
+  if (off("user") || off("project")) return new Set(["user", "project"]);
+  return new Set();
 }
 
 /** Every settings file with hooks for `cwd`, for `hamness hooks`. */
-export function hookSources(
-  opts: { claudeDir: string; dataDir: string },
-  cwd: string,
-): HookSource[] {
-  const files: Array<[string, "user" | "project"]> = [
-    [join(opts.claudeDir, "settings.json"), "user"],
-    ...projectSettingsFiles(cwd).map((f): [string, "project"] => [f, "project"]),
-  ];
-  const parsed = files.map(([file, scope]) => ({ file, scope, json: readJson(file, () => {}) }));
-  const disabled = parsed.some((p) => p.json?.disableAllHooks === true);
-  const trusted = isProjectTrusted(opts.dataDir, cwd);
+export function hookSources(opts: HookOpts, cwd: string): HookSource[] {
+  const key = projectKey(cwd);
+  const parsed = settingsFiles(opts, cwd).map(([file, scope]) => ({
+    file,
+    scope,
+    json: readJson(file, () => {}),
+  }));
+  const disabled = disabledScopes(parsed);
   return parsed
-    .map(({ file, scope, json }) => ({
-      file,
-      scope,
-      runs: !disabled && (scope === "user" || trusted),
-      hooks: HOOK_EVENTS.flatMap((event) =>
+    .map(({ file, scope, json }) => {
+      const hooks = HOOK_EVENTS.flatMap((event) =>
         commandHooks(json, event).map((h) => ({
           event,
           ...(h.matcher ? { matcher: h.matcher } : {}),
           command: h.label,
+          trusted: scope !== "project" || isTrusted(opts.dataDir, key, "hooks", hookItem(event, h)),
         })),
-      ),
-    }))
+      );
+      return { file, scope, runs: !disabled.has(scope) && hooks.every((h) => h.trusted), hooks };
+    })
     .filter((src) => src.hooks.length > 0);
 }
 
 /** The hooks for an event in `cwd`, and whether project hooks were held back. */
 export function loadHooks(
-  opts: { claudeDir: string; dataDir: string; log?: (m: string) => void },
+  opts: HookOpts & { log?: (m: string) => void },
   cwd: string,
   event: HookEvent,
 ): { hooks: CommandHook[]; heldBack: boolean } {
   const log = opts.log ?? (() => {});
-  const user = readJson(join(opts.claudeDir, "settings.json"), log);
-  const project = projectSettingsFiles(cwd).map((f) => readJson(f, log));
-  if ([user, ...project].some((f) => f?.disableAllHooks === true)) {
-    return { hooks: [], heldBack: false };
+  const key = projectKey(cwd);
+  const parsed = settingsFiles(opts, cwd).map(([file, scope]) => ({
+    scope,
+    json: readJson(file, log),
+  }));
+  const disabled = disabledScopes(parsed);
+  const hooks: CommandHook[] = [];
+  let heldBack = false;
+  for (const { scope, json } of parsed) {
+    if (disabled.has(scope)) continue;
+    if (scope !== "project") {
+      hooks.push(...commandHooks(json, event));
+      continue;
+    }
+    // Project hooks run only as trusted: an added or edited one waits (ADR 0020).
+    for (const e of HOOK_EVENTS) {
+      for (const h of commandHooks(json, e)) {
+        const trusted = isTrusted(opts.dataDir, key, "hooks", hookItem(e, h));
+        if (!trusted) heldBack = true;
+        else if (e === event) hooks.push(h);
+      }
+    }
   }
-  const trusted = isProjectTrusted(opts.dataDir, cwd);
-  const files = trusted ? [user, ...project] : [user];
-  const hooks = files.flatMap((f) => commandHooks(f, event));
-  return { hooks, heldBack: !trusted && project.some(hasHooks) };
+  return { hooks, heldBack };
 }
 
 // ---- running ----
@@ -533,7 +553,7 @@ export function createClaudeHooks(opts: ClaudeHooksOptions): ClaudeHooks {
         ...(context.length ? { context: context.join("\n\n") } : {}),
         ...(heldBack
           ? {
-              notice: `This project's Claude Code hooks (.claude/settings*.json) are not trusted yet, so they don't run. Review them, then run \`hamness hooks trust\` in ${projectRoot(s.cwd)}.`,
+              notice: `This project's Claude Code hooks (.claude/settings*.json) are not trusted (new, or changed since you trusted them), so those don't run. Review them with \`hamness trust --show\`, then run \`hamness trust\` in ${projectRoot(s.cwd)}.`,
             }
           : {}),
       };

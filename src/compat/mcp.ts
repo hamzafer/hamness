@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
-import { projectKey, readApprovals } from "./approvals.ts";
+import { isObject, type Json, readJsonOr } from "../config/json.ts";
+import { readApprovals } from "./approvals.ts";
 import {
   ancestorsDown,
   type ClaudeEnv,
   claudeGlobalConfigFile,
   claudeSettingsFiles,
+  projectKey,
   repoRoot,
 } from "./paths.ts";
 
@@ -55,7 +57,6 @@ export interface McpResult {
   errors: string[];
 }
 
-type Json = Record<string, unknown>;
 const NAME = /^[A-Za-z0-9_-]+$/;
 
 /** Claude Code reads these as empty in a remote server's url and headers. */
@@ -66,24 +67,8 @@ const CREDENTIAL_VARS = new Set([
   "AWS_BEARER_TOKEN_BEDROCK",
 ]);
 
-const isObject = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
-
-function readJson(path: string, errors: string[]): Json | undefined {
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(text);
-    if (isObject(parsed)) return parsed;
-    errors.push(`${path}: must hold a JSON object`);
-  } catch (err) {
-    errors.push(`${path}: not valid JSON (${(err as Error).message})`);
-  }
-  return undefined;
-}
+const readJson = (path: string, errors: string[]): Json | undefined =>
+  readJsonOr(path, (m) => errors.push(m));
 
 function real(path: string): string {
   try {
@@ -229,7 +214,7 @@ export function loadMcpServers(opts: LoadMcpOptions): McpResult {
   const disabled = new Set(stringList(project?.disabledMcpServers));
 
   const key = projectKey(cwd);
-  const approved = readApprovals(opts.dataDir)[key] ?? {};
+  const approved = readApprovals(opts.dataDir, cwd);
 
   // Highest precedence first; the first definition of a name wins.
   const layers: Array<{ scope: McpScope; source: string; servers: unknown }> = [
@@ -287,8 +272,8 @@ export function loadMcpServers(opts: LoadMcpOptions): McpResult {
         server.status = "needs-approval";
         server.reason =
           name in approved
-            ? "changed since it was approved; run `hamness compat approve`"
-            : "a project server; run `hamness compat approve` to start it";
+            ? "changed since it was approved; review it, then run `hamness trust`"
+            : "a project server; run `hamness trust` to start it";
       }
       servers.push(server);
     }

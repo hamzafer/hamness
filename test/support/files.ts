@@ -27,3 +27,16 @@ export function snapshotTree(root: string): Record<string, { content: string; mt
   walk(root);
   return out;
 }
+
+/**
+ * Makes `wt` a git worktree of `repo` the way `git worktree add` lays it out (a `.git` file
+ * pointing at `<repo>/.git/worktrees/<name>`, whose `commondir` leads back), without running git.
+ */
+export function fakeWorktree(repo: string, wt: string): void {
+  const name = wt.split("/").pop() as string;
+  const gitdir = join(repo, ".git", "worktrees", name);
+  mkdirSync(gitdir, { recursive: true });
+  writeFileSync(join(gitdir, "commondir"), "../..\n");
+  mkdirSync(wt, { recursive: true });
+  writeFileSync(join(wt, ".git"), `gitdir: ${gitdir}\n`);
+}

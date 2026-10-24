@@ -1,6 +1,6 @@
 # 0017: Claude Code hooks run as Claude Code runs them, behind per-repo trust
 
-**Status:** accepted, 2026-10-24
+**Status:** accepted, 2026-10-24; hook trust refined by ADR 0020 (per hook fingerprint, `hamness trust`)
 
 hamness runs `command` hooks from Claude Code's settings files for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse and Stop, with Claude Code's matcher, JSON stdin/stdout, exit code 2 and default timeouts (600 s, 30 s for UserPromptSubmit). Hooks see Claude Code's tool names and input keys (`Bash`, `Read`, `file_path`, ...), translated from Pi's in one module (`src/compat/tools.ts`).
 

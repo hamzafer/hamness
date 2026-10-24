@@ -57,6 +57,24 @@ describe("default rules: writes", () => {
     expect(verdict(tool("write", { path: ".hamness/config.json", content: "{}" }))).toBe("ask");
   });
 
+  test("writing Claude Code settings, .mcp.json or .hamness anywhere in the workspace asks (S-H6)", () => {
+    for (const path of [
+      ".claude/settings.json",
+      ".claude/settings.local.json",
+      "pkg/.claude/settings.json",
+      ".mcp.json",
+      "pkg/.mcp.json",
+      "pkg/.hamness/config.json",
+    ]) {
+      expect([path, verdict(tool("write", { path, content: "{}" }))]).toEqual([path, "ask"]);
+    }
+    expect(verdict(bash("echo '{}' > .claude/settings.json"))).toBe("ask");
+    expect(verdict(tool("write", { path: ".claude/notes.md", content: "" }))).toBe("allow");
+    // A repo can't allow itself these writes.
+    const loose = [...defaults, ...project({ write: { "$CWD/**": "allow" } })];
+    expect(verdict(tool("write", { path: ".mcp.json", content: "{}" }, loose))).toBe("ask");
+  });
+
   test("a symlink out of the workspace is judged by where it points", () => {
     const linked: EvalContext = {
       ...ctx,

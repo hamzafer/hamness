@@ -60,7 +60,10 @@ export const DEFAULT_PERMISSION = {
     "**/.env": "ask",
     "**/.env.*": "ask",
     "$CWD/.git{,/**}": "ask",
-    "$CWD/.hamness{,/**}": "ask",
+    // Files that add hooks, MCP servers or rules: the user sees each change (ADR 0020).
+    "$CWD/**/.hamness{,/**}": "ask",
+    "$CWD/**/.claude/settings*.json": "ask",
+    "$CWD/**/.mcp.json": "ask",
     ...deny(SECRETS.filter((p) => !p.startsWith("**/.env"))),
     "$DATA{,/**}": "deny",
   },
