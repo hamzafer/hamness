@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { HamnessDb } from "../db/open.ts";
 import type { ApprovalDecision, SafetyMode } from "../events/types.ts";
+import { stableJson } from "../trust/index.ts";
 import { addProjectRules, loadSafetyConfig } from "./config.ts";
 import { type DecisionRecord, DecisionStore } from "./decisions.ts";
 import type { GuardedCall, SafetyCheck, SafetyVerdict } from "./index.ts";
@@ -99,6 +100,32 @@ function realpathNearest(path: string): string {
   }
 }
 
+/** More matches than this and a glob is not checked (the command is not allowed outright). */
+const GLOB_LIMIT = 500;
+
+/**
+ * Expands an absolute shell glob to the paths it matches now, as bash would without
+ * `globstar` (`**` is `*`), dot files included. Undefined past `GLOB_LIMIT` matches.
+ */
+export function expandGlob(pattern: string): string[] | undefined {
+  const parts = pattern.replaceAll("**", "*").split("/");
+  let fixed = 0;
+  while (fixed < parts.length - 1 && !/[*?[{]/.test(parts[fixed] as string)) fixed++;
+  const root = parts.slice(0, fixed).join("/") || "/";
+  const rest = parts.slice(fixed).join("/");
+  const out: string[] = [];
+  try {
+    const glob = new Bun.Glob(rest);
+    for (const match of glob.scanSync({ cwd: root, dot: true, onlyFiles: false, absolute: true })) {
+      out.push(match);
+      if (out.length > GLOB_LIMIT) return undefined;
+    }
+  } catch {
+    // The folder is missing or unreadable: nothing matches.
+  }
+  return out;
+}
+
 const ruleLabel = (r: Rule) => `${r.layer}: ${r.tool} ${r.pattern}`;
 
 export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
@@ -107,7 +134,12 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
   const recent = new Map<string, { key: string; count: number }>();
 
   function repeats(call: GuardedCall): number {
-    const key = `${call.tool}\0${JSON.stringify(call.args)}`;
+    // Same call however it is spelled: keys sorted, a command's spacing collapsed.
+    const args =
+      typeof call.args.command === "string"
+        ? { ...call.args, command: call.args.command.replace(/\s+/g, " ").trim() }
+        : call.args;
+    const key = `${call.tool}\0${stableJson(args)}`;
     const last = recent.get(call.sessionId);
     const count = last?.key === key ? last.count + 1 : 1;
     recent.set(call.sessionId, { key, count });
@@ -156,7 +188,13 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       return { allow: true };
     }
 
-    const evalCtx = { cwd, home, dataDir: opts.dataDir, realpath: realpathNearest };
+    const evalCtx = {
+      cwd,
+      home,
+      dataDir: opts.dataDir,
+      realpath: realpathNearest,
+      glob: expandGlob,
+    };
     const evaluation = proving
       ? evaluateProofCommand(
           command,

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { writeTree } from "../../test/support/files.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
@@ -169,5 +170,35 @@ describe("instruction lookup", () => {
     expect(loaded(r)).toEqual(["work/repo/.claude/rules/always.md"]);
     expect(r.files[r.files.length - 1]?.content).toBe("Always");
     expect(r.skipped.map((s) => s.path)).toContain(join(repo, ".claude/rules/api.md"));
+  });
+});
+
+describe("symlinks out of the repo (S-H2)", () => {
+  test("a project instruction or rule file that links outside the repo is skipped and reported", () => {
+    writeTree(tmp.dir, {
+      "home/.aws/credentials": "aws_secret_access_key = FAKE\n",
+      "work/repo/.claude/CLAUDE.md": "fine",
+      "elsewhere/rules/shared.md": "outside rule",
+    });
+    symlinkSync(join(home, ".aws", "credentials"), join(repo, "CLAUDE.md"));
+    mkdirSync(join(repo, ".claude", "rules"), { recursive: true });
+    symlinkSync(join(home, ".aws", "credentials"), join(repo, ".claude", "rules", "style.md"));
+    symlinkSync(join(tmp.dir, "elsewhere", "rules"), join(repo, ".claude", "rules", "linked"));
+    const r = find();
+    expect(loaded(r)).toEqual(["work/repo/.claude/CLAUDE.md"]);
+    expect(r.files.some((f) => f.content.includes("FAKE"))).toBe(false);
+    const skipped = r.skipped.map((s) => s.path.slice(tmp.dir.length + 1));
+    expect(skipped).toEqual([
+      "work/repo/CLAUDE.md",
+      "work/repo/.claude/rules/linked/shared.md",
+      "work/repo/.claude/rules/style.md",
+    ]);
+    expect(r.skipped[0]?.reason).toContain("outside the project");
+  });
+
+  test("a link that stays inside the repo still loads", () => {
+    writeTree(tmp.dir, { "work/repo/docs/AI.md": "shared rules" });
+    symlinkSync(join(repo, "docs", "AI.md"), join(repo, "CLAUDE.md"));
+    expect(find().files.map((f) => f.content)).toContain("shared rules");
   });
 });

@@ -36,7 +36,7 @@ function userConfig(safety: Record<string, unknown>) {
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({ safety }));
 }
 
-async function start(judge?: Judge) {
+async function start(judge?: Judge, cwd = work) {
   daemon = await startDaemon({
     dataDir,
     port: 0,
@@ -52,7 +52,7 @@ async function start(judge?: Judge) {
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+  const s = (await (await call("POST", "/v1/sessions", { cwd })).json()) as SessionSnapshot;
   const prompt = (text: string) => call("POST", `/v1/sessions/${s.session.id}/prompt`, { text });
   const settled = () =>
     (log as NonNullable<typeof log>).waitFor(
@@ -429,5 +429,21 @@ describe("safety in the daemon", () => {
     expect(row?.cost_micros).toBe(42);
     expect(row?.latency_ms).toBeGreaterThanOrEqual(15);
     expect(row?.category).toBe("none");
+  });
+});
+
+describe("a session in / or the home folder (S-L5)", () => {
+  test("the first prompt gets a notice that writes there ask", async () => {
+    fake.script([{ text: "ok" }, { text: "ok" }]);
+    const { prompt, settled } = await start(undefined, "/");
+    await prompt("hi");
+    await settled();
+    const l = log as NonNullable<typeof log>;
+    const notices = () => l.ofType("agent.notice").map((e) => e.message);
+    expect(notices().some((m) => m.includes("home folder or /"))).toBe(true);
+    const before = notices().length;
+    await prompt("again");
+    await l.waitFor(() => l.ofType("agent.status").filter((e) => !e.busy).length >= 2);
+    expect(notices().length).toBe(before);
   });
 });

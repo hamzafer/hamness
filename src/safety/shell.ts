@@ -130,10 +130,7 @@ class Parser {
         return;
       }
       if (next === "{") {
-        const close = this.src.indexOf("}", this.i);
-        if (close < 0) throw new ParseError("an unclosed ${");
-        word += this.src.slice(this.i, close + 1);
-        this.i = close + 1;
+        word += this.braced(nested);
       } else {
         word += "$";
         this.i++;
@@ -309,6 +306,50 @@ class Parser {
     if (terminator) throw new ParseError("an unclosed (");
     endSegment(false);
     return out;
+  }
+
+  /**
+   * At `${`: reads to the matching `}`. A `$(...)` or backtick inside (`${x:-$(cmd)}`) runs, so
+   * it becomes a command of its own in `nested`, and the word shows as a substitution.
+   */
+  private braced(nested: Segment[]): string {
+    const start = this.i;
+    this.i += 2;
+    let depth = 1;
+    let substituted = false;
+    let inDouble = false;
+    while (this.i < this.src.length) {
+      const d = this.src[this.i] as string;
+      if (d === "\\") {
+        this.i += 2;
+      } else if (d === "'" && !inDouble) {
+        const close = this.src.indexOf("'", this.i + 1);
+        if (close < 0) throw new ParseError("an unclosed '");
+        this.i = close + 1;
+      } else if (d === '"') {
+        inDouble = !inDouble;
+        this.i++;
+      } else if (d === "$" && this.src[this.i + 1] === "(") {
+        this.i += 2;
+        nested.push(...this.list(")"));
+        substituted = true;
+      } else if (d === "`") {
+        this.i++;
+        const close = this.findBacktick();
+        nested.push(...new Parser(this.src.slice(this.i, close)).list(null));
+        this.i = close + 1;
+        substituted = true;
+      } else if (d === "$" && this.src[this.i + 1] === "{") {
+        depth++;
+        this.i += 2;
+      } else if (d === "}" && !inDouble) {
+        this.i++;
+        if (--depth === 0) return substituted ? PLACEHOLDER : this.src.slice(start, this.i);
+      } else {
+        this.i++;
+      }
+    }
+    throw new ParseError("an unclosed ${");
   }
 
   private findBacktick(): number {

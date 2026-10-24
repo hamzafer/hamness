@@ -90,10 +90,11 @@ A task is **verified** only when at least one piece passed; otherwise it closes 
 
 Every tool call passes **allow / ask / deny rules** before it runs (ADR 0006). The defaults:
 
-- Reads are allowed, except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys).
-- Writes inside the session's dir are allowed.
-- `bash` asks, except a short read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...). `rm -rf` and force pushes ask; `sudo` and `curl | sh` are denied.
-- Compound commands (`&&`, `;`, `|`, subshells, `$(...)`) are checked part by part, and the strictest part wins.
+- Reads are allowed, except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys). A recursive read (`grep -r`, `rg`, `find`, the grep and find tools) over a folder that holds them asks.
+- Writes inside the session's dir are allowed, except `.env`, `.git`, `.hamness`, `.claude/settings*.json` and `.mcp.json`, which ask. When the session runs in your home folder or `/`, writes there ask too.
+- `bash` asks, except a short read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...). `rm -rf` and force pushes ask; `sudo` and `curl | sh` are denied, also when run by path (`/usr/bin/sudo`).
+- Compound commands (`&&`, `;`, `|`, subshells, `$(...)`, `${x:-$(...)}`) are checked part by part, and the strictest part wins. Globs are expanded and every match is checked (`cat ~/.ss?/id_rsa` is denied).
+- Paths are resolved the way Pi's tools open them (`file://` URLs, `~`, `@`, Unicode spaces).
 
 **Modes** decide what happens to calls no rule decides (user config only):
 

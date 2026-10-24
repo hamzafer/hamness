@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "build/**", "ticket/**"]
+    branches: [main, "build/**", "ticket/**", "fix/**"]
   pull_request:
 
 permissions:

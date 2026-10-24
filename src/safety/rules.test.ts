@@ -1,6 +1,18 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: shell ${...} syntax is the fixture.
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
+import { pathToFileURL } from "node:url";
+// Pi's own resolver, the tools' source of truth (not exported from the package index).
+import { resolveToCwd } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/path-utils.js";
 import { defaultRules } from "./defaults.ts";
-import { type EvalContext, evaluate, parsePermission, type Rule } from "./rules.ts";
+import {
+  broadWorkspace,
+  type EvalContext,
+  evaluate,
+  parsePermission,
+  piToolPath,
+  type Rule,
+} from "./rules.ts";
 
 const ctx: EvalContext = { cwd: "/work/proj", home: "/home/u", dataDir: "/data/hamness" };
 const defaults = defaultRules();
@@ -339,5 +351,158 @@ describe("hamness's task tools", () => {
     for (const name of ["task_start", "prove", "task_done"]) {
       expect(tool(name, { goal: "x" }).verdict).toBe("allow");
     }
+  });
+});
+
+describe("paths resolve exactly as Pi's tools open them (S-H1)", () => {
+  const urlOf = (p: string) => pathToFileURL(p).href;
+
+  test("file:// URLs are the files they name, not names under the cwd", () => {
+    expect(verdict(tool("write", { path: urlOf("/home/u/.zshrc"), content: "" }))).toBe(
+      "undecided",
+    );
+    expect(verdict(tool("write", { path: urlOf("/data/hamness/config.json"), content: "" }))).toBe(
+      "deny",
+    );
+    expect(verdict(tool("read", { path: urlOf("/home/u/.aws/credentials") }))).toBe("deny");
+    expect(verdict(tool("read", { path: urlOf("/work/proj/.env") }))).toBe("deny");
+    expect(verdict(tool("write", { path: urlOf("/work/proj/src/a.ts"), content: "" }))).toBe(
+      "allow",
+    );
+  });
+
+  test("a file:// URL that does not name a local path is refused", () => {
+    const e = tool("read", { path: "file://other-host/etc/passwd" });
+    expect(e.verdict).toBe("deny");
+    expect(e.reason).toContain("could not resolve");
+  });
+
+  test("Unicode spaces are read as spaces, as Pi does", () => {
+    const dataDir = "/home/u/Library/Application Support/hamness";
+    const c = { ...ctx, dataDir };
+    for (const space of [" ", " ", "　"]) {
+      const path = `/home/u/Library/Application${space}Support/hamness/keys.json`;
+      expect(verdict(evaluate({ tool: "read", args: { path } }, defaults, c))).toBe("deny");
+    }
+  });
+
+  test("read checks the macOS screenshot variants Pi falls back to", () => {
+    const rules = [...defaults, ...user({ read: { "/work/proj/shots/a PM.png": "deny" } })];
+    expect(verdict(tool("read", { path: "shots/a PM.png" }, rules))).toBe("deny");
+  });
+
+  test("matches Pi's resolveToCwd for every form it accepts", () => {
+    const home = homedir();
+    const cwd = "/work/proj";
+    for (const input of [
+      "src/a.ts",
+      "@src/a.ts",
+      "~",
+      "~/x/y",
+      " lead",
+      "trail ",
+      "a b",
+      "../up",
+      "/abs/./p/../q",
+      urlOf("/abs/with space/é"),
+      "file:///tmp/%2e%2e/etc",
+      "$HOME/x",
+    ]) {
+      expect([input, piToolPath(input, cwd, home)]).toEqual([input, resolveToCwd(input, cwd)]);
+    }
+  });
+});
+
+describe("commands by path and odd forms (S-M3, S-L1)", () => {
+  test("a deny or ask rule matches a command run by its path", () => {
+    expect(verdict(bash("/usr/bin/sudo id"))).toBe("deny");
+    expect(verdict(bash("./node_modules/.bin/../../../bin/sudo id"))).toBe("deny");
+    expect(verdict(bash("/bin/rm -rf build"))).toBe("ask");
+    expect(verdict(bash("/bin/sh -c 'sudo id'"))).toBe("deny");
+  });
+
+  test("an allow rule does not match a command run by another path", () => {
+    expect(verdict(bash("/tmp/evil/ls -la"))).toBe("undecided");
+  });
+
+  test("a substitution inside ${...} is checked", () => {
+    expect(verdict(bash("echo ${x:-$(sudo id)}"))).toBe("deny");
+  });
+
+  test("env, nohup and friends on their own are checked, not a crash (S-L1)", () => {
+    for (const command of ["env", "nohup", "env -i", "time", "FOO=1"]) {
+      expect([command, verdict(bash(command))]).toEqual([command, "undecided"]);
+    }
+  });
+});
+
+describe("globs and recursive reads (S-M1, S-M2)", () => {
+  /** A fake filesystem for glob expansion: these files exist. */
+  const files = ["/home/u/.ssh/id_rsa", "/work/proj/.env", "/work/proj/a.ts", "/work/proj/b.ts"];
+  const glob = (pattern: string) => files.filter((f) => new Bun.Glob(pattern).match(f));
+  const withGlob: EvalContext = { ...ctx, glob };
+
+  test("a glob that expands to a secret is denied", () => {
+    for (const command of [
+      "cat ~/.ss?/id_rsa",
+      "cat ~/.ssh/id_rs[a]",
+      "cat .en?",
+      "tail -c +1 .en*",
+    ]) {
+      expect([command, verdict(bash(command, defaults, withGlob))]).toEqual([command, "deny"]);
+    }
+  });
+
+  test("a glob over ordinary files keeps the command's own verdict", () => {
+    expect(verdict(bash("cat *.ts", defaults, withGlob))).toBe("allow");
+  });
+
+  test("without a way to expand globs, a glob is never allowed outright", () => {
+    expect(verdict(bash("cat *.ts"))).toBe("undecided");
+    expect(verdict(bash("ls"))).toBe("allow");
+  });
+
+  test("a glob that can't be expanded (too many matches) is not allowed outright", () => {
+    const c: EvalContext = { ...ctx, glob: () => undefined };
+    expect(verdict(bash("cat /*/*", defaults, c))).toBe("undecided");
+  });
+
+  test("a recursive read over a folder that holds secrets asks", () => {
+    expect(verdict(bash("grep -r KEY ~"))).toBe("ask");
+    expect(verdict(bash("grep -R KEY /home"))).toBe("ask");
+    expect(verdict(bash("rg KEY /home/u"))).toBe("ask");
+    expect(verdict(bash("find ~ -name notes"))).toBe("ask");
+    expect(verdict(bash("ls -laR /home/u"))).toBe("ask");
+    expect(verdict(tool("grep", { pattern: "KEY", path: "~" }))).toBe("ask");
+    expect(verdict(tool("find", { pattern: "*", path: "/" }))).toBe("ask");
+    expect(verdict(tool("grep", { pattern: "x", path: "/data" }))).toBe("ask");
+  });
+
+  test("recursive reads inside the workspace stay allowed", () => {
+    expect(verdict(bash("grep -rn TODO src"))).toBe("allow");
+    expect(verdict(bash("grep KEY ~/notes.txt"))).toBe("allow");
+    expect(verdict(tool("grep", { pattern: "TODO" }))).toBe("allow");
+    expect(verdict(tool("find", { pattern: "*.ts", path: "src" }))).toBe("allow");
+    expect(verdict(tool("ls", { path: "/home/u" }))).toBe("allow");
+  });
+});
+
+describe("a session in the home folder or / (S-L5)", () => {
+  test("$CWD rules don't allow writes there; they ask", () => {
+    const inHome: EvalContext = { ...ctx, cwd: "/home/u" };
+    const write = (path: string, c: EvalContext) =>
+      evaluate({ tool: "write", args: { path, content: "" } }, defaults, c);
+    expect(verdict(write(".zshrc", inHome))).toBe("ask");
+    expect(write("notes/a.md", inHome).reason).toContain("home folder");
+    expect(verdict(write("etc/x", { ...ctx, cwd: "/" }))).toBe("ask");
+    expect(verdict(write("/home/u/.ssh/config", inHome))).toBe("deny");
+    expect(verdict(write("src/a.ts", ctx))).toBe("allow");
+  });
+
+  test("broadWorkspace names those folders", () => {
+    expect(broadWorkspace("/home/u", "/home/u")).toBe(true);
+    expect(broadWorkspace("/home/u/", "/home/u")).toBe(true);
+    expect(broadWorkspace("/", "/home/u")).toBe(true);
+    expect(broadWorkspace("/home/u/proj", "/home/u")).toBe(false);
   });
 });
