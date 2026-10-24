@@ -1,6 +1,6 @@
 import type { KeyBinding, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
-import { createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient } from "../client/client.ts";
@@ -11,7 +11,13 @@ import type {
   TranscriptItem,
 } from "../events/types.ts";
 import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
-import { applyEvent, argSummary, initialState, STATUS_GLYPH } from "./chat-state.ts";
+import {
+  applyEvent,
+  argSummary,
+  initialState,
+  STATUS_GLYPH,
+  waitingForModel,
+} from "./chat-state.ts";
 import { COMMAND_WORDS, HelpPanel } from "./help.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
@@ -62,6 +68,14 @@ export function App(props: AppProps) {
     off();
     clearInterval(tick);
   });
+  /** When the current wait for the model began (`waitingForModel`), for its elapsed seconds. */
+  const [waitingSince, setWaitingSince] = createSignal<number | undefined>();
+  createEffect(
+    on(
+      () => waitingForModel(state),
+      (waiting) => setWaitingSince(waiting ? now() : undefined),
+    ),
+  );
 
   const dims = useTerminalDimensions();
   let input: TextareaRenderable | undefined;
@@ -176,6 +190,11 @@ export function App(props: AppProps) {
               item.kind === "message" ? <MessageView message={item} /> : <ToolLine tool={item} />
             }
           </For>
+          <Show when={waitingSince() !== undefined}>
+            <text fg={COLORS.muted}>
+              {`  thinking… ${Math.max(0, Math.floor((clock() - (waitingSince() ?? 0)) / 1000))}s`}
+            </text>
+          </Show>
         </scrollbox>
         <Show when={state.notice}>
           <text fg={COLORS.error}>{state.notice}</text>

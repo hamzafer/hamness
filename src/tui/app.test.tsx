@@ -127,6 +127,46 @@ describe("TUI chat layout (headless)", () => {
     await s.waitForFrame((f) => /✗ bash +bun test +1 fail/.test(f));
   });
 
+  test("a working line with elapsed seconds shows until the first token, then between tools", async () => {
+    const fake = fakeClient();
+    const clock = { t: 0 };
+    setup = await testRender(
+      () => <App client={fake.client} snapshot={snapshot} now={() => clock.t} />,
+      { width: 100, height: 24 },
+    );
+    await setup.renderOnce();
+    const s = setup;
+    expect(s.captureCharFrame()).not.toContain("thinking");
+    fake.send({ type: "agent.message.start", messageId: "u2", role: "user" });
+    fake.send({ type: "agent.message.end", messageId: "u2", role: "user", text: "next?" });
+    fake.send({ type: "agent.status", busy: true });
+    await s.waitForFrame((f) => /thinking… 0s/.test(f));
+    clock.t = 3_000;
+    fake.send({ type: "agent.context", tokens: 1, contextWindow: 10, percent: 10 });
+    await s.waitForFrame((f) => /thinking… 3s/.test(f));
+    fake.send({ type: "agent.message.start", messageId: "m4", role: "assistant" });
+    fake.send({ type: "agent.message.delta", messageId: "m4", text: "First token." });
+    await s.waitForFrame((f) => f.includes("First token.") && !f.includes("thinking"));
+    fake.send({
+      type: "agent.message.end",
+      messageId: "m4",
+      role: "assistant",
+      text: "First token.",
+    });
+    fake.send({
+      type: "agent.tool.start",
+      toolCallId: "t9",
+      tool: "bash",
+      args: { command: "ls" },
+    });
+    await s.waitForFrame((f) => /bash +ls/.test(f) && !f.includes("thinking"));
+    clock.t = 5_000;
+    fake.send({ type: "agent.tool.end", toolCallId: "t9", status: "ok", summary: "" });
+    await s.waitForFrame((f) => /thinking… 0s/.test(f));
+    fake.send({ type: "agent.status", busy: false });
+    await s.waitForFrame((f) => !f.includes("thinking"));
+  });
+
   test("ignores events for other sessions and events the snapshot already has", async () => {
     const fake = fakeClient();
     const s = await render(fake.client);

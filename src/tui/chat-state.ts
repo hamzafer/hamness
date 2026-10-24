@@ -115,6 +115,17 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
   }
 }
 
+/**
+ * True while the agent works with nothing on screen to show for it: from the prompt to the
+ * first token, and between tool calls. A running tool or an open approval shows on its own.
+ */
+export function waitingForModel(state: ChatState): boolean {
+  if (!state.session.busy || state.approvals.length > 0) return false;
+  if (state.items.some((i) => i.kind === "tool" && i.status === "running")) return false;
+  const last = state.items.at(-1);
+  return !(last?.kind === "message" && last.role === "assistant" && last.streaming && last.text);
+}
+
 const ARG_KEYS = ["command", "path", "file_path", "pattern", "query", "url"];
 
 /** The one argument worth showing on a compact tool line. */
