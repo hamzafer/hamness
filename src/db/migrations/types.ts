@@ -1,5 +1,5 @@
 export interface Migration {
-  /** 1, 2, 3, ... with no gaps. */
+  /** Ascending; gaps are allowed (each ticket claims its number). */
   readonly version: number;
   readonly name: string;
   readonly sql: string;

@@ -8,7 +8,11 @@ export function currentVersion(sqlite: Database): number {
   return row?.v ?? 0;
 }
 
-/** Applies pending migrations, each in its own transaction. Safe to call on every start. */
+/**
+ * Applies every migration not yet recorded, in version order, each in its own transaction.
+ * Safe to call on every start. Versions must ascend but may have gaps: tickets claim numbers
+ * up front and land in any order, so a lower version can arrive after a higher one ran.
+ */
 export function migrate(sqlite: Database, migrations: readonly Migration[]): number {
   sqlite.run(
     `CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -18,22 +22,31 @@ export function migrate(sqlite: Database, migrations: readonly Migration[]): num
      )`,
   );
   migrations.forEach((m, i) => {
-    if (m.version !== i + 1)
-      throw new Error(`migration ${m.name} has version ${m.version}, expected ${i + 1}`);
+    const prev = migrations[i - 1];
+    if (m.version < 1 || (prev && m.version <= prev.version)) {
+      throw new Error(`migration ${m.name} has version ${m.version}: versions must be ascending`);
+    }
   });
 
-  const current = currentVersion(sqlite);
-  const latest = migrations.length;
-  if (current > latest) {
+  const known = new Set(migrations.map((m) => m.version));
+  const done = new Set(
+    sqlite
+      .query<{ version: number }, []>("SELECT version FROM schema_migrations")
+      .all()
+      .map((r) => r.version),
+  );
+  const unknown = [...done].filter((v) => !known.has(v));
+  if (unknown.length > 0) {
     throw new Error(
-      `database schema is version ${current}, newer than this hamness (${latest}); upgrade hamness`,
+      `database has schema migration ${Math.max(...unknown)}, newer than this hamness; upgrade hamness`,
     );
   }
 
   const record = sqlite.prepare(
     "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
   );
-  for (const m of migrations.slice(current)) {
+  for (const m of migrations) {
+    if (done.has(m.version)) continue;
     sqlite.transaction(() => {
       sqlite.run(m.sql);
       record.run(m.version, m.name, Date.now());

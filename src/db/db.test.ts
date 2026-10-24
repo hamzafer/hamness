@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
-import { migrations } from "./migrations/index.ts";
+import { LATEST_SCHEMA_VERSION } from "./migrations/index.ts";
 import { openDatabase } from "./open.ts";
 
 let home: ReturnType<typeof tempHome>;
@@ -26,7 +26,7 @@ const specTables = [
 describe("openDatabase", () => {
   test("migrates a fresh file to the latest schema version", () => {
     const db = openDatabase(file);
-    expect(db.schemaVersion()).toBe(migrations.length);
+    expect(db.schemaVersion()).toBe(LATEST_SCHEMA_VERSION);
     db.close();
   });
 
@@ -52,7 +52,7 @@ describe("openDatabase", () => {
     first.close();
 
     const second = openDatabase(file);
-    expect(second.schemaVersion()).toBe(migrations.length);
+    expect(second.schemaVersion()).toBe(LATEST_SCHEMA_VERSION);
     const row = second.sqlite.query("SELECT id FROM sessions").get();
     expect(row).toEqual({ id: "s1" });
     second.close();
