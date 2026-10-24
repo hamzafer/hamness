@@ -14,6 +14,9 @@ import { parsePermission, type Rule } from "./rules.ts";
  *               "permission": { "bash": { "npm test *": "allow" }, "mcp__github__*": "ask" } } }
  * ```
  * Files are read on every check, so edits apply to the next tool call.
+ *
+ * The judge's settings are user-only (a repo cannot raise the budget):
+ * `{ "safety": { "judge": { "model": "claude-haiku-5-5", "dailyBudgetUsd": 1, "timeoutSec": 8 } } }`
  */
 
 export type { SafetyMode };
@@ -126,4 +129,40 @@ export function addProjectRules(cwd: string, rules: Rule[]): string {
   writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`);
   renameSync(tmp, path);
   return path;
+}
+
+export interface JudgeConfig {
+  model: string;
+  /** Spend cap per local day, in micro-dollars. */
+  dailyBudgetMicros: number;
+  timeoutMs: number;
+}
+
+/** Claude Haiku 5.5: cheap and fast. */
+export const DEFAULT_JUDGE_MODEL = "claude-haiku-5-5";
+export const DEFAULT_JUDGE_BUDGET_USD = 1;
+export const DEFAULT_JUDGE_TIMEOUT_MS = 8000;
+
+/** The judge's settings from the user config. */
+export function loadJudgeConfig(dataDir: string): JudgeConfig {
+  const path = userConfigPath(dataDir);
+  const raw = safetyBlock(path, readJson(path)).judge ?? {};
+  const bad = (what: string) => new Error(`${path}: safety.judge${what}`);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw bad(" must be an object");
+  const j = raw as Json;
+  const model = j.model ?? DEFAULT_JUDGE_MODEL;
+  if (typeof model !== "string" || !model.trim()) throw bad(".model must be a model id");
+  const budget = j.dailyBudgetUsd ?? DEFAULT_JUDGE_BUDGET_USD;
+  if (typeof budget !== "number" || !(budget >= 0)) {
+    throw bad(".dailyBudgetUsd must be a number of dollars, 0 or more");
+  }
+  const timeout = j.timeoutSec;
+  if (timeout !== undefined && (typeof timeout !== "number" || !(timeout > 0))) {
+    throw bad(".timeoutSec must be a positive number");
+  }
+  return {
+    model: model.trim(),
+    dailyBudgetMicros: Math.round(budget * 1_000_000),
+    timeoutMs: timeout === undefined ? DEFAULT_JUDGE_TIMEOUT_MS : timeout * 1000,
+  };
 }

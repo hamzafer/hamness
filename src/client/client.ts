@@ -5,7 +5,12 @@ import type { ModelInfo } from "../agent/models.ts";
 import type { Env } from "../config/paths.ts";
 import { dataPaths } from "../config/paths.ts";
 import { getStatus } from "../daemon/status.ts";
-import type { ApprovalDecision, HamnessEvent, SessionSnapshot } from "../events/types.ts";
+import type {
+  ApprovalDecision,
+  HamnessEvent,
+  JudgeState,
+  SessionSnapshot,
+} from "../events/types.ts";
 
 /** What a client (TUI, later the dashboard) needs from the daemon. */
 export interface DaemonClient {
@@ -18,6 +23,8 @@ export interface DaemonClient {
   setModel(sessionId: string, model: string): Promise<SessionSnapshot>;
   /** Answers a pending tool approval (`safety.approval.request`). */
   answerApproval(approvalId: string, decision: ApprovalDecision): Promise<void>;
+  /** Unpauses the session's judge (`/judge resume`); resolves with its state now. */
+  resumeJudge(sessionId: string): Promise<JudgeState>;
   /** Opens the event stream; returns a function that closes it. */
   subscribe(onEvent: (event: HamnessEvent) => void): () => void;
   /** Resolves once the event stream is open (after `subscribe`). */
@@ -96,6 +103,12 @@ export function httpClient(url: string, token: string): DaemonClient {
     answerApproval: async (id, decision) => {
       await call("POST", `/v1/approvals/${encodeURIComponent(id)}`, { decision });
     },
+    resumeJudge: async (id) =>
+      (
+        await call<{ judge: JudgeState }>("POST", `/v1/sessions/${encodeURIComponent(id)}/judge`, {
+          paused: false,
+        })
+      ).judge,
     subscribe(onEvent) {
       const ws = new WebSocket(`${url.replace(/^http/, "ws")}/v1/events?token=${token}`);
       ws.onopen = () => markReady();
