@@ -7,6 +7,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { ContextFill } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
 import type { ModelChoice } from "./models.ts";
 
@@ -65,6 +66,8 @@ export type RunnerEvent =
       summary: string;
       durationMs?: number;
     }
+  /** After each turn (reply plus its tool results are in the session): how full the context is. */
+  | ({ type: "context" } & ContextFill)
   | { type: "run.settled"; aborted: boolean };
 
 export interface RunnerOptions {
@@ -92,6 +95,8 @@ export interface AgentRunner {
   readonly piSessionId: string;
   /** Switches the model for the next call. Throws when the provider has no credentials. */
   setModel(model: Model<Api>): Promise<void>;
+  /** How full the context window is now (Pi's estimate), or undefined when Pi can't tell. */
+  contextUsage(): ContextFill | undefined;
   dispose(): void;
 }
 
@@ -158,6 +163,11 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     }),
   });
 
+  const contextFill = (): ContextFill | undefined => {
+    const u = session.getContextUsage();
+    return u && { tokens: u.tokens, contextWindow: u.contextWindow, percent: u.percent };
+  };
+
   let busy = false;
   let model = opts.models.model;
   let seq = 0;
@@ -218,6 +228,14 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
           ...(ev.durationMs !== undefined ? { durationMs: ev.durationMs } : {}),
         });
         return;
+      case "turn_end": {
+        // Pi stores the turn's messages only after listeners ran; read the fill once it has.
+        queueMicrotask(() => {
+          const fill = contextFill();
+          if (fill) emit({ type: "context", ...fill });
+        });
+        return;
+      }
       case "agent_settled":
         busy = false;
         emit({ type: "run.settled", aborted: ev.aborted });
@@ -250,6 +268,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       }
     },
     abort: () => session.abort(),
+    contextUsage: contextFill,
     dispose() {
       unsubscribe();
       session.dispose();

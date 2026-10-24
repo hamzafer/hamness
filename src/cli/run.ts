@@ -5,6 +5,7 @@ import { importCommand } from "./commands/import.ts";
 import { keysCommand } from "./commands/keys.ts";
 import { loginCommand, logoutCommand } from "./commands/login.ts";
 import { modelsCommand } from "./commands/models.ts";
+import { statsCommand } from "./commands/stats.ts";
 import { statusCommand } from "./commands/status.ts";
 import { tuiCommand } from "./commands/tui.ts";
 import { type CliIo, processIo } from "./io.ts";
@@ -23,6 +24,7 @@ const commands: Record<string, { summary: string; run: Command }> = {
   daemon: { summary: "Run the hamness daemon in the foreground", run: daemonCommand },
   status: { summary: "Report whether the daemon is running", run: statusCommand },
   import: { summary: "Import Claude Code and Codex history (read-only)", run: importCommand },
+  stats: { summary: "Summarize sessions, tasks, cost, models and decisions", run: statsCommand },
   tui: { summary: "Chat in the terminal (the default with no command)", run: tuiCommand },
   models: { summary: "List the models you can use (--all: the whole catalog)", run: modelsCommand },
   keys: { summary: "Store API keys (set <provider>, list)", run: keysCommand },

@@ -34,6 +34,17 @@ Chat uses Claude (`anthropic/claude-opus-5-5`; `HAMNESS_MODEL=provider/id` sets 
 
 Sessions keep running when the TUI closes; reopening it in the same dir reattaches. After a daemon restart, the dir's last session resumes with its transcript and context (from Pi's session file in `<data dir>/pi/sessions`).
 
+### TUI keys
+
+| Key | Does |
+|---|---|
+| Enter | send the prompt |
+| Esc | stop the running prompt |
+| Ctrl+R | open the side rail full screen, and back |
+| Ctrl+C | leave the TUI (the session keeps running) |
+
+The side rail on the right shows one row per agent (status, current tool and file, elapsed time, tokens, cost), the context gauge and the session cost.
+
 ## License
 
 MIT

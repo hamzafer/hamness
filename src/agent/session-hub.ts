@@ -238,11 +238,24 @@ export class SessionHub {
       const partial = streaming.get(item.id);
       return partial === undefined ? item : { ...item, text: partial, streaming: true };
     });
-    return { session: this.info(live), seq: live.seq, items };
+    const context = live.runner.contextUsage();
+    return {
+      session: this.info(live),
+      seq: live.seq,
+      items,
+      agents: this.store.agentTotals(live.id),
+      ...(context ? { context } : {}),
+    };
   }
 
   private info(live: LiveSession): SessionInfo {
-    return { id: live.id, cwd: live.cwd, model: live.runner.model, busy: live.busy };
+    return {
+      id: live.id,
+      cwd: live.cwd,
+      model: live.runner.model,
+      busy: live.busy,
+      mainAgentId: live.agentId,
+    };
   }
 
   private ids(live: LiveSession) {
@@ -251,7 +264,12 @@ export class SessionHub {
 
   private emit(live: LiveSession, body: EventBody): void {
     live.seq += 1;
-    this.opts.publish({ ...body, sessionId: live.id, seq: live.seq } as AgentEvent);
+    this.opts.publish({
+      ...body,
+      sessionId: live.id,
+      agentId: live.agentId,
+      seq: live.seq,
+    } as AgentEvent);
   }
 
   private setBusy(live: LiveSession, busy: boolean): void {
@@ -367,6 +385,11 @@ export class SessionHub {
         live.tools.delete(e.toolCallId);
         live.denied.delete(e.toolCallId);
         this.emit(live, { type: "agent.tool.end", toolCallId: id, ...end });
+        return;
+      }
+      case "context": {
+        const { type: _, ...fill } = e;
+        this.emit(live, { type: "agent.context", ...fill });
         return;
       }
       case "run.settled":

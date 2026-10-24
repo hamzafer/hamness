@@ -1,6 +1,6 @@
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
-import type { ToolStatus, TranscriptItem } from "../events/types.ts";
+import type { AgentTotals, ToolStatus, TranscriptItem } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
 
 /**
@@ -171,6 +171,36 @@ export class ChatStore {
          WHERE id = ?`,
       )
       .run(end.status, end.summary, end.durationMs ?? null, Date.now(), id);
+  }
+
+  /** Each agent of a session with its stored tokens and cost, oldest first. */
+  agentTotals(sessionId: string): AgentTotals[] {
+    return this.sql
+      .query<
+        {
+          id: string;
+          kind: "main" | "subagent";
+          name: string | null;
+          tokens: number;
+          cost: number;
+        },
+        [string]
+      >(
+        `SELECT a.id, a.kind, a.name,
+           COALESCE(SUM(mc.input_tokens + mc.output_tokens + mc.cache_read_tokens
+             + mc.cache_write_tokens), 0) AS tokens,
+           COALESCE(SUM(mc.cost_micros), 0) AS cost
+         FROM agents a LEFT JOIN model_calls mc ON mc.agent_id = a.id
+         WHERE a.session_id = ? GROUP BY a.id ORDER BY a.id`,
+      )
+      .all(sessionId)
+      .map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        ...(a.name !== null ? { name: a.name } : {}),
+        tokens: a.tokens,
+        costMicros: a.cost,
+      }));
   }
 
   /** Messages and tool calls in the order they happened (ids are time-ordered UUIDv7). */
