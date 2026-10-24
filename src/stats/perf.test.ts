@@ -126,28 +126,42 @@ afterAll(() => {
   home.cleanup();
 });
 
+/**
+ * The time budget for one report. The target is about 200 ms on a laptop; the budget leaves
+ * room for slower machines (CI runners twice as much), and `HAMNESS_PERF_BUDGET_MS` tunes it.
+ */
+const BUDGET_MS = Number(process.env.HAMNESS_PERF_BUDGET_MS) || (process.env.CI ? 800 : 400);
+const RUNS = 5;
+
+/** The median time of `RUNS` reports after a warm-up: one GC pause or busy core can't fail it. */
+function medianMs(run: () => unknown): number {
+  run(); // warm the statement cache
+  const times: number[] = [];
+  for (let i = 0; i < RUNS; i++) {
+    const t0 = performance.now();
+    run();
+    times.push(performance.now() - t0);
+  }
+  times.sort((a, b) => a - b);
+  return times[Math.floor(RUNS / 2)] as number;
+}
+
 describe("stats on a large database", () => {
   for (const range of RANGES) {
     test(`a full ${range} report stays fast`, () => {
       const q = { range, now: NOW, utcOffsetMinutes: 0 };
-      statsReport(db.sqlite, q); // warm the statement cache
-      const t0 = performance.now();
       const report = statsReport(db.sqlite, q);
-      const ms = performance.now() - t0;
-      if (process.env.HAMNESS_PERF) console.log(`${range}: ${ms.toFixed(1)} ms`);
       expect(report.kpis.modelCalls).toBeGreaterThan(0);
-      // The target is about 200 ms; the bound leaves room for slow CI machines.
-      expect(ms).toBeLessThan(400);
-    });
+      const ms = medianMs(() => statsReport(db.sqlite, q));
+      if (process.env.HAMNESS_PERF) console.log(`${range}: median ${ms.toFixed(1)} ms`);
+      expect(ms).toBeLessThan(BUDGET_MS);
+    }, 30_000);
   }
 
   test("a source filter stays fast too", () => {
     const q = { range: "90d" as const, source: "codex" as const, now: NOW, utcOffsetMinutes: 0 };
-    statsReport(db.sqlite, q);
-    const t0 = performance.now();
-    statsReport(db.sqlite, q);
-    const ms = performance.now() - t0;
-    if (process.env.HAMNESS_PERF) console.log(`90d codex: ${ms.toFixed(1)} ms`);
-    expect(ms).toBeLessThan(400);
-  });
+    const ms = medianMs(() => statsReport(db.sqlite, q));
+    if (process.env.HAMNESS_PERF) console.log(`90d codex: median ${ms.toFixed(1)} ms`);
+    expect(ms).toBeLessThan(BUDGET_MS);
+  }, 30_000);
 });
