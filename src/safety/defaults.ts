@@ -93,6 +93,11 @@ export const DEFAULT_PERMISSION = {
     "mkfs*": "deny",
     "*{curl,wget} * | {sh,bash,zsh,dash,fish} *": "deny",
   },
+  // Loads a skill's instructions (text) into the context.
+  skill: "allow",
+  // Pi's MCP resource tools only list and read. Server tools (`mcp__<server>__*`) stay undecided:
+  // a tool's name says nothing reliable about what it does.
+  "{list_mcp_resources,list_mcp_resource_templates,read_mcp_resource}": "allow",
 } as const;
 
 export function defaultRules(): Rule[] {

@@ -22,3 +22,6 @@
 - **Active time:** the time an agent spent working in a session (sum of its turn durations), as opposed to wall time from first to last event.
 - **Verified rate:** verified tasks over closed tasks (every outcome but `open`) in a range. hamness only: imported history has no tasks.
 - **Cost per verified task:** all hamness spend in a range divided by its verified tasks, so failed and abandoned work counts against it.
+- **Instruction file:** a `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/*.md` or `AGENTS.md` that goes into the system prompt, found the way Claude Code finds it.
+- **Skill:** a folder with a `SKILL.md` (frontmatter plus instructions). Its name and description are in the prompt; the `skill` tool loads the body.
+- **Project MCP server:** an MCP server from a repo's `.mcp.json`. It starts only after the user approves it for that repo (`hamness compat approve`).

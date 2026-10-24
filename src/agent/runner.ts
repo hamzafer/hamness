@@ -7,6 +7,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { type CompatSetup, compatExtensions, compatPrompt } from "../compat/index.ts";
 import type { ContextFill } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
 import type { ModelChoice } from "./models.ts";
@@ -77,8 +78,14 @@ export interface RunnerOptions {
   models: ModelChoice;
   onEvent: (event: RunnerEvent) => void;
   guard?: ToolGuard;
-  /** Load AGENTS.md / CLAUDE.md into the system prompt (Pi's loader). Default true. */
+  /** Load instruction files into the system prompt. Default true. */
   contextFiles?: boolean;
+  /**
+   * Claude Code's instructions, skills and MCP servers for this cwd (`loadCompat`). Replaces Pi's
+   * own context file lookup with Claude Code's, adds the `skill` tool and starts the MCP servers
+   * marked to start. Without it, Pi's lookup applies and there are no skills or MCP servers.
+   */
+  compat?: CompatSetup;
   /** Where Pi writes its session JSONL. In memory when unset. */
   sessionDir?: string;
   /** A Pi session file to continue (its messages become the context). Needs `sessionDir`. */
@@ -132,6 +139,20 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     });
   };
 
+  const compat = opts.compat;
+  let sessionId: string | undefined;
+  const compatFactories = compat
+    ? compatExtensions(compat, {
+        cwd: opts.cwd,
+        agentDir: opts.agentDir,
+        sessionId: () => sessionId,
+      })
+    : [];
+  if (compat?.mcp.servers.some((s) => s.status === "start")) {
+    // Pi's MCP client keeps OAuth tokens in its agent dir, found through this variable.
+    process.env.PI_CODING_AGENT_DIR = opts.agentDir;
+  }
+
   const resourceLoader = new DefaultResourceLoader({
     cwd: opts.cwd,
     agentDir: opts.agentDir,
@@ -141,7 +162,19 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: opts.contextFiles === false,
-    extensionFactories: [safety],
+    ...(compat
+      ? {
+          agentsFilesOverride: () => ({
+            agentsFiles: compat.instructions.files.map((f) => ({
+              path: f.path,
+              content: f.content,
+            })),
+          }),
+          appendSystemPrompt: compatPrompt(compat),
+        }
+      : {}),
+    // Safety first, so its tool_call handler sees every tool the others add.
+    extensionFactories: [safety, ...compatFactories],
   });
   await resourceLoader.reload();
 
@@ -162,6 +195,10 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       retry: { enabled: false },
     }),
   });
+
+  sessionId = session.sessionId;
+  // Emits session_start: extensions start (the MCP servers connect in the background).
+  await session.bindExtensions({});
 
   const contextFill = (): ContextFill | undefined => {
     const u = session.getContextUsage();

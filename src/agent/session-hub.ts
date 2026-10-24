@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { type ClaudeEnv, loadCompat } from "../compat/index.ts";
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
 import type {
@@ -47,7 +48,10 @@ export interface SessionHubOptions {
   /** The safety mode for a cwd, shown to clients (the yolo banner). */
   safetyMode?: (cwd: string) => SafetyMode | undefined;
   publish: (event: AgentEvent) => void;
+  /** Load Claude Code's instructions, skills and MCP servers (ADR 0008). Default true. */
   contextFiles?: boolean;
+  /** Where Claude Code's files are (`HOME`, `CLAUDE_CONFIG_DIR`). Default: the process env. */
+  claude?: ClaudeEnv;
 }
 
 /** Pi's "No API key" error points at its own `/login`; say what works in hamness instead. */
@@ -226,13 +230,22 @@ export class SessionHub {
     const model = `${models.model.provider}/${models.model.id}`;
     // `live` is filled in before the runner can emit anything: events only follow a prompt.
     let live: LiveSession | undefined;
+    const withCompat = this.opts.contextFiles ?? true;
+    const compat = withCompat
+      ? loadCompat({
+          cwd,
+          dataDir: this.opts.dataDir,
+          claude: this.opts.claude ?? { env: process.env },
+        })
+      : undefined;
     const runner = await startAgentRunner({
       cwd,
       agentDir: join(this.opts.dataDir, "pi"),
       sessionDir,
       ...(resume ? { resumeFile: resume.file } : {}),
       models,
-      contextFiles: this.opts.contextFiles ?? true,
+      contextFiles: withCompat,
+      ...(compat ? { compat } : {}),
       onEvent: (e) => live && this.onRunnerEvent(live, e),
       guard: async (call) => {
         if (!live) return { allow: false, reason: "session not ready" };

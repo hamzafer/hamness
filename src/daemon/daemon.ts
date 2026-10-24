@@ -25,7 +25,7 @@ export interface DaemonOptions {
   safety?: SafetyCheck;
   /** Decides calls no rule decides, in `auto` mode (ticket #5). */
   judge?: Judge;
-  /** Load AGENTS.md / CLAUDE.md into sessions. Default true; tests turn it off. */
+  /** Load Claude Code's instructions, skills and MCP servers into sessions. Default true; tests turn it off. */
   contextFiles?: boolean;
 }
 

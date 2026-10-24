@@ -1,6 +1,7 @@
 import { type Env, resolveDataDir } from "../config/paths.ts";
 import { VERSION } from "../version.ts";
 import { auditCommand } from "./commands/audit.ts";
+import { compatCommand } from "./commands/compat.ts";
 import { daemonCommand } from "./commands/daemon.ts";
 import { importCommand } from "./commands/import.ts";
 import { keysCommand } from "./commands/keys.ts";
@@ -26,6 +27,10 @@ const commands: Record<string, { summary: string; run: Command }> = {
   status: { summary: "Report whether the daemon is running", run: statusCommand },
   import: { summary: "Import Claude Code and Codex history (read-only)", run: importCommand },
   audit: { summary: "List recent safety decisions and why they were made", run: auditCommand },
+  compat: {
+    summary: "Show the Claude Code instructions, skills and MCP servers found here",
+    run: compatCommand,
+  },
   stats: { summary: "Summarize sessions, tasks, cost, models and decisions", run: statsCommand },
   tui: { summary: "Chat in the terminal (the default with no command)", run: tuiCommand },
   models: { summary: "List the models you can use (--all: the whole catalog)", run: modelsCommand },
@@ -51,6 +56,7 @@ export const USAGE = [
   "  HAMNESS_HOME   Data dir (database, token, daemon state)",
   "  HAMNESS_PORT   API port for `hamness daemon` (0 picks a free one)",
   "  HAMNESS_MODEL  Model for new sessions, as provider/id (default anthropic/claude-opus-5-5)",
+  "  CLAUDE_CONFIG_DIR  Claude Code's config dir to read (default ~/.claude)",
   "  ANTHROPIC_API_KEY  Claude API key (or `hamness keys set anthropic`); env vars win over the key file",
   "  OPENAI_API_KEY     OpenAI API key (or `hamness keys set openai`, or `hamness login openai`)",
 ].join("\n");
