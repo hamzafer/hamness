@@ -79,7 +79,7 @@ describe("side rail (headless)", () => {
     expect(frame).not.toContain("/work/demo/src");
   });
 
-  test("finished: a check mark, the last tool and the run's final time", async () => {
+  test("finished: a check mark, no current tool and the run's final time", async () => {
     const state = stateAfter([
       [1_000, { type: "agent.status", busy: true }],
       [
@@ -108,7 +108,7 @@ describe("side rail (headless)", () => {
     const frame = await frameOf(state, 99_000);
     const [row] = rowLines(frame);
     expect(row).toMatch(/✓ main +7s/);
-    expect(frame).toMatch(/bash/);
+    expect(frame).not.toMatch(/bash/);
     expect(frame).toMatch(/2k tok +\$0\.025/);
     expect(frame).toMatch(/cost +\$0\.025/);
   });

@@ -16,7 +16,7 @@ export interface RailAgent {
   kind: "main" | "subagent";
   name: string;
   status: RailStatus;
-  /** The newest tool call, kept after it ends so the row says what the agent did last. */
+  /** The newest tool call still running; cleared when it ends and when the run ends. */
   tool?: string;
   /** Basename of that call's file argument, if it has one. */
   file?: string;
@@ -159,6 +159,12 @@ function showTool(agent: RailAgent, tool: string, file: string | undefined, runn
   agent.toolRunning = running;
 }
 
+function clearTool(agent: RailAgent) {
+  delete agent.tool;
+  delete agent.file;
+  agent.toolRunning = false;
+}
+
 export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): void {
   if (!("sessionId" in e) || e.sessionId !== state.sessionId || e.seq <= state.seq) return;
   state.seq = e.seq;
@@ -177,7 +183,7 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
         agent.status = agent.error ? "error" : "done";
         agent.endedAt = now;
         agent.open = [];
-        agent.toolRunning = false;
+        clearTool(agent);
       }
       return;
     case "agent.tool.start":
@@ -187,7 +193,7 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
       agent.open = agent.open.filter((t) => t.id !== e.toolCallId);
       const still = agent.open.at(-1);
       if (still) showTool(agent, still.tool, still.file, true);
-      else agent.toolRunning = false;
+      else clearTool(agent);
       return;
     }
     case "agent.usage":
