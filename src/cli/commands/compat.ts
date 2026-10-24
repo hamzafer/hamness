@@ -6,7 +6,7 @@ import {
   loadCompat,
   revokeProjectServers,
 } from "../../compat/index.ts";
-import { claudeConfigDir } from "../../compat/paths.ts";
+import { claudeDirOf } from "../../compat/paths.ts";
 import type { CliContext } from "../run.ts";
 
 export const COMPAT_USAGE = [
@@ -136,6 +136,6 @@ export async function compatCommand({ args, env, dataDir, io }: CliContext): Pro
     io.out(JSON.stringify(setup, null, 2));
     return 0;
   }
-  report(setup, claudeConfigDir(claude), io.out);
+  report(setup, claudeDirOf(claude), io.out);
   return 0;
 }

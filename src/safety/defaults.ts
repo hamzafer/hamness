@@ -47,6 +47,8 @@ const READ_ONLY = [
 ];
 
 export const DEFAULT_PERMISSION = {
+  // hamness's own task tools (ticket #6). A `prove` command re-run gets its own bash check.
+  "{task_start,task_done,prove}": "allow",
   "{read,grep,find,ls}": {
     "*": "allow",
     ...deny(SECRETS),

@@ -20,11 +20,14 @@ export interface ClaudeEnv {
 
 export const homeOf = (c: ClaudeEnv): string => c.home ?? c.env.HOME ?? homedir();
 
-/** `$CLAUDE_CONFIG_DIR`, else `~/.claude`. */
-export function claudeConfigDir(c: ClaudeEnv): string {
-  const override = c.env.CLAUDE_CONFIG_DIR;
-  return override ? resolve(override) : join(homeOf(c), ".claude");
+/** Claude Code's config dir: `CLAUDE_CONFIG_DIR`, else `~/.claude`. hamness only reads it. */
+export function claudeConfigDir(env: Env = process.env, home: string = homedir()): string {
+  const override = env.CLAUDE_CONFIG_DIR;
+  return override ? resolve(override) : join(home, ".claude");
 }
+
+/** `claudeConfigDir` for a `ClaudeEnv`. */
+export const claudeDirOf = (c: ClaudeEnv): string => claudeConfigDir(c.env, homeOf(c));
 
 /**
  * Claude Code's global state file, which holds user and local-scope MCP servers:
@@ -48,7 +51,7 @@ export function claudeManagedDir(c: ClaudeEnv): string | undefined {
 export function claudeSettingsFiles(c: ClaudeEnv, cwd: string) {
   const managed = claudeManagedDir(c);
   return {
-    user: join(claudeConfigDir(c), "settings.json"),
+    user: join(claudeDirOf(c), "settings.json"),
     project: join(cwd, ".claude", "settings.json"),
     local: join(cwd, ".claude", "settings.local.json"),
     ...(managed ? { managed: join(managed, "managed-settings.json") } : {}),

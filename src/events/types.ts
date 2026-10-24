@@ -1,3 +1,5 @@
+import type { EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
+
 /**
  * Everything the daemon streams to clients over `/v1/events`, and the session shapes its HTTP API returns.
  * Later tickets add task and decision events to this union.
@@ -13,10 +15,19 @@ export interface SessionInfo {
   mode?: SafetyMode;
   /** The session's main agent; events with this `agentId` (or none) are about it. */
   mainAgentId?: string;
+  /** The judge's state in `auto` mode. Absent in other modes. */
+  judge?: JudgeState;
 }
 
 /** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: allow all. */
 export type SafetyMode = "ask" | "auto" | "yolo";
+
+/**
+ * The judge, as `auto` mode sees it: `on`; `paused` for the session after 3 asks in a row;
+ * `over-budget` for the rest of the day; `no-key` when there is no Anthropic API key.
+ * Anything but `on` means undecided calls ask the user.
+ */
+export type JudgeState = "on" | "paused" | "over-budget" | "no-key";
 
 /** A tool call waiting for the user's answer. Answer it with `POST /v1/approvals/:id`. */
 export interface PendingApproval {
@@ -73,6 +84,8 @@ export interface SessionSnapshot {
   agents?: AgentTotals[];
   /** The main agent's last known context fill. */
   context?: ContextFill;
+  /** The session's current task, or its last one. */
+  task?: TaskView;
 }
 
 /** One agent's stored usage. `tokens` adds input, output, cache read and cache write. */
@@ -136,6 +149,8 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
     }
   | ({ type: "agent.context" } & ContextFill)
   | { type: "agent.error"; message: string }
+  /** Something the user should know that is not an error (a hook blocked a prompt, ...). */
+  | { type: "agent.notice"; message: string }
   | { type: "safety.approval.request"; approval: PendingApproval }
   | {
       type: "safety.approval.resolved";
@@ -144,9 +159,33 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
       /** `user` answered, `timeout` ran out, `abort`: the run was stopped. */
       by: "user" | "timeout" | "abort";
     }
+  /** The session's judge changed state (paused, over budget, no key, back on). */
+  | { type: "safety.judge"; state: JudgeState; reason: string }
   /** The session switched models (`provider/id`); the next model call uses it. */
   | { type: "agent.model"; model: string }
+  | TaskEvent
 );
+
+/**
+ * Task events (ticket #6). `task.start` also announces a promotion (the turn's implicit task
+ * got a goal: same id, `implicit: false`). `task.drop`: an implicit turn task that held no
+ * evidence and no edits was removed; it never counts as a task.
+ */
+export type TaskEvent =
+  | { type: "task.start"; task: TaskView }
+  | {
+      type: "task.evidence";
+      taskId: string;
+      evidenceId: string;
+      kind: EvidenceKind;
+      status: Exclude<EvidenceStatus, "pending">;
+      summary: string;
+      /** The task's counts after this result. */
+      evidence: number;
+      passed: number;
+    }
+  | { type: "task.end"; task: TaskView }
+  | { type: "task.drop"; taskId: string };
 
 export type HamnessEvent =
   | { type: "daemon.hello"; version: string; pid: number; schemaVersion: number }

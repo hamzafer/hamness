@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { dataPaths } from "../config/paths.ts";
-import { migrations } from "../db/migrations/index.ts";
+import { LATEST_SCHEMA_VERSION } from "../db/migrations/index.ts";
 import { DaemonAlreadyRunningError, type RunningDaemon, startDaemon } from "./daemon.ts";
 import { getStatus } from "./status.ts";
 
@@ -46,7 +46,7 @@ describe("daemon HTTP API", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.ok).toBe(true);
     expect(body.pid).toBe(process.pid);
-    expect(body.schemaVersion).toBe(migrations.length);
+    expect(body.schemaVersion).toBe(LATEST_SCHEMA_VERSION);
   });
 
   test("unknown routes are 404 once authorized", async () => {
@@ -172,7 +172,7 @@ describe("getStatus", () => {
       running: true,
       pid: process.pid,
       url: d.url,
-      schemaVersion: migrations.length,
+      schemaVersion: LATEST_SCHEMA_VERSION,
     });
   });
 

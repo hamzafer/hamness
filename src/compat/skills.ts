@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { ancestorsDown, type ClaudeEnv, claudeConfigDir, repoRoot } from "./paths.ts";
+import { ancestorsDown, type ClaudeEnv, claudeDirOf, repoRoot } from "./paths.ts";
 
 /**
  * Skills in Claude Code's format (`<folder>/<name>/SKILL.md` with YAML frontmatter,
@@ -124,7 +124,7 @@ export function discoverSkills(opts: DiscoverSkillsOptions): SkillsResult {
         .reverse()
     : [cwd];
   const folders: Array<[string, CompatSkill["scope"]]> = [
-    [join(claudeConfigDir(opts.claude), "skills"), "user"],
+    [join(claudeDirOf(opts.claude), "skills"), "user"],
     [join(opts.dataDir, "skills"), "user"],
     ...projectDirs.map((d): [string, CompatSkill["scope"]] => [
       join(d, ".claude", "skills"),

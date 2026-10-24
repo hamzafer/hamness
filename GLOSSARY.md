@@ -5,9 +5,10 @@
 - **Session:** a conversation with a main agent in one working directory.
 - **Agent:** one running Pi agent loop. The main agent belongs to a session; **subagents** are started by an agent, often in the background.
 - **Worktree:** a git worktree a subagent can run in, so parallel agents don't edit the same checkout.
-- **Task:** the unit of work and of accounting: goal, agents, cost, tokens, time, evidence, outcome.
-- **Outcome:** a task's final state: `open`, `verified`, `unverified`, `overridden` (the user accepted it without proof), `abandoned`.
-- **Evidence:** a claim attached with the `prove` tool (`command`, `ci`, `file`, `url`), checked by a **checker**.
+- **Task:** the unit of work and of accounting: goal, agents, cost, tokens, time, evidence, outcome. Opened by the agent (`task_start`) or the user (`/task`).
+- **Implicit task:** the task hamness opens for a user turn when none is open, named after the prompt. `task_start` or `/task` during the turn **promotes** it to an explicit task. At turn end it closes by the proof gate, or is **dropped** (no task at all) when it had no evidence and no file edits (ADR 0012).
+- **Outcome:** a task's final state: `open`, `verified`, `unverified`, `overridden` (the user accepted it without proof, `/override`), `abandoned` (the user dropped it, `/abandon`).
+- **Evidence:** a claim attached with the `prove` tool (`command`, `ci`, `file`, `url`), checked by a **checker**. Its result is `passed`, `failed` or `error` (could not check: blocked by safety, aborted, `gh` missing); only `passed` counts.
 - **Checker:** hamness code that verifies a piece of evidence on its own. Only checkers write evidence results.
 - **Proof gate:** the rule that a task becomes `verified` only with at least one passing piece of evidence.
 - **Rule:** an allow / ask / deny pattern for a tool call.
@@ -16,6 +17,7 @@
 - **Approval:** a tool call that asks, waiting for the user's answer: allow once, allow always (saves a rule to the project config) or deny. No answer before the timeout is a deny.
 - **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything).
 - **Audit log:** the stored list of decisions.
+- **Hook:** a command from Claude Code's settings that hamness runs on an event (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop). A project's hooks run only once its repo is **trusted**.
 - **Side rail:** the always-on right pane in the TUI showing agents, shells, checks, the current task and gauges.
 - **Source:** where a session came from: `hamness`, `claude-code` or `codex` (imported).
 - **Import:** reading Claude Code or Codex history, read-only and incremental, into the same tables. Each source file has an **import cursor** (byte offset, size, mtime) so a re-run reads only new lines.

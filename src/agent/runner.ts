@@ -6,7 +6,9 @@ import {
   type ExtensionFactory,
   SessionManager,
   SettingsManager,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
 import { type CompatSetup, compatExtensions, compatPrompt } from "../compat/index.ts";
 import type { ContextFill } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
@@ -24,6 +26,24 @@ export interface ToolCallRequest {
   args: Record<string, unknown>;
 }
 
+/**
+ * A hamness tool the agent can call (task_start, prove, ...), in hamness's own terms; the
+ * runner turns it into a Pi tool. It passes the same guard as every other tool. Throwing
+ * gives the model an error result with the message.
+ */
+export interface AgentToolSpec {
+  name: string;
+  label: string;
+  description: string;
+  /** A TypeBox object schema. */
+  parameters: TSchema;
+  execute(
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+  ): Promise<{ text: string; details?: Record<string, unknown> }>;
+}
+
 export type ToolVerdict = { allow: true } | { allow: false; reason: string };
 
 /**
@@ -34,6 +54,14 @@ export type ToolVerdict = { allow: true } | { allow: false; reason: string };
 export type ToolGuard = (call: ToolCallRequest) => Promise<ToolVerdict>;
 
 export const allowAllTools: ToolGuard = async () => ({ allow: true });
+
+/**
+ * Runs after a tool call finished (Claude Code's PostToolUse hooks). Text it returns is added
+ * to the tool's result, so the model reads it next to the output.
+ */
+export type AfterTool = (
+  call: ToolCallRequest & { output: string; isError: boolean },
+) => Promise<string | undefined>;
 
 export type RunnerEvent =
   | { type: "assistant.start"; key: string }
@@ -78,6 +106,7 @@ export interface RunnerOptions {
   models: ModelChoice;
   onEvent: (event: RunnerEvent) => void;
   guard?: ToolGuard;
+  afterTool?: AfterTool;
   /** Load instruction files into the system prompt. Default true. */
   contextFiles?: boolean;
   /**
@@ -90,6 +119,10 @@ export interface RunnerOptions {
   sessionDir?: string;
   /** A Pi session file to continue (its messages become the context). Needs `sessionDir`. */
   resumeFile?: string;
+  /** hamness's own tools, next to Pi's built-ins. */
+  tools?: AgentToolSpec[];
+  /** Text added to the end of the system prompt. */
+  systemPromptAppend?: string[];
 }
 
 export interface AgentRunner {
@@ -100,6 +133,8 @@ export interface AgentRunner {
   readonly model: string;
   /** Pi's session id: the name of its JSONL file, used to resume after a restart. */
   readonly piSessionId: string;
+  /** Pi's session file, when it keeps one on disk. */
+  readonly sessionFile: string | undefined;
   /** Switches the model for the next call. Throws when the provider has no credentials. */
   setModel(model: Model<Api>): Promise<void>;
   /** How full the context window is now (Pi's estimate), or undefined when Pi can't tell. */
@@ -122,6 +157,21 @@ function summarize(result: unknown): string {
   return text.length > SUMMARY_MAX ? `${text.slice(0, SUMMARY_MAX - 1)}…` : text;
 }
 
+function toPiTool(spec: AgentToolSpec): ToolDefinition {
+  return {
+    name: spec.name,
+    label: spec.label,
+    description: spec.description,
+    parameters: spec.parameters,
+    // Task tools change shared state (the open task); one at a time.
+    executionMode: "sequential",
+    async execute(toolCallId, params, signal) {
+      const out = await spec.execute(toolCallId, (params ?? {}) as Record<string, unknown>, signal);
+      return { content: [{ type: "text", text: out.text }], details: out.details ?? {} };
+    },
+  };
+}
+
 export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner> {
   const guard = opts.guard ?? allowAllTools;
   const emit = opts.onEvent;
@@ -137,9 +187,26 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       emit({ type: "tool.denied", toolCallId: event.toolCallId, reason: verdict.reason });
       return { block: true, reason: verdict.reason };
     });
+    const after = opts.afterTool;
+    if (after) {
+      pi.on("tool_result", async (event) => {
+        const extra = await after({
+          toolCallId: event.toolCallId,
+          tool: event.toolName,
+          args: (event.input ?? {}) as Record<string, unknown>,
+          output: textOf(event.content),
+          isError: event.isError,
+        });
+        return extra ? { content: [...event.content, { type: "text", text: extra }] } : undefined;
+      });
+    }
   };
 
   const compat = opts.compat;
+  const appendSystemPrompt = [
+    ...(opts.systemPromptAppend ?? []),
+    ...(compat ? compatPrompt(compat) : []),
+  ];
   let sessionId: string | undefined;
   const compatFactories = compat
     ? compatExtensions(compat, {
@@ -170,11 +237,11 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
               content: f.content,
             })),
           }),
-          appendSystemPrompt: compatPrompt(compat),
         }
       : {}),
     // Safety first, so its tool_call handler sees every tool the others add.
     extensionFactories: [safety, ...compatFactories],
+    ...(appendSystemPrompt.length ? { appendSystemPrompt } : {}),
   });
   await resourceLoader.reload();
 
@@ -185,6 +252,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     model: opts.models.model,
     thinkingLevel: "medium",
     resourceLoader,
+    customTools: (opts.tools ?? []).map(toPiTool),
     sessionManager: !opts.sessionDir
       ? SessionManager.inMemory(opts.cwd)
       : opts.resumeFile
@@ -291,6 +359,9 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     },
     get piSessionId() {
       return session.sessionId;
+    },
+    get sessionFile() {
+      return session.sessionFile;
     },
     async setModel(next) {
       await session.setModel(next);

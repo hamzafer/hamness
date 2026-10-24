@@ -9,11 +9,14 @@ import { discoverSkills, renderSkill, type SkillsResult, skillsPrompt } from "./
 /**
  * Claude Code compatibility: reads CLAUDE.md, AGENTS.md, skills and MCP config in Claude Code's
  * formats, so a user's setup works in hamness as it is. Never writes to them (ADR 0008).
- * Hooks (ticket #9) reuse `paths.ts`.
  */
 
 export { approveProjectServers, revokeProjectServers } from "./approvals.ts";
+export type { ClaudeHooks, HookSession, PreToolOutcome } from "./hooks.ts";
+export { createClaudeHooks, isProjectTrusted, trustProject } from "./hooks.ts";
 export type { ClaudeEnv } from "./paths.ts";
+export { claudeConfigDir } from "./paths.ts";
+export { claudeToolName, toClaudeCall } from "./tools.ts";
 
 export interface CompatSetup {
   instructions: InstructionsResult;

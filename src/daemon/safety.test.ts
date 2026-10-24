@@ -357,4 +357,77 @@ describe("safety in the daemon", () => {
     await settled();
     expect(judged).toBe(0);
   });
+  test("auto mode with no key: the snapshot says so, undecided calls ask, one event", async () => {
+    fake.script([bashCall("mkdir a"), bashCall("mkdir b"), { text: "ok" }]);
+    const { s, prompt, settled, approval, answer, decisions, log } = await start();
+    expect(s.session.judge).toBe("no-key");
+    await prompt("go");
+    await answer((await approval(1)).approval.id, "allow-once");
+    await answer((await approval(2)).approval.id, "allow-once");
+    await settled();
+    const ev = log.ofType("safety.judge");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ sessionId: s.session.id, state: "no-key" });
+    expect(decisions()[0]).toMatchObject({ verdict: "ask", source: "mode" });
+    expect(decisions()[0]?.reason).toContain("no Anthropic API key");
+  });
+
+  test("ask mode shows no judge state", async () => {
+    userConfig({ mode: "ask" });
+    const { s } = await start();
+    expect(s.session.judge).toBeUndefined();
+  });
+
+  test("3 judge asks in a row pause the judge for the session; POST .../judge resumes it", async () => {
+    let judged = 0;
+    fake.script([
+      bashCall("mkdir j1"),
+      bashCall("mkdir j2"),
+      bashCall("mkdir j3"),
+      bashCall("mkdir j4"),
+      { text: "ok" },
+    ]);
+    const { s, call, prompt, settled, approval, answer, decisions, log } = await start(async () => {
+      judged++;
+      return { verdict: "ask", reason: "not sure", category: "unclear", costMicros: 3 };
+    });
+    expect(s.session.judge).toBe("on");
+    await prompt("go");
+    for (let n = 1; n <= 4; n++) await answer((await approval(n)).approval.id, "deny");
+    await settled();
+    expect(judged).toBe(3);
+    expect(log.ofType("safety.judge")).toMatchObject([{ state: "paused" }]);
+    const asks = decisions().filter((d) => d.verdict === "ask");
+    expect(asks.map((d) => d.source)).toEqual(["judge", "judge", "judge", "mode"]);
+    expect(asks[3]?.reason).toContain("paused");
+
+    const res = await call("POST", `/v1/sessions/${s.session.id}/judge`, { paused: false });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ judge: "on" });
+    // The event comes over the socket, maybe after the response.
+    await log.waitFor(() => log.ofType("safety.judge").length === 2);
+    expect(log.ofType("safety.judge").at(-1)).toMatchObject({ state: "on" });
+    const again = await call("GET", `/v1/sessions/${s.session.id}`);
+    expect(((await again.json()) as SessionSnapshot).session.judge).toBe("on");
+    expect((await call("POST", "/v1/sessions/nope/judge", { paused: false })).status).toBe(404);
+    expect((await call("POST", `/v1/sessions/${s.session.id}/judge`, {})).status).toBe(400);
+  });
+
+  test("judge decisions store cost and latency", async () => {
+    fake.script([bashCall("mkdir costed"), { text: "ok" }]);
+    const { prompt, settled, d } = await start(async () => {
+      await Bun.sleep(20);
+      return { verdict: "allow", reason: "fine", category: "none", costMicros: 42 };
+    });
+    await prompt("go");
+    await settled();
+    const row = d.db.sqlite
+      .query<{ cost_micros: number; latency_ms: number; category: string }, []>(
+        "SELECT cost_micros, latency_ms, category FROM decisions WHERE source = 'judge'",
+      )
+      .get();
+    expect(row?.cost_micros).toBe(42);
+    expect(row?.latency_ms).toBeGreaterThanOrEqual(15);
+    expect(row?.category).toBe("none");
+  });
 });

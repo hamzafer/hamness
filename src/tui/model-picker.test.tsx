@@ -49,6 +49,10 @@ function fakeClient(opts: { failSwitch?: string } = {}) {
     abort: async () => {},
     models: async () => MODELS,
     answerApproval: async () => {},
+    resumeJudge: async () => "on",
+    task: async () => {
+      throw new Error("no task actions in this test");
+    },
     setModel: async (_id, model) => {
       switches.push(model);
       if (opts.failSwitch) throw new Error(opts.failSwitch);

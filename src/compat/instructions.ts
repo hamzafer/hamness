@@ -4,7 +4,7 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
   ancestorsDown,
   type ClaudeEnv,
-  claudeConfigDir,
+  claudeDirOf,
   claudeManagedDir,
   homeOf,
   repoRoot,
@@ -98,7 +98,7 @@ function readJson(path: string): Record<string, unknown> | undefined {
 function instructionMode(claude: ClaudeEnv): InstructionMode {
   const managed = claudeManagedDir(claude);
   const files = [
-    join(claudeConfigDir(claude), "settings.json"),
+    join(claudeDirOf(claude), "settings.json"),
     ...(managed ? [join(managed, "managed-settings.json")] : []),
   ];
   let mode: InstructionMode = "claude-md-or-agents-md";
@@ -323,7 +323,7 @@ export function findInstructions(opts: FindInstructionsOptions): InstructionsRes
   if (managed) loader.add(join(managed, "CLAUDE.md"), "managed");
   if (mode === "managed-only") return { files: loader.files, skipped: loader.skipped, mode };
 
-  const userDir = claudeConfigDir(claude);
+  const userDir = claudeDirOf(claude);
   loader.add(join(userDir, "CLAUDE.md"), "user");
   for (const rule of ruleFiles(join(userDir, "rules"))) loader.add(rule, "user", true);
 
