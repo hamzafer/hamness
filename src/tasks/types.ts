@@ -45,6 +45,11 @@ export interface TaskView {
   endedAt?: number;
   /** Wall time, start to end (or to now while open). */
   durationMs: number;
+  /** The git branch the task started on, when the session is in a repo. */
+  branch?: string;
+  /** From the task's passing CI evidence: the PR and the commit CI ran on. */
+  prUrl?: string;
+  commitSha?: string;
   /** Why the gate said no; only on the view `task_done` returns for an unverified task. */
   unverifiedReason?: string;
 }

@@ -483,3 +483,45 @@ describe("implicit tasks and checks that could not run (R-L3)", () => {
     expect(db.sqlite.query("SELECT count(*) AS n FROM evidence").get()).toEqual({ n: 0 });
   });
 });
+
+describe("tasks link to their branch, commit and PR (P-L4)", () => {
+  test("the branch is recorded at task start; passing CI fills the PR and commit", async () => {
+    const sha = "b".repeat(40);
+    const t = new SessionTasks({
+      ...optsFor(),
+      branchOf: () => "feature/x",
+      gh: async (args) => {
+        const a = args.join(" ");
+        if (a.startsWith("repo view")) return ok(JSON.stringify({ nameWithOwner: "acme/app" }));
+        if (a.startsWith("pr view"))
+          return ok(
+            JSON.stringify({
+              headRefName: "feature/x",
+              headRefOid: sha,
+              url: "https://github.com/acme/app/pull/9",
+            }),
+          );
+        if (a.startsWith("pr checks"))
+          return ok(JSON.stringify([{ name: "ci", state: "SUCCESS", bucket: "pass" }]));
+        return { exitCode: 1, stdout: "", stderr: "unexpected" };
+      },
+      git: async (args) => (args[0] === "rev-parse" ? ok("feature/x\n") : ok("")),
+    });
+    const task = t.start("ship it");
+    expect(task.branch).toBe("feature/x");
+    const r = await t.prove({ kind: "ci", pr: "9" });
+    expect(r.result.status).toBe("passed");
+    expect(t.view()).toMatchObject({
+      branch: "feature/x",
+      prUrl: "https://github.com/acme/app/pull/9",
+      commitSha: sha,
+    });
+  });
+
+  test("outside a git repo there is no branch", () => {
+    const t = new SessionTasks({ ...optsFor(), branchOf: () => undefined });
+    expect(t.start("x").branch).toBeUndefined();
+  });
+});
+
+const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: "" });

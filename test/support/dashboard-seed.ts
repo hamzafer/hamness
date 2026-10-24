@@ -63,6 +63,13 @@ export function seedDemoHistory(sqlite: Database, now: number): void {
           goal,
           implicit: rand() < 0.15,
           reason: outcome === "overridden" ? "Checked by hand in the browser" : null,
+          branch: `feature/task-${day}-${i}-${t}`,
+          ...(outcome === "verified"
+            ? {
+                prUrl: `https://github.com/acme/app/pull/${100 + day}`,
+                commitSha: `${(day * 7919 + i * 31 + t).toString(16).padStart(7, "0")}${"0".repeat(33)}`,
+              }
+            : {}),
         });
         if (outcome === "verified" || outcome === "unverified" || outcome === "overridden") {
           seed.evidence({

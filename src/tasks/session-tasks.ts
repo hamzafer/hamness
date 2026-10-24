@@ -30,11 +30,28 @@ export interface SessionTasksOptions {
   /** `git` for CI evidence (is the commit in HEAD's history?). Default: the real one. */
   git?: GitRunner;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  /** The git branch checked out in `cwd`, recorded when a task opens. Default: asks git. */
+  branchOf?: (cwd: string) => string | undefined;
   /** The user config's `proof.allowPrivateUrls`, read on each `prove url`. Default false. */
   allowPrivateUrls?: () => boolean;
 }
 
 const GOAL_MAX = 200;
+
+/** The branch checked out in `cwd`; undefined outside a repo or on a detached HEAD. */
+export function gitBranch(cwd: string): string | undefined {
+  try {
+    const r = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const name = r.stdout.toString().trim();
+    return r.exitCode === 0 && name && name !== "HEAD" ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function goalOf(text: string): string {
   const line = text.replace(/\s+/g, " ").trim();
@@ -83,7 +100,7 @@ export class SessionTasks {
   beginTurn(prompt: string): void {
     const open = this.openTask();
     if (open) return;
-    this.current = this.store.open(this.opts.sessionId, goalOf(prompt), true);
+    this.current = this.store.open(this.opts.sessionId, goalOf(prompt), true, this.branch());
     this.emitStart(this.current);
   }
 
@@ -128,7 +145,7 @@ export class SessionTasks {
       id = open.id;
       this.store.promote(id, goalOf(text));
     } else {
-      id = this.store.open(this.opts.sessionId, goalOf(text), false);
+      id = this.store.open(this.opts.sessionId, goalOf(text), false, this.branch());
     }
     this.current = id;
     return this.emitStart(id);
@@ -198,6 +215,13 @@ export class SessionTasks {
         ...(opts.signal ? { signal: opts.signal } : {}),
       },
     );
+    if (parsed.claim.kind === "ci" && result.status === "passed") {
+      const { prUrl, commitSha } = result.details;
+      this.store.setLinks(open.id, {
+        ...(typeof prUrl === "string" ? { prUrl } : {}),
+        ...(typeof commitSha === "string" ? { commitSha } : {}),
+      });
+    }
     const counts = this.store.evidenceCounts(open.id);
     this.opts.emit({
       type: "task.evidence",
@@ -209,6 +233,10 @@ export class SessionTasks {
       ...counts,
     });
     return { evidenceId, result, task: this.store.view(open.id) as TaskView };
+  }
+
+  private branch(): string | undefined {
+    return (this.opts.branchOf ?? gitBranch)(this.opts.cwd);
   }
 
   private openTask() {

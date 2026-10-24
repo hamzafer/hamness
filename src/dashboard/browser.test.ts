@@ -131,9 +131,13 @@ suite("dashboard in a browser", () => {
     );
     await page.locator(".rowbtn").first().click();
     await page.locator("tr.detail:not([hidden]) .evidence li").first().waitFor();
-    expect(await page.locator("tr.detail:not([hidden])").textContent()).toContain(
-      "bun test exited 0",
-    );
+    const detail = (await page.locator("tr.detail:not([hidden])").textContent()) ?? "";
+    expect(detail).toContain("bun test exited 0");
+    // P-L4: the task's branch, commit and PR.
+    expect(detail).toContain("Branch: feature/task-");
+    expect(detail).toContain("Commit: ");
+    const pr = page.locator("tr.detail:not([hidden]) a.pr");
+    expect(await pr.getAttribute("href")).toStartWith("https://github.com/acme/app/pull/");
     await page.screenshot({ path: join(shots, "tasks-light.png"), fullPage: true });
     await page.close();
   });

@@ -14,6 +14,9 @@ interface TaskRow {
   outcome_reason: string | null;
   started_at: number;
   ended_at: number | null;
+  branch: string | null;
+  commit_sha: string | null;
+  pr_url: string | null;
 }
 
 /** Tools whose calls change files: a turn that used them did work worth proving. */
@@ -30,16 +33,27 @@ export class TaskStore {
     return this.db.sqlite;
   }
 
-  open(sessionId: string, goal: string, implicit: boolean): string {
+  open(sessionId: string, goal: string, implicit: boolean, branch?: string): string {
     const id = newId();
     const now = Date.now();
     this.sql
       .query(
-        `INSERT INTO tasks (id, session_id, goal, implicit, outcome, started_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`,
+        `INSERT INTO tasks (id, session_id, goal, implicit, outcome, branch, started_at, created_at,
+           updated_at)
+         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
       )
-      .run(id, sessionId, goal, implicit ? 1 : 0, now, now, now);
+      .run(id, sessionId, goal, implicit ? 1 : 0, branch ?? null, now, now, now);
     return id;
+  }
+
+  /** The PR and commit from the task's passing CI evidence (the latest wins). */
+  setLinks(id: string, links: { prUrl?: string; commitSha?: string }): void {
+    this.sql
+      .query(
+        `UPDATE tasks SET pr_url = COALESCE(?, pr_url), commit_sha = COALESCE(?, commit_sha)
+         WHERE id = ?`,
+      )
+      .run(links.prUrl || null, links.commitSha || null, id);
   }
 
   /** An implicit task becomes an explicit one with the agent's or user's goal. */
@@ -234,7 +248,8 @@ export class TaskStore {
   view(id: string, now = Date.now()): TaskView | undefined {
     const t = this.sql
       .query<TaskRow, [string]>(
-        `SELECT id, goal, implicit, outcome, summary, outcome_reason, started_at, ended_at
+        `SELECT id, goal, implicit, outcome, summary, outcome_reason, started_at, ended_at,
+           branch, commit_sha, pr_url
          FROM tasks WHERE id = ?`,
       )
       .get(id);
@@ -261,6 +276,9 @@ export class TaskStore {
       startedAt: started,
       ...(t.ended_at !== null ? { endedAt: t.ended_at } : {}),
       durationMs: Math.max(0, (t.ended_at ?? now) - started),
+      ...(t.branch ? { branch: t.branch } : {}),
+      ...(t.pr_url ? { prUrl: t.pr_url } : {}),
+      ...(t.commit_sha ? { commitSha: t.commit_sha } : {}),
     };
   }
 }

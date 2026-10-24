@@ -73,8 +73,28 @@ describe("listTasks", () => {
         endedAt: NOW - 2 * HOUR,
         durationMs: HOUR,
         evidence: { checked: 2, passed: 1, pending: 1 },
+        branch: null,
+        commitSha: null,
+        prUrl: null,
       },
     ]);
+  });
+
+  test("a task links to its branch, commit and PR (P-L4)", () => {
+    const s = seed.session({ source: "hamness", at: NOW - DAY });
+    seed.task({
+      sessionId: s,
+      at: NOW - HOUR,
+      outcome: "verified",
+      branch: "feature/parser",
+      commitSha: "abc1234",
+      prUrl: "https://github.com/acme/app/pull/7",
+    });
+    expect(listTasks(db.sqlite, { ...base, range: "7d" }).rows[0]).toMatchObject({
+      branch: "feature/parser",
+      commitSha: "abc1234",
+      prUrl: "https://github.com/acme/app/pull/7",
+    });
   });
 
   test("an open task runs until now", () => {
