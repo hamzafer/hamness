@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import type { HamnessDb } from "../db/open.ts";
 import type { AgentEvent, SessionInfo, SessionSnapshot, TranscriptItem } from "../events/types.ts";
+import { costMicros } from "../models/prices.ts";
 import { allowAll, redactArgs, type SafetyCheck } from "../safety/index.ts";
-import type { ModelChoice } from "./models.ts";
-import { costMicros } from "./pricing.ts";
+import { keyFilePath, type ModelChoice } from "./models.ts";
 import { type AgentRunner, type RunnerEvent, startAgentRunner } from "./runner.ts";
 import { ChatStore } from "./store.ts";
 
@@ -23,6 +23,15 @@ export interface SessionHubOptions {
   safety?: SafetyCheck;
   publish: (event: AgentEvent) => void;
   contextFiles?: boolean;
+}
+
+/** Pi's "No API key" error points at its own `/login`; say what works in hamness instead. */
+function explainError(message: string, dataDir: string): string {
+  const missing = /No API key found for ([\w-]+)/.exec(message);
+  if (!missing) return message;
+  const provider = missing[1] ?? "anthropic";
+  const envVar = `${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+  return `No API key for ${provider}. Set ${envVar}, or put {"${provider}": "<key>"} in ${keyFilePath(dataDir)} (mode 0600), then restart the daemon.`;
 }
 
 export class SessionBusyError extends Error {
@@ -90,7 +99,8 @@ export class SessionHub {
     this.emit(live, { type: "agent.message.end", messageId, role: "user", text });
     this.setBusy(live, true);
     live.runner.prompt(text).catch((err: unknown) => {
-      this.emit(live, { type: "agent.error", message: (err as Error).message ?? String(err) });
+      const message = (err as Error).message ?? String(err);
+      this.emit(live, { type: "agent.error", message: explainError(message, this.opts.dataDir) });
       this.setBusy(live, false);
     });
     return messageId;
@@ -249,7 +259,7 @@ export class SessionHub {
           messageId: reply.rowId,
           role: "assistant",
           text: e.text,
-          ...(e.error ? { error: e.error } : {}),
+          ...(e.error ? { error: explainError(e.error, this.opts.dataDir) } : {}),
         });
         this.emit(live, {
           type: "agent.usage",

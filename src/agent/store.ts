@@ -1,7 +1,7 @@
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
 import type { ToolStatus, TranscriptItem } from "../events/types.ts";
-import type { TokenUsage } from "./pricing.ts";
+import type { TokenUsage } from "../models/prices.ts";
 
 /**
  * The chat rows of the hamness database: sessions, agents, messages, tool calls and model calls.

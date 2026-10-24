@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelChoice } from "../../src/agent/models.ts";
-import type { TokenUsage } from "../../src/agent/pricing.ts";
+import type { TokenUsage } from "../../src/models/prices.ts";
 
 /** One scripted model reply: text, optional tool calls, and the usage it reports. */
 export interface FakeReply {
@@ -32,7 +32,11 @@ const DEFAULT_USAGE: TokenUsage = { input: 10, output: 5, cacheRead: 0, cacheWri
  * (the faux provider estimates usage itself, which tests can't pin down).
  * The model id is a real Claude id so the price table applies.
  */
-export async function fakeModel(dir: string, modelId = "claude-opus-5-5"): Promise<FakeModel> {
+export async function fakeModel(
+  dir: string,
+  modelId = "claude-opus-5-5",
+  opts: { noKey?: boolean } = {},
+): Promise<FakeModel> {
   const core = createFauxCore({ provider: "fake", models: [{ id: modelId }] });
   const usages: TokenUsage[] = [];
 
@@ -61,7 +65,9 @@ export async function fakeModel(dir: string, modelId = "claude-opus-5-5"): Promi
   const provider = createProvider({
     id: "fake",
     name: "Fake",
-    auth: { apiKey: { name: "Fake", resolve: async () => ({ auth: {} }) } },
+    auth: {
+      apiKey: { name: "Fake", resolve: async () => (opts.noKey ? undefined : { auth: {} }) },
+    },
     models: core.models,
     api: { stream: fixUsage(core.stream), streamSimple: fixUsage(core.streamSimple) },
   } as unknown as Parameters<typeof createProvider>[0]);

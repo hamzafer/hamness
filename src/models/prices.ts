@@ -1,9 +1,12 @@
 /**
- * A minimal model price table for estimating the cost of imported history.
+ * The model price table: cost of imported history and of hamness's own model calls.
  *
- * Prices are USD per million tokens, copied from Pi's model catalog
- * (`@earendil-works/pi-ai`). When hamness depends on Pi, replace this table
- * with `getModel(provider, id).cost` and keep `estimateCostMicros`.
+ * Prices are USD per million tokens (so tokens times price is micro-dollars), copied from Pi's
+ * model catalog (`@earendil-works/pi-ai` 1.4.0, `providers/data/*.json`). The Claude rows were
+ * checked on 2026-10-24 against Anthropic's published prices (input, output, cache read; a
+ * 5-minute cache write is 1.25x input); `PRICE_NOTES` lists where the sources disagree.
+ *
+ * Not modeled yet (ticket #13): 1-hour cache writes (2x input), batch and fast-mode prices.
  */
 
 export interface Price {
@@ -73,19 +76,38 @@ const PRICES: Record<string, ModelPrice> = {
   "gpt-5-mini": p(0.25, 2, 0.025, 0),
 };
 
-/** Strips Claude Code's context suffix (`[1m]`) and a dated snapshot suffix (`-20251001`). */
+/** Prices we could not confirm in a second source. Ticket #13 resolves these. */
+export const PRICE_NOTES: Readonly<Record<string, string>> = {
+  "claude-sonnet-5-5":
+    "cache read: Pi's catalog says $0.10/MTok, Anthropic's model docs say $0.20/MTok (unverified)",
+  "claude-haiku-5-5": "tier cache read/write above 100K come from Pi's catalog only (unverified)",
+};
+
+/**
+ * Strips a `provider/` prefix (`anthropic/claude-opus-5-5`), Claude Code's context suffix
+ * (`[1m]`) and a dated snapshot suffix (`-20251001`).
+ */
 function normalize(model: string): string {
-  return model.replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "");
+  return model
+    .slice(model.lastIndexOf("/") + 1)
+    .replace(/\[[^\]]*\]$/, "")
+    .replace(/-\d{8}$/, "");
 }
 
 export function priceFor(model: string): ModelPrice | undefined {
-  return PRICES[normalize(model)];
+  const id = normalize(model);
+  return Object.hasOwn(PRICES, id) ? PRICES[id] : undefined;
 }
 
 /** Estimated cost of one model call in micro-dollars. 0 when the model has no price. */
 export function estimateCostMicros(model: string, usage: TokenUsage): number {
+  return costMicros(model, usage) ?? 0;
+}
+
+/** Cost of one model call in micro-dollars, or undefined when the model has no price. */
+export function costMicros(model: string, usage: TokenUsage): number | undefined {
   const price = priceFor(model);
-  if (!price) return 0;
+  if (!price) return undefined;
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
   let rate: Price = price;
   for (const tier of price.tiers ?? []) if (prompt > tier.inputTokensAbove) rate = tier;

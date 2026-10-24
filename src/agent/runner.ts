@@ -7,8 +7,8 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { TokenUsage } from "../models/prices.ts";
 import type { ModelChoice } from "./models.ts";
-import type { TokenUsage } from "./pricing.ts";
 
 /**
  * The agent runner: one Pi agent loop (ADR 0002) behind a small interface.

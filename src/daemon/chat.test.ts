@@ -97,6 +97,26 @@ describe("sessions API", () => {
 });
 
 describe("a prompt, end to end with a fake model", () => {
+  test("with no API key, the reply says how to set one", async () => {
+    fake = await fakeModel(home.dir, "claude-opus-5-5", { noKey: true });
+    fake.script([{ text: "never sent" }]);
+    const { call, log } = await start();
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    await call("POST", `/v1/sessions/${s.session.id}/prompt`, { text: "hi" });
+    await log.waitFor(settled(s.session.id));
+    const messages = log.events.flatMap((e) =>
+      e.type === "agent.message.end" && e.error
+        ? [e.error]
+        : e.type === "agent.error"
+          ? [e.message]
+          : [],
+    );
+    expect(messages.join(" ")).toContain("FAKE_API_KEY");
+    expect(messages.join(" ")).toContain("keys.json");
+    expect(messages.join(" ")).not.toContain("/login");
+    expect(fake.calls).toBe(0);
+  });
+
   test("streams the reply and a compact tool call over the event stream", async () => {
     writeFileSync(join(work, "notes.txt"), "the word is fig\n");
     fake.script([
