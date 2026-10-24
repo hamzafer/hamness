@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { ChatStore } from "../agent/store.ts";
@@ -481,6 +488,37 @@ describe("file evidence the agent wrote itself is weak (S-H4)", () => {
     const file = await t.prove({ kind: "file", path: "shot.png" });
     expect(file.result.details.weak).toBeUndefined();
     expect(t.done("done").outcome).toBe("verified");
+  });
+});
+
+describe("a re-run may cd only inside the session folder (V-M3)", () => {
+  test("cd into a folder inside runs; cd out of it, home, - or through a link out is refused", async () => {
+    mkdirSync(join(home.dir, "web"));
+    const outside = tempHome();
+    symlinkSync(outside.dir, join(home.dir, "out"));
+    const t = tasks();
+    t.start("check");
+    expect((await t.prove({ kind: "command", command: `cd web && ${PASS}` })).result.status).toBe(
+      "passed",
+    );
+    for (const cd of [
+      "cd /tmp",
+      "cd ..",
+      "cd web/../..",
+      "cd",
+      "cd ~",
+      "cd -",
+      "cd out",
+      "pushd /",
+    ]) {
+      await expect(t.prove({ kind: "command", command: `${cd} && ${PASS}` })).rejects.toThrow(
+        "the session folder",
+      );
+    }
+    await expect(
+      t.prove({ kind: "command", command: `sh -c 'cd .. && ${PASS.replaceAll("'", '"')}'` }),
+    ).rejects.toThrow("outside the session folder");
+    outside.cleanup();
   });
 });
 

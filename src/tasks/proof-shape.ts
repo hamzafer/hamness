@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { unwrap } from "../safety/rules.ts";
 import { parseCommand, type Segment } from "../safety/shell.ts";
 
@@ -153,4 +155,70 @@ function segmentProblem(seg: Segment, depth: number): string | boolean {
 export function hasPipe(command: string): boolean {
   const parsed = parseCommand(command.trim());
   return parsed.ok && parsed.operators.includes("|");
+}
+
+/** Resolves symlinks in the longest existing part of a path (the rest may not exist yet). */
+function realNearest(path: string): string {
+  const tail: string[] = [];
+  let cur = path;
+  for (;;) {
+    try {
+      return join(realpathSync(cur), ...tail.reverse());
+    } catch {
+      const up = dirname(cur);
+      if (up === cur) return path;
+      tail.push(basename(cur));
+      cur = up;
+    }
+  }
+}
+
+function within(path: string, root: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !rel.startsWith(sep));
+}
+
+/**
+ * Why `command` leaves the session folder with `cd` / `pushd` (V-M3), or undefined. A check
+ * run elsewhere is not about this work, so `cd` must land inside `cwd` (symlinks resolved);
+ * `cd` alone, `cd ~` and `cd -` are refused. A shell's -c string is looked into.
+ */
+export function cdOutsideProblem(
+  command: string,
+  cwd: string,
+  home: string,
+  depth = 0,
+): string | undefined {
+  const parsed = parseCommand(command.trim().replace(/[;\s]+$/, ""));
+  if (!parsed.ok) return undefined; // proofCommandProblem refuses it
+  const root = realNearest(resolve(cwd));
+  let dir = root;
+  for (const seg of parsed.segments) {
+    const { words } = unwrap(seg.words);
+    const [head = "", ...rest] = words;
+    if (head === "cd" || head === "pushd") {
+      const target = rest.find((w) => !/^-[LPe@]+$/.test(w));
+      const shown = `\`${words.join(" ")}\``;
+      if (target === undefined || target === "-" || /^[+-]\d+$/.test(target)) {
+        return `${shown} leaves the session folder: a check must run inside the session folder`;
+      }
+      const expanded =
+        target === "~" ? home : target.startsWith("~/") ? join(home, target.slice(2)) : target;
+      const next = realNearest(resolve(dir, expanded));
+      if (!within(next, root)) {
+        return `${shown} goes outside the session folder: a check must run inside it`;
+      }
+      dir = next;
+      continue;
+    }
+    if (SHELLS.has(head)) {
+      const flag = rest.findIndex((w) => /^-[a-z]*c[a-z]*$/.test(w));
+      const inner = flag >= 0 ? rest[flag + 1] : undefined;
+      if (inner !== undefined && depth < 2) {
+        const problem = cdOutsideProblem(inner, dir, home, depth + 1);
+        if (problem) return problem;
+      }
+    }
+  }
+  return undefined;
 }

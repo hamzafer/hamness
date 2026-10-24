@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { HamnessDb } from "../db/open.ts";
 import type { TaskEvent } from "../events/types.ts";
 import type { GuardedCall, SafetyVerdict } from "../safety/index.ts";
@@ -5,6 +6,7 @@ import { type GhRunner, type GitRunner, runGit } from "./checkers/index.ts";
 import { parseClaim } from "./claims.ts";
 import { decideGate, type GateResult } from "./gate.ts";
 import { proveClaim } from "./proof.ts";
+import { cdOutsideProblem } from "./proof-shape.ts";
 import { TaskStore } from "./store.ts";
 import type { CheckResult, EvidenceClaim, TaskView } from "./types.ts";
 
@@ -206,6 +208,10 @@ export class SessionTasks {
   ): Promise<{ evidenceId: string; result: CheckResult; task: TaskView }> {
     const parsed = parseClaim(input);
     if (!parsed.ok) throw new TaskStateError(parsed.error);
+    if (parsed.claim.kind === "command") {
+      const problem = cdOutsideProblem(parsed.claim.command, this.opts.cwd, homedir());
+      if (problem) throw new TaskStateError(`not proof: ${problem}`);
+    }
     const open = this.requireOpen("call task_start first, then prove");
     const { evidenceId, result } = await proveClaim(
       this.opts.db,
