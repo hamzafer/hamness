@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { hookSources, isProjectTrusted, projectRoot, trustProject } from "../../compat/hooks.ts";
-import { claudeConfigDir } from "../../compat/paths.ts";
+import { claudeConfigDir, claudeManagedDir, managedDirOption } from "../../compat/paths.ts";
 import type { CliContext } from "../run.ts";
 
 export const HOOKS_USAGE = [
@@ -25,7 +25,10 @@ export async function hooksCommand({ args, env, dataDir, io }: CliContext): Prom
     return 0;
   }
   const cwd = resolve(first ?? process.cwd());
-  const sources = hookSources({ claudeDir, dataDir }, cwd);
+  const sources = hookSources(
+    { claudeDir, dataDir, ...managedDirOption(claudeManagedDir({ env })) },
+    cwd,
+  );
   if (sources.length === 0) {
     io.out("No Claude Code hooks found.");
     return 0;

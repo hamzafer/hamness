@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { defaultModelCredential } from "../../agent/models.ts";
 import { hookSources } from "../../compat/hooks.ts";
 import { loadCompat } from "../../compat/index.ts";
-import { claudeConfigDir } from "../../compat/paths.ts";
+import { claudeConfigDir, claudeManagedDir, managedDirOption } from "../../compat/paths.ts";
 import { getStatus } from "../../daemon/status.ts";
 import { loadSafetyConfig } from "../../safety/config.ts";
 import { judgeFromKeys } from "../../safety/judge/index.ts";
@@ -138,10 +138,10 @@ export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<n
 
   try {
     const setup = loadCompat({ cwd, dataDir, claude: { env } });
-    const hooks = hookSources({ claudeDir: claudeConfigDir(env), dataDir }, cwd).reduce(
-      (n, s) => n + (s.runs ? s.hooks.length : 0),
-      0,
-    );
+    const hooks = hookSources(
+      { claudeDir: claudeConfigDir(env), dataDir, ...managedDirOption(claudeManagedDir({ env })) },
+      cwd,
+    ).reduce((n, s) => n + (s.runs ? s.hooks.length : 0), 0);
     const waiting = setup.mcp.servers.filter((s) => s.status === "needs-approval").length;
     checks.push({
       level: "info",

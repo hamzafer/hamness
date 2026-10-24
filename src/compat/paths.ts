@@ -47,6 +47,10 @@ export function claudeManagedDir(c: ClaudeEnv): string | undefined {
   return undefined;
 }
 
+/** `{ managedDir }` when there is one, for options that take it. */
+export const managedDirOption = (dir: string | undefined): { managedDir?: string } =>
+  dir ? { managedDir: dir } : {};
+
 /** Settings files in Claude Code's order, lowest precedence first. */
 export function claudeSettingsFiles(c: ClaudeEnv, cwd: string) {
   const managed = claudeManagedDir(c);

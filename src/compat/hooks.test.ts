@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeWorktree } from "../../test/support/files.ts";
 import { hookFixture } from "../../test/support/hooks.ts";
@@ -176,10 +176,52 @@ describe("project hooks and trust", () => {
   test("trust is per repo and kept in hamness's config, next to other settings", async () => {
     mkdirSync(join(work, ".git"));
     mkdirSync(join(work, "sub"));
+    fx.settings(join(work, ".claude"), { Stop: [{}] });
     trustProject(dataDir, join(work, "sub"));
     expect(isProjectTrusted(dataDir, work)).toBe(true);
     const config = JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8"));
-    expect(config.hooks.trustedProjects).toEqual([work]);
+    expect(Object.keys(config.trust.projects)).toEqual([work]);
+    expect(config.trust.projects[work].hooks).toHaveLength(1);
+  });
+
+  test("trust covers the hooks as they were: an added or edited hook waits for trust again (S-H6)", async () => {
+    fx.settings(join(work, ".claude"), { PreToolUse: [{ matcher: "Bash" }] });
+    trustProject(dataDir, work);
+    await hooks.preToolUse(session(), bash("ls"));
+    expect(fx.calls()).toHaveLength(1);
+
+    // The agent (or a pull) rewrites the file: the trusted hook still runs, the new one doesn't.
+    fx.settings(join(work, ".claude"), {
+      PreToolUse: [{ matcher: "Bash" }, { matcher: "Bash", command: "touch pwned" }],
+    });
+    expect(isProjectTrusted(dataDir, work)).toBe(false);
+    await hooks.preToolUse(session(), bash("ls"));
+    expect(fx.calls()).toHaveLength(2);
+    expect(existsSync(join(work, "pwned"))).toBe(false);
+    const out = await hooks.sessionStart(session(), { source: "startup" });
+    expect(out.notice).toContain("hamness trust");
+
+    fx.settings(join(work, ".claude"), { PreToolUse: [{ matcher: "Read" }] });
+    await hooks.preToolUse(session(), { tool: "read", args: { path: "a" }, toolUseId: "t2" });
+    expect(fx.calls()).toHaveLength(2);
+  });
+
+  test("from a subfolder, the repo root's .claude/settings.json hooks are found (R-M2)", async () => {
+    mkdirSync(join(work, ".git"));
+    const sub = join(work, "pkg");
+    mkdirSync(sub);
+    fx.settings(join(work, ".claude"), { PreToolUse: [{}] });
+    trustProject(dataDir, sub);
+    await hooks.preToolUse({ ...session(), cwd: sub }, bash("ls"));
+    expect(fx.calls()).toHaveLength(1);
+  });
+
+  test("managed (organization) hooks always run (R-M2)", async () => {
+    const managed = join(work, "..", "managed");
+    fx.settings(managed, { PreToolUse: [{}] }, "managed-settings.json");
+    const withManaged = createClaudeHooks({ claudeDir, dataDir, managedDir: managed });
+    await withManaged.preToolUse(session(), bash("ls"));
+    expect(fx.calls()).toHaveLength(1);
   });
 
   test("a subagent's worktree runs the hooks its trusted main repo runs (R-H1)", async () => {
@@ -197,7 +239,7 @@ describe("project hooks and trust", () => {
   test("sessionStart says when project hooks are held back", async () => {
     fx.settings(join(work, ".claude"), { Stop: [{}] });
     const out = await hooks.sessionStart(session(), { source: "startup" });
-    expect(out.notice).toContain("hamness hooks trust");
+    expect(out.notice).toContain("hamness trust");
   });
 });
 
