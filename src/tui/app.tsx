@@ -4,7 +4,8 @@ import { createSignal, For, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient } from "../client/client.ts";
-import type { SessionSnapshot, TranscriptItem } from "../events/types.ts";
+import type { PendingApproval, SessionSnapshot, TranscriptItem } from "../events/types.ts";
+import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
 import { applyEvent, argSummary, initialState, STATUS_GLYPH } from "./chat-state.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
@@ -91,7 +92,7 @@ export function App(props: AppProps) {
     if (key.ctrl && key.name === "c") props.onExit?.();
     // Ctrl+R: the side rail full screen, and back.
     if (key.ctrl && key.name === "r") setRailFull((full) => !full);
-    if (key.name === "escape" && state.session.busy && !picker()) {
+    if (key.name === "escape" && state.session.busy && !picker() && !state.approvals.length) {
       props.client.abort(state.session.id).catch(() => {});
     }
   });
@@ -106,6 +107,9 @@ export function App(props: AppProps) {
         paddingLeft={1}
         paddingRight={1}
       >
+        <Show when={state.session.mode === "yolo"}>
+          <YoloBanner />
+        </Show>
         <box flexDirection="row" height={1}>
           <text fg={COLORS.muted}>
             hamness · {state.session.cwd} · {state.session.model}
@@ -134,13 +138,26 @@ export function App(props: AppProps) {
             />
           )}
         </Show>
+        <Show when={state.approvals[0]}>
+          {(first: () => PendingApproval) => (
+            <ApprovalPrompt
+              approval={first()}
+              queued={state.approvals.length}
+              onAnswer={(decision) =>
+                props.client
+                  .answerApproval(first().id, decision)
+                  .catch((err: Error) => setState("notice", err.message))
+              }
+            />
+          )}
+        </Show>
         <box border height={3}>
           <input
             ref={(r: InputRenderable) => {
               input = r;
             }}
             placeholder="Ask hamness… (Enter sends, Esc stops, /model switches, Ctrl+C leaves)"
-            focused={!picker()}
+            focused={!picker() && state.approvals.length === 0}
             onSubmit={(v: unknown) => submit(typeof v === "string" ? v : (input?.value ?? ""))}
           />
         </box>

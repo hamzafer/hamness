@@ -1,5 +1,6 @@
 import type {
   HamnessEvent,
+  PendingApproval,
   SessionInfo,
   SessionSnapshot,
   TranscriptItem,
@@ -13,6 +14,8 @@ export interface ChatState {
   items: TranscriptItem[];
   /** Client-side problems (a refused prompt, a lost connection). */
   notice?: string;
+  /** Tool calls waiting for the user, oldest first. */
+  approvals: PendingApproval[];
 }
 
 export function initialState(snapshot: SessionSnapshot): ChatState {
@@ -20,6 +23,7 @@ export function initialState(snapshot: SessionSnapshot): ChatState {
     session: { ...snapshot.session },
     seq: snapshot.seq,
     items: structuredClone(snapshot.items),
+    approvals: structuredClone(snapshot.approvals ?? []),
   };
 }
 
@@ -86,6 +90,12 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       if (e.durationMs !== undefined) t.durationMs = e.durationMs;
       return;
     }
+    case "safety.approval.request":
+      if (!state.approvals.some((a) => a.id === e.approval.id)) state.approvals.push(e.approval);
+      return;
+    case "safety.approval.resolved":
+      state.approvals = state.approvals.filter((a) => a.id !== e.approvalId);
+      return;
     case "agent.error":
       state.notice = e.message;
       return;

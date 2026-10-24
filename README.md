@@ -26,6 +26,7 @@ bun src/cli/main.ts import   # read Claude Code and Codex history (read-only)
 bun src/cli/main.ts models   # models you can switch to, with prices (--all: whole catalog)
 bun src/cli/main.ts keys set anthropic   # store an API key (hidden prompt, mode 0600)
 bun src/cli/main.ts login openai         # sign in with a ChatGPT plan (through Pi)
+bun src/cli/main.ts audit    # recent safety decisions and why (--session, --limit, --json)
 ```
 
 Data lives in `~/Library/Application Support/hamness` on macOS and `$XDG_DATA_HOME/hamness` (default `~/.local/share/hamness`) on Linux. Set `HAMNESS_HOME` to use another dir and `HAMNESS_PORT` to change the API port (default 7357).
@@ -34,12 +35,35 @@ Chat uses Claude (`anthropic/claude-opus-5-5`; `HAMNESS_MODEL=provider/id` sets 
 
 Sessions keep running when the TUI closes; reopening it in the same dir reattaches. After a daemon restart, the dir's last session resumes with its transcript and context (from Pi's session file in `<data dir>/pi/sessions`).
 
+### Safety
+
+Every tool call passes allow / ask / deny rules before it runs (ADR 0006). Defaults: reads are allowed except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys), writes inside the session's dir are allowed, bash asks except for a small read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...), `rm -rf` and force pushes ask, `sudo` and `curl | sh` are denied. Compound commands (`&&`, `;`, `|`, subshells, `$(...)`) are checked part by part, and the strictest part wins.
+
+Add rules under `safety` in `<data dir>/config.json` (yours) or `.hamness/config.json` at the repo root (the project's). Patterns are globs, the last matching rule wins, and a project rule can allow what nothing else decides but never loosens an `ask` or `deny`:
+
+```json
+{
+  "safety": {
+    "mode": "auto",
+    "approvalTimeoutSec": 900,
+    "permission": {
+      "bash": { "npm test *": "allow", "npm publish *": "deny" },
+      "{write,edit}": { "$CWD/dist/**": "deny" },
+      "mcp__github__*": "ask"
+    }
+  }
+}
+```
+
+Modes (user config only): `ask` asks you about anything no rule decides, `auto` (the default) will ask a judge model first (until then it asks you), `yolo` allows everything and says so in a red banner. When a call asks, the TUI shows it above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. With no answer it is denied after the timeout. Every decision is stored with its source and reason; `hamness audit` lists them.
+
 ### TUI keys
 
 | Key | Does |
 |---|---|
 | Enter | send the prompt |
-| Esc | stop the running prompt |
+| Esc | stop the running prompt (deny, when an approval shows) |
+| y / a / n | answer an approval: allow once, allow always, deny |
 | Ctrl+R | open the side rail full screen, and back |
 | Ctrl+C | leave the TUI (the session keeps running) |
 
