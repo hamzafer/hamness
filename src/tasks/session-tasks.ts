@@ -1,7 +1,7 @@
 import type { HamnessDb } from "../db/open.ts";
 import type { TaskEvent } from "../events/types.ts";
 import type { GuardedCall, SafetyVerdict } from "../safety/index.ts";
-import type { GhRunner } from "./checkers/index.ts";
+import { type GhRunner, type GitRunner, runGit } from "./checkers/index.ts";
 import { parseClaim } from "./claims.ts";
 import { decideGate, type GateResult } from "./gate.ts";
 import { proveClaim } from "./proof.ts";
@@ -27,6 +27,8 @@ export interface SessionTasksOptions {
   /** The session's safety check; a `prove` command re-run passes it as a `bash` call. */
   safety: (call: GuardedCall) => Promise<SafetyVerdict>;
   gh: GhRunner;
+  /** `git` for CI evidence (is the commit in HEAD's history?). Default: the real one. */
+  git?: GitRunner;
   fetch: (input: string, init?: RequestInit) => Promise<Response>;
   /** The user config's `proof.allowPrivateUrls`, read on each `prove url`. Default false. */
   allowPrivateUrls?: () => boolean;
@@ -190,6 +192,7 @@ export class SessionTasks {
         writtenByAgent: (path) => this.store.writtenPaths(open.id, this.opts.cwd).has(path),
         safety: this.opts.safety,
         gh: this.opts.gh,
+        git: this.opts.git ?? runGit,
         fetch: this.opts.fetch,
         allowPrivateUrls: this.opts.allowPrivateUrls?.() ?? false,
         ...(opts.signal ? { signal: opts.signal } : {}),
