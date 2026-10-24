@@ -167,6 +167,22 @@ describe("TUI chat layout (headless)", () => {
     await s.waitForFrame((f) => !f.includes("thinking"));
   });
 
+  test("at a normal width the header path and the input hint fit, cut only between words", async () => {
+    const deep = {
+      ...snapshot,
+      session: { ...snapshot.session, cwd: "/home/user/developer/ai/playground/claude-code-mods" },
+    };
+    setup = await testRender(
+      () => <App client={fakeClient().client} snapshot={deep} home="/home/user" />,
+      { width: 100, height: 24 },
+    );
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toMatch(/hamness · ~\/…\/[\w/-]*claude-code-mods · anthropic\/claude-opus-5-5/);
+    const hint = frame.split("\n").find((l) => l.includes("Ask hamness")) ?? "";
+    expect(hint).toMatch(/Ask hamness…[^│]*\)/);
+  });
+
   test("ignores events for other sessions and events the snapshot already has", async () => {
     const fake = fakeClient();
     const s = await render(fake.client);

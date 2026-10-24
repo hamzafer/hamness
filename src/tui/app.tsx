@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { KeyBinding, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
@@ -19,6 +20,7 @@ import {
   waitingForModel,
 } from "./chat-state.ts";
 import { COMMAND_WORDS, HelpPanel } from "./help.tsx";
+import { promptHint, shortPath } from "./layout.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
 import { applyRailEvent, initialRail } from "./rail-state.ts";
@@ -50,6 +52,8 @@ export interface AppProps {
   onExit?: () => void;
   /** Clock for the rail's elapsed times; tests pass a fake one. */
   now?: () => number;
+  /** The home folder, shown as `~` in the header. Default: the user's. */
+  home?: string;
 }
 
 export function App(props: AppProps) {
@@ -78,6 +82,18 @@ export function App(props: AppProps) {
   );
 
   const dims = useTerminalDimensions();
+  /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
+  const chatWidth = () => Math.max(20, dims().width - RAIL_WIDTH - 2);
+  const home = props.home ?? homedir();
+  /** The cwd in the header's room left after its other parts. */
+  const headerPath = () => {
+    const judge = state.session.mode === "auto" && state.session.judge;
+    const rest =
+      `hamness ·  · ${state.session.model}`.length +
+      (judge ? ` · ${JUDGE_LABEL[judge]}`.length : 0) +
+      (state.session.busy ? " · working…".length : 0);
+    return shortPath(state.session.cwd, home, chatWidth() - rest);
+  };
   let input: TextareaRenderable | undefined;
   /** Rows the prompt box shows: it grows with its lines, up to `PROMPT_MAX_ROWS`. */
   const [promptRows, setPromptRows] = createSignal(1);
@@ -171,7 +187,7 @@ export function App(props: AppProps) {
         </Show>
         <box flexDirection="row" height={1}>
           <text fg={COLORS.muted}>
-            hamness · {state.session.cwd} · {state.session.model}
+            hamness · {headerPath()} · {state.session.model}
           </text>
           <Show when={state.session.mode === "auto" && state.session.judge}>
             {(judge: () => JudgeState) => (
@@ -230,7 +246,7 @@ export function App(props: AppProps) {
             ref={(r: TextareaRenderable) => {
               input = r;
             }}
-            placeholder="Ask hamness… (Enter sends, Shift+Enter or Ctrl+J new line, Esc stops, /help lists commands, Ctrl+C leaves)"
+            placeholder={promptHint(chatWidth() - 2)}
             focused={!picker() && state.approvals.length === 0}
             keyBindings={PROMPT_KEYS}
             height={promptRows()}
