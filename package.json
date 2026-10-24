@@ -15,11 +15,11 @@
     "format": "biome check --write ."
   },
   "engines": {
-    "bun": ">=1.2.23"
+    "bun": ">=1.4.4"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.2",
-    "@types/bun": "1.2.23",
+    "@types/bun": "1.4.4",
     "typescript": "7.0.2"
   }
 }

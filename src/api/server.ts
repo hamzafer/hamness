@@ -35,7 +35,7 @@ function isLocalHost(req: Request): boolean {
 }
 
 export function startApiServer(opts: ApiOptions): ApiServer {
-  const server: Server = Bun.serve({
+  const server: Server<undefined> = Bun.serve({
     hostname: API_HOSTNAME,
     port: opts.port,
     fetch(req, srv) {
