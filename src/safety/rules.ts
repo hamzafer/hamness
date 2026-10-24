@@ -34,6 +34,11 @@ export interface EvalContext {
   dataDir: string;
   /** Resolves symlinks, so a link can't smuggle a path past the rules. Optional (tests). */
   realpath?: (path: string) => string;
+  /**
+   * Expands a shell glob (an absolute pattern) to the paths it matches now; undefined when it
+   * can't (too many matches). Without it, a command with a glob is never allowed outright.
+   */
+  glob?: (pattern: string) => string[] | undefined;
 }
 
 export interface Evaluation {
@@ -447,6 +452,13 @@ function checkSegment(
       if (!path || path.startsWith("-")) continue;
       const p = checkPath("read", path, rules, ctx);
       if (p.verdict === "deny") parts.push(p);
+      if (isGlob(word)) parts.push(...checkGlob(word, rules, ctx));
+    }
+
+    // A recursive read (`grep -r`, `rg`, `find`) over a folder that holds denied paths asks.
+    for (const root of recursiveRoots(words, ctx)) {
+      const denied = deniedInside("read", root, rules, ctx);
+      if (denied) parts.push(recursivePart(shown, denied));
     }
   }
 
@@ -465,6 +477,91 @@ function checkSegment(
   }
   return parts;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Globs and recursive reads
+
+const isGlob = (word: string) => /[*?[]/.test(word) || /\{[^}]*,[^}]*\}/.test(word);
+
+/** A glob word: every path it matches must pass the secret check, or the command can't be allowed. */
+function checkGlob(word: string, rules: Rule[], ctx: EvalContext): Part[] {
+  const pattern = shellPath(word, ctx);
+  const matches = ctx.glob?.(pattern);
+  if (!matches) {
+    return [
+      {
+        verdict: "undecided",
+        reason: `\`${word}\` is a glob ${ctx.glob ? "with too many matches to check" : "hamness can't expand here"}, so no rule can allow it`,
+        suggestion: null,
+      },
+    ];
+  }
+  return matches
+    .map((m) => checkResolved("read", m, rules, ctx))
+    .filter((p) => p.verdict === "deny");
+}
+
+const ALWAYS_RECURSIVE = new Set(["rg", "find", "fd", "tree", "ag", "du"]);
+/** Commands whose first word after the flags is a pattern, not a path. */
+const PATTERN_FIRST = new Set(["grep", "egrep", "fgrep", "rg", "ag", "fd"]);
+
+/** The folders a recursive read command walks; empty when it does not recurse. */
+function recursiveRoots(words: string[], ctx: EvalContext): string[] {
+  const head = basename(words[0] ?? "");
+  const rest = words.slice(1);
+  const flags = rest.filter((w) => w.startsWith("-"));
+  const recursive =
+    ALWAYS_RECURSIVE.has(head) ||
+    (["grep", "egrep", "fgrep"].includes(head) &&
+      flags.some((f) => /^-[A-Za-z]*[rR]/.test(f) || /^--(dereference-)?recursive$/.test(f))) ||
+    (head === "ls" && flags.some((f) => /^-[A-Za-z]*R/.test(f) || f === "--recursive"));
+  if (!recursive) return [];
+  const operands = rest.filter((w) => !w.startsWith("-") && !w.includes("$(…)"));
+  const paths = PATTERN_FIRST.has(head) ? operands.slice(1) : operands;
+  return (paths.length > 0 ? paths : ["."]).map((p) => shellPath(p, ctx));
+}
+
+/** Unescapes a pattern's fixed start (before any wildcard): the folder or file it names. */
+function fixedPrefix(pattern: string): string {
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i] as string;
+    if (c === "\\") {
+      out += pattern[++i] ?? "";
+      continue;
+    }
+    if ("*?{[".includes(c)) break;
+    out += c;
+  }
+  return out.replace(/\/+$/, "");
+}
+
+/** A denied path under `root` (a deny rule's fixed start inside it), for recursive reads. */
+function deniedInside(
+  tool: string,
+  root: string,
+  rules: Rule[],
+  ctx: EvalContext,
+): string | undefined {
+  const roots = [root];
+  const real = ctx.realpath?.(root);
+  if (real && real !== root) roots.push(real);
+  for (const rule of rules) {
+    if (rule.verdict !== "deny" || !matchCommand(rule.tool, tool)) continue;
+    const prefix = fixedPrefix(expandPathPattern(rule.pattern, ctx));
+    if (!prefix.startsWith("/")) continue; // `**/.env`: anywhere, checked file by file
+    for (const r of roots) {
+      if (r === "/" || prefix === r || prefix.startsWith(`${r}/`)) return prefix;
+    }
+  }
+  return undefined;
+}
+
+const recursivePart = (what: string, denied: string): Part => ({
+  verdict: "ask",
+  reason: `\`${what}\` searches a folder that holds ${denied}, which is denied`,
+  suggestion: null,
+});
 
 // ---------------------------------------------------------------------------------------------
 
@@ -489,6 +586,17 @@ export function evaluate(
     parts = path
       ? [checkToolPath(call.tool, path, rules, ctx)]
       : [{ verdict: "ask", reason: `${call.tool} without a path`, suggestion: null }];
+    // grep and find walk the folder: one that holds denied paths asks.
+    if (path && (call.tool === "grep" || call.tool === "find")) {
+      let root: string | undefined;
+      try {
+        root = piToolPath(path, ctx.cwd, ctx.home);
+      } catch {
+        root = undefined;
+      }
+      const denied = root && deniedInside(call.tool, root, rules, ctx);
+      if (denied) parts.push(recursivePart(`${call.tool} ${path}`, denied));
+    }
   } else {
     const rule = lookup(rules, call.tool, (p) => p === "*" || p === "**");
     parts = [

@@ -93,6 +93,32 @@ function realpathNearest(path: string): string {
   }
 }
 
+/** More matches than this and a glob is not checked (the command is not allowed outright). */
+const GLOB_LIMIT = 500;
+
+/**
+ * Expands an absolute shell glob to the paths it matches now, as bash would without
+ * `globstar` (`**` is `*`), dot files included. Undefined past `GLOB_LIMIT` matches.
+ */
+export function expandGlob(pattern: string): string[] | undefined {
+  const parts = pattern.replaceAll("**", "*").split("/");
+  let fixed = 0;
+  while (fixed < parts.length - 1 && !/[*?[{]/.test(parts[fixed] as string)) fixed++;
+  const root = parts.slice(0, fixed).join("/") || "/";
+  const rest = parts.slice(fixed).join("/");
+  const out: string[] = [];
+  try {
+    const glob = new Bun.Glob(rest);
+    for (const match of glob.scanSync({ cwd: root, dot: true, onlyFiles: false, absolute: true })) {
+      out.push(match);
+      if (out.length > GLOB_LIMIT) return undefined;
+    }
+  } catch {
+    // The folder is missing or unreadable: nothing matches.
+  }
+  return out;
+}
+
 const ruleLabel = (r: Rule) => `${r.layer}: ${r.tool} ${r.pattern}`;
 
 export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
@@ -150,6 +176,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       home,
       dataDir: opts.dataDir,
       realpath: realpathNearest,
+      glob: expandGlob,
     });
     const ruleOf = evaluation.rule ? { rule: ruleLabel(evaluation.rule) } : {};
     // Reasons quote the command, so they are redacted like the args.

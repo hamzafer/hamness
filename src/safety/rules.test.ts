@@ -428,3 +428,54 @@ describe("commands by path and odd forms (S-M3, S-L1)", () => {
     }
   });
 });
+
+describe("globs and recursive reads (S-M1, S-M2)", () => {
+  /** A fake filesystem for glob expansion: these files exist. */
+  const files = ["/home/u/.ssh/id_rsa", "/work/proj/.env", "/work/proj/a.ts", "/work/proj/b.ts"];
+  const glob = (pattern: string) => files.filter((f) => new Bun.Glob(pattern).match(f));
+  const withGlob: EvalContext = { ...ctx, glob };
+
+  test("a glob that expands to a secret is denied", () => {
+    for (const command of [
+      "cat ~/.ss?/id_rsa",
+      "cat ~/.ssh/id_rs[a]",
+      "cat .en?",
+      "tail -c +1 .en*",
+    ]) {
+      expect([command, verdict(bash(command, defaults, withGlob))]).toEqual([command, "deny"]);
+    }
+  });
+
+  test("a glob over ordinary files keeps the command's own verdict", () => {
+    expect(verdict(bash("cat *.ts", defaults, withGlob))).toBe("allow");
+  });
+
+  test("without a way to expand globs, a glob is never allowed outright", () => {
+    expect(verdict(bash("cat *.ts"))).toBe("undecided");
+    expect(verdict(bash("ls"))).toBe("allow");
+  });
+
+  test("a glob that can't be expanded (too many matches) is not allowed outright", () => {
+    const c: EvalContext = { ...ctx, glob: () => undefined };
+    expect(verdict(bash("cat /*/*", defaults, c))).toBe("undecided");
+  });
+
+  test("a recursive read over a folder that holds secrets asks", () => {
+    expect(verdict(bash("grep -r KEY ~"))).toBe("ask");
+    expect(verdict(bash("grep -R KEY /home"))).toBe("ask");
+    expect(verdict(bash("rg KEY /home/u"))).toBe("ask");
+    expect(verdict(bash("find ~ -name notes"))).toBe("ask");
+    expect(verdict(bash("ls -laR /home/u"))).toBe("ask");
+    expect(verdict(tool("grep", { pattern: "KEY", path: "~" }))).toBe("ask");
+    expect(verdict(tool("find", { pattern: "*", path: "/" }))).toBe("ask");
+    expect(verdict(tool("grep", { pattern: "x", path: "/data" }))).toBe("ask");
+  });
+
+  test("recursive reads inside the workspace stay allowed", () => {
+    expect(verdict(bash("grep -rn TODO src"))).toBe("allow");
+    expect(verdict(bash("grep KEY ~/notes.txt"))).toBe("allow");
+    expect(verdict(tool("grep", { pattern: "TODO" }))).toBe("allow");
+    expect(verdict(tool("find", { pattern: "*.ts", path: "src" }))).toBe("allow");
+    expect(verdict(tool("ls", { path: "/home/u" }))).toBe("allow");
+  });
+});
