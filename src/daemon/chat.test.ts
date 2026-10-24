@@ -228,6 +228,35 @@ describe("a prompt, end to end with a fake model", () => {
     expect(orphans).toEqual([{ n: 0 }]);
   });
 
+  test("stores redacted message text and tool summaries, and streams redacted summaries", async () => {
+    const secret = `sk-ant-${"x".repeat(30)}`;
+    writeFileSync(join(work, "env.txt"), `API_KEY=${secret}\n`);
+    fake.script([
+      { tools: [{ name: "read", args: { path: "env.txt" } }] },
+      { text: `The key is ${secret}.` },
+    ]);
+    const { d, call, log } = await start();
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    const id = s.session.id;
+    await call("POST", `/v1/sessions/${id}/prompt`, { text: `use ${secret}` });
+    await log.waitFor(settled(id));
+
+    const stored = JSON.stringify(
+      d.db.sqlite
+        .query(
+          "SELECT content FROM messages WHERE session_id = ?1 UNION ALL " +
+            "SELECT result_summary FROM tool_calls WHERE session_id = ?1 UNION ALL " +
+            "SELECT goal FROM tasks WHERE session_id = ?1",
+        )
+        .all(id),
+    );
+    expect(stored).toContain("[redacted]");
+    expect(stored).not.toContain(secret);
+    const [toolEnd] = log.ofType("agent.tool.end");
+    expect(toolEnd?.summary).toContain("[redacted]");
+    expect(toolEnd?.summary).not.toContain(secret);
+  });
+
   test("a finished run adds its time to the session, so stats show active and wall time", async () => {
     fake.route(async () => {
       await Bun.sleep(30);

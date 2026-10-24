@@ -20,6 +20,7 @@ import {
   type ApprovalRequest,
   allowAll,
   redactArgs,
+  redactText,
   type SafetyCheck,
 } from "../safety/index.ts";
 import { type GhRunner, runGh } from "../tasks/checkers/index.ts";
@@ -220,8 +221,9 @@ export class SessionHub {
     if (!live) return undefined;
     if (live.busy) throw new SessionBusyError();
 
-    live.tasks.beginTurn(text);
-    const messageId = this.store.addMessage(this.ids(live), "user", text);
+    // Stored redacted (message and task goal); the live stream echoes the prompt as typed.
+    live.tasks.beginTurn(redactText(text));
+    const messageId = this.store.addMessage(this.ids(live), "user", redactText(text));
     this.emit(live, { type: "agent.message.start", messageId, role: "user" });
     this.emit(live, { type: "agent.message.end", messageId, role: "user", text });
     this.setBusy(live, live, true);
@@ -947,7 +949,7 @@ export class SessionHub {
         if (e.error) agent.lastError = explainModelError(e.error, this.opts.dataDir, e.provider);
         else delete agent.lastError;
         if (agent === live) live.lastReply = e.text;
-        this.store.setMessageContent(reply.rowId, e.text);
+        this.store.setMessageContent(reply.rowId, redactText(e.text));
         const priced = costMicros(e.model, e.usage);
         const cost = priced ?? Math.round(e.piCostUsd * 1_000_000);
         const modelCallId = this.store.addModelCall(this.ids(live, agent), {
@@ -1000,7 +1002,7 @@ export class SessionHub {
               : e.isError
                 ? ("error" as const)
                 : ("ok" as const),
-          summary: reason ?? e.summary,
+          summary: redactText(reason ?? e.summary),
           ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
         };
         this.store.finishToolCall(id, end);
