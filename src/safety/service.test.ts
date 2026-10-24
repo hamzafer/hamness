@@ -223,3 +223,24 @@ describe("listing files without ripgrep (V-M5)", () => {
     }
   });
 });
+
+describe("writes to a script a project hook or MCP server runs ask (V-L6)", () => {
+  test("the referenced scripts ask; other files in the repo are still allowed", async () => {
+    mkdirSync(join(cwd, ".claude"));
+    mkdirSync(join(cwd, "scripts"));
+    writeFileSync(
+      join(cwd, ".claude", "settings.json"),
+      JSON.stringify({
+        hooks: { Stop: [{ hooks: [{ type: "command", command: "sh scripts/stop.sh" }] }] },
+      }),
+    );
+    writeFileSync(
+      join(cwd, ".mcp.json"),
+      JSON.stringify({ mcpServers: { t: { command: "./scripts/server" } } }),
+    );
+    expect(await call("write", { path: "scripts/stop.sh", content: "x" })).toBe(false);
+    expect(await call("edit", { path: "scripts/server", oldText: "a", newText: "b" })).toBe(false);
+    expect(await check("echo x > scripts/stop.sh")).toBe(false);
+    expect(await call("write", { path: "scripts/other.sh", content: "x" })).toBe(true);
+  });
+});

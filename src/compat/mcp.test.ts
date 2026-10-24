@@ -167,6 +167,19 @@ describe("project server approval", () => {
     expect(byName(load()).team?.status).toBe("needs-approval");
   });
 
+  test("approval covers the server's script in the repo: editing it asks again (V-L6)", () => {
+    writeTree(tmp.dir, {
+      "repo/.mcp.json": json({
+        mcpServers: { team: { command: "node", args: ["tools/server.js"] } },
+      }),
+      "repo/tools/server.js": "console.log(1)",
+    });
+    approveProjectServers(dataDir, load().servers);
+    expect(byName(load()).team?.status).toBe("start");
+    writeTree(tmp.dir, { "repo/tools/server.js": "console.log(2)" });
+    expect(byName(load()).team?.status).toBe("needs-approval");
+  });
+
   test("a repo can't approve its own servers through .hamness/config.json", () => {
     writeTree(tmp.dir, {
       "repo/.mcp.json": json({ mcpServers: { team: { command: "team-tool" } } }),

@@ -154,6 +154,29 @@ describe("PreToolUse", () => {
   });
 });
 
+describe("trust covers the script a hook runs (V-L6)", () => {
+  test("editing a trusted hook's script in the repo holds the hook back until trusted again", async () => {
+    mkdirSync(join(work, ".git"));
+    mkdirSync(join(work, "scripts"));
+    const script = join(work, "scripts", "check.sh");
+    writeFileSync(script, "echo ok >> hook-ran.log\n");
+    for (const command of ["sh scripts/check.sh", '"$CLAUDE_PROJECT_DIR"/scripts/check.sh']) {
+      fx.settings(join(work, ".claude"), { Stop: [{ command }] });
+      trustProject(dataDir, work);
+      expect([command, isProjectTrusted(dataDir, work)]).toEqual([command, true]);
+      writeFileSync(script, "echo changed >> hook-ran.log\n");
+      expect([command, isProjectTrusted(dataDir, work)]).toEqual([command, false]);
+      writeFileSync(script, "echo ok >> hook-ran.log\n");
+      expect(isProjectTrusted(dataDir, work)).toBe(true);
+    }
+    // A script that does not exist yet is part of the trust too: creating it changes it.
+    fx.settings(join(work, ".claude"), { Stop: [{ command: "sh scripts/later.sh" }] });
+    trustProject(dataDir, work);
+    writeFileSync(join(work, "scripts", "later.sh"), "echo hi\n");
+    expect(isProjectTrusted(dataDir, work)).toBe(false);
+  });
+});
+
 describe("project hooks and trust", () => {
   test("project hooks don't run until the project is trusted; user hooks always do", async () => {
     fx.settings(join(work, ".claude"), { PreToolUse: [{}] });

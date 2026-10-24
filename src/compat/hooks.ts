@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { type Json, readJsonOr } from "../config/json.ts";
 import { addTrusted, isTrusted } from "../trust/index.ts";
+import { scriptRef } from "../trust/scripts.ts";
 import { projectKey, projectRoot, repoRoot } from "./paths.ts";
 import { toClaudeCall, toClaudeResponse } from "./tools.ts";
 
@@ -177,8 +178,10 @@ export function matcherMatches(matcher: string | undefined, value: string | unde
 // ---- trust ----
 
 /** What a hook's trust covers: everything that decides what it runs and how (ADR 0020). */
-function hookItem(event: HookEvent, h: CommandHook) {
+function hookItem(event: HookEvent, h: CommandHook, cwd: string) {
+  const script = scriptRef(h.command, h.args, cwd);
   return {
+    ...(script ? { script } : {}),
     event,
     matcher: h.matcher,
     command: h.command,
@@ -207,7 +210,7 @@ export function projectHookItems(
       commandHooks(json, event).map((h) => ({
         file,
         label: `${event}${h.matcher ? ` ${h.matcher}` : ""}: ${h.label}`,
-        item: hookItem(event, h),
+        item: hookItem(event, h, cwd),
       })),
     );
   });
@@ -277,7 +280,8 @@ export function hookSources(opts: HookOpts, cwd: string): HookSource[] {
           event,
           ...(h.matcher ? { matcher: h.matcher } : {}),
           command: h.label,
-          trusted: scope !== "project" || isTrusted(opts.dataDir, key, "hooks", hookItem(event, h)),
+          trusted:
+            scope !== "project" || isTrusted(opts.dataDir, key, "hooks", hookItem(event, h, cwd)),
         })),
       );
       return { file, scope, runs: !disabled.has(scope) && hooks.every((h) => h.trusted), hooks };
@@ -309,7 +313,7 @@ export function loadHooks(
     // Project hooks run only as trusted: an added or edited one waits (ADR 0020).
     for (const e of HOOK_EVENTS) {
       for (const h of commandHooks(json, e)) {
-        const trusted = isTrusted(opts.dataDir, key, "hooks", hookItem(e, h));
+        const trusted = isTrusted(opts.dataDir, key, "hooks", hookItem(e, h, cwd));
         if (!trusted) heldBack = true;
         else if (e === event) hooks.push(h);
       }

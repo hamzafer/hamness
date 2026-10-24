@@ -4,6 +4,7 @@ import { type Json, readJson, writeJsonAtomic } from "../config/json.ts";
 import { userConfigFile } from "../config/paths.ts";
 import type { SafetyMode } from "../events/types.ts";
 import { addTrusted, allowItem, isTrusted } from "../trust/index.ts";
+import { referencedScripts } from "../trust/scripts.ts";
 import { defaultRules } from "./defaults.ts";
 import { parsePermission, type Rule } from "./rules.ts";
 
@@ -90,6 +91,15 @@ export function loadSafetyConfig(dataDir: string, cwd: string): SafetyConfig {
     approvalTimeoutMs: timeoutSec === undefined ? DEFAULT_APPROVAL_TIMEOUT_MS : timeoutSec * 1000,
     rules: [
       ...defaultRules(),
+      // Scripts a project hook or MCP server runs: changing one changes what was trusted (V-L6).
+      ...referencedScripts(cwd).map(
+        (path): Rule => ({
+          tool: "{write,edit}",
+          pattern: path.replace(/[*?{}[\],\\]/g, "\\$&"),
+          verdict: "ask",
+          layer: "default",
+        }),
+      ),
       ...parse(userPath, user, "user"),
       ...projectRules.filter(isTrustedRule),
     ],

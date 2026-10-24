@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
 import { isObject, type Json, readJsonOr } from "../config/json.ts";
+import { scriptRef } from "../trust/scripts.ts";
 import { readApprovals } from "./approvals.ts";
 import {
   ancestorsDown,
@@ -164,10 +165,17 @@ function convert(
   return { config, warnings: x.warnings };
 }
 
-function fingerprint(raw: Json): string {
+function fingerprint(raw: Json, cwd: string): string {
   const { type, command, args, env, url, headers } = raw;
+  // The repo script it runs is part of what was approved (V-L6).
+  const script =
+    typeof command === "string"
+      ? scriptRef(command, Array.isArray(args) ? args.map(String) : undefined, cwd)
+      : undefined;
   return createHash("sha256")
-    .update(JSON.stringify({ type, command, args, env, url, headers }))
+    .update(
+      JSON.stringify({ type, command, args, env, url, headers, ...(script ? { script } : {}) }),
+    )
     .digest("hex")
     .slice(0, 16);
 }
@@ -263,7 +271,7 @@ export function loadMcpServers(opts: LoadMcpOptions): McpResult {
       const server: CompatMcpServer = { ...base, status: "start", warnings, config };
       if (layer.scope === "project") {
         server.projectKey = key;
-        server.fingerprint = fingerprint(raw);
+        server.fingerprint = fingerprint(raw, cwd);
       }
       if (disabled.has(name) || (layer.scope === "project" && disabledMcpjson.has(name))) {
         server.status = "disabled";
