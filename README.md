@@ -28,6 +28,7 @@ bun src/cli/main.ts keys set anthropic   # store an API key (hidden prompt, mode
 bun src/cli/main.ts login openai         # sign in with a ChatGPT plan (through Pi)
 bun src/cli/main.ts audit    # recent safety decisions and why (--session, --limit, --json)
 bun src/cli/main.ts hooks    # Claude Code hooks found for this dir (`hooks trust` runs project ones)
+bun src/cli/main.ts compat   # Claude Code instructions, skills and MCP servers found here (approve, revoke)
 bun src/cli/main.ts worktrees # subagent worktrees (--prune: remove finished ones)
 ```
 
@@ -37,9 +38,19 @@ Chat uses Claude (`anthropic/claude-opus-5-5`; `HAMNESS_MODEL=provider/id` sets 
 
 Sessions keep running when the TUI closes; reopening it in the same dir reattaches. After a daemon restart, the dir's last session resumes with its transcript and context (from Pi's session file in `<data dir>/pi/sessions`).
 
+### Claude Code setup
+
+Sessions read your Claude Code setup as it is and never change it (ADR 0008, ADR 0016). `CLAUDE_CONFIG_DIR` picks another config dir, as in Claude Code.
+
+- **Instructions:** managed `CLAUDE.md`, `~/.claude/CLAUDE.md` and `~/.claude/rules/`, then `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/` and `CLAUDE.local.md` in each folder from `/` down to the session's dir. `AGENTS.md` loads when none of those CLAUDE files exist (or always, with Claude Code's `claude-md-and-agents-md` setting). `@path` imports expand; a repo file can't import from outside the repo.
+- **Skills:** `<name>/SKILL.md` in `~/.claude/skills`, `<data dir>/skills`, `.claude/skills` up to the repo root and `.hamness/skills`. The prompt lists names and descriptions; the `skill` tool loads a body with its arguments filled in. Fields that would loosen safety or switch models (`allowed-tools`, `model`, ...) are not honored.
+- **MCP servers:** user and local servers from `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`) start; a repo's `.mcp.json` servers wait until you run `hamness compat approve` in that repo (stored in `<data dir>/config.json`; an edited entry asks again). Tools are `mcp__<server>__<tool>` and go through the safety rules. stdio and HTTP only.
+
+`hamness compat` shows what was found and what happens to each file, skill and server.
+
 ### Safety
 
-Every tool call passes allow / ask / deny rules before it runs (ADR 0006). Defaults: reads are allowed except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys), writes inside the session's dir are allowed, bash asks except for a small read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...), `rm -rf` and force pushes ask, `sudo` and `curl | sh` are denied. Compound commands (`&&`, `;`, `|`, subshells, `$(...)`) are checked part by part, and the strictest part wins.
+Every tool call passes allow / ask / deny rules before it runs (ADR 0006). Defaults: reads are allowed except `.env` files and secrets (`~/.ssh`, `~/.aws`, keys), writes inside the session's dir are allowed, bash asks except for a small read-only list (`ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, ...), `rm -rf` and force pushes ask, `sudo` and `curl | sh` are denied. Loading a skill and listing or reading MCP resources are allowed; MCP server tools are undecided until a rule says otherwise. Compound commands (`&&`, `;`, `|`, subshells, `$(...)`) are checked part by part, and the strictest part wins.
 
 Add rules under `safety` in `<data dir>/config.json` (yours) or `.hamness/config.json` at the repo root (the project's). Patterns are globs, the last matching rule wins, and a project rule can allow what nothing else decides but never loosens an `ask` or `deny`:
 

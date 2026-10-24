@@ -151,6 +151,20 @@ describe("default rules: bash", () => {
   });
 });
 
+describe("default rules: skills and MCP", () => {
+  test("loading a skill and listing or reading MCP resources are allowed", () => {
+    expect(verdict(tool("skill", { name: "deploy" }))).toBe("allow");
+    expect(verdict(tool("list_mcp_resources", {}))).toBe("allow");
+    expect(verdict(tool("list_mcp_resource_templates", {}))).toBe("allow");
+    expect(verdict(tool("read_mcp_resource", { server: "docs", uri: "docs://a" }))).toBe("allow");
+  });
+
+  test("MCP server tools are undecided: the judge or the user decides", () => {
+    expect(verdict(tool("mcp__github__create_issue", { title: "x" }))).toBe("undecided");
+    expect(verdict(tool("mcp__github__get_issue", { number: 1 }))).toBe("undecided");
+  });
+});
+
 describe("compound commands are checked part by part, conservatively", () => {
   test("every part allowed: allowed", () => {
     expect(verdict(bash("git status && git diff | head -20; ls"))).toBe("allow");

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { type ClaudeHooks, claudePermissionMode, type HookSession } from "../compat/hooks.ts";
+import { type ClaudeEnv, type CompatSetup, loadCompat } from "../compat/index.ts";
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
 import type {
@@ -70,9 +71,12 @@ export interface SessionHubOptions {
   /** The judge's state per session, and `/judge resume` (auto mode only). */
   judge?: { state(sessionId: string): JudgeState; resume(sessionId: string): boolean };
   publish: (event: AgentEvent) => void;
+  /** Load Claude Code's instructions, skills and MCP servers (ADR 0008). Default true. */
   contextFiles?: boolean;
   /** How many subagents run at once across the daemon; more wait in a queue. Default 4. */
   maxSubagents?: number;
+  /** Where Claude Code's files are (`HOME`, `CLAUDE_CONFIG_DIR`). Default: the process env. */
+  claude?: ClaudeEnv;
   /** How `ci` evidence runs `gh`, and how `url` evidence fetches. Tests pass fakes. */
   gh?: GhRunner;
   fetch?: (input: string, init?: RequestInit) => Promise<Response>;
@@ -141,6 +145,8 @@ interface LiveSession extends AgentState {
   subagents: Map<string, Subagent>;
   /** The session's tasks: the per-turn task, the agent's task tools, the proof gate. */
   tasks: SessionTasks;
+  /** Claude Code instructions, skills and MCP servers; subagents get the same (ADR 0015). */
+  compat?: CompatSetup;
   /** SessionStart hooks; the first prompt waits for them. */
   ready: Promise<void>;
   /** SessionStart hook context and notice, for the first prompt. */
@@ -435,6 +441,14 @@ export class SessionHub {
     const model = `${models.model.provider}/${models.model.id}`;
     // `live` is filled in before the runner can emit anything: events only follow a prompt.
     let live: LiveSession | undefined;
+    const withCompat = this.opts.contextFiles ?? true;
+    const compat = withCompat
+      ? loadCompat({
+          cwd,
+          dataDir: this.opts.dataDir,
+          claude: this.opts.claude ?? { env: process.env },
+        })
+      : undefined;
     const ready = (): LiveSession => {
       if (!live) throw new Error("session not ready");
       return live;
@@ -456,7 +470,8 @@ export class SessionHub {
       sessionDir,
       ...(resume ? { resumeFile: resume.file } : {}),
       models,
-      contextFiles: this.opts.contextFiles ?? true,
+      contextFiles: withCompat,
+      ...(compat ? { compat } : {}),
       systemPromptAppend: [PROOF_GATE_PROMPT],
       tools: [
         ...taskTools({
@@ -512,6 +527,7 @@ export class SessionHub {
       approvals: new Map(),
       subagents: new Map(),
       tasks,
+      ...(compat ? { compat } : {}),
       ready: Promise.resolve(),
       lastReply: "",
       stopActive: false,
@@ -637,6 +653,7 @@ export class SessionHub {
       agentDir: join(this.opts.dataDir, "pi"),
       models: { ...live.models, model },
       contextFiles: this.opts.contextFiles ?? true,
+      ...(live.compat ? { compat: live.compat } : {}),
       onEvent: (e) => agent && this.onRunnerEvent(live, agent, e),
       guard: (call) =>
         agent ? this.guard(live, agent, call) : Promise.resolve(notReady("agent not ready")),

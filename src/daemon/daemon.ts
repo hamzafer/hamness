@@ -31,7 +31,7 @@ export interface DaemonOptions {
    * daily budget and back-off. None: no API key, so undecided calls ask.
    */
   judge?: BackendJudge;
-  /** Load AGENTS.md / CLAUDE.md into sessions. Default true; tests turn it off. */
+  /** Load Claude Code's instructions, skills and MCP servers into sessions. Default true; tests turn it off. */
   contextFiles?: boolean;
   /** Claude Code's config dir, for its hooks. Default `CLAUDE_CONFIG_DIR` or `~/.claude`. */
   claudeConfigDir?: string;
