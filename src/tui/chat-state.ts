@@ -97,6 +97,7 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       state.approvals = state.approvals.filter((a) => a.id !== e.approvalId);
       return;
     case "agent.error":
+    case "agent.notice":
       state.notice = e.message;
       return;
     case "agent.model":

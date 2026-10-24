@@ -16,6 +16,7 @@
 - **Approval:** a tool call that asks, waiting for the user's answer: allow once, allow always (saves a rule to the project config) or deny. No answer before the timeout is a deny.
 - **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything).
 - **Audit log:** the stored list of decisions.
+- **Hook:** a command from Claude Code's settings that hamness runs on an event (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop). A project's hooks run only once its repo is **trusted**.
 - **Side rail:** the always-on right pane in the TUI showing agents, shells, checks, the current task and gauges.
 - **Source:** where a session came from: `hamness`, `claude-code` or `codex` (imported).
 - **Import:** reading Claude Code or Codex history, read-only and incremental, into the same tables. Each source file has an **import cursor** (byte offset, size, mtime) so a re-run reads only new lines.

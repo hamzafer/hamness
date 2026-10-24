@@ -5,6 +5,8 @@ import { SessionHub } from "../agent/session-hub.ts";
 import { generateToken, writeTokenFile } from "../api/auth.ts";
 import { sessionRoutes } from "../api/routes.ts";
 import { startApiServer } from "../api/server.ts";
+import { claudePermissionMode, createClaudeHooks } from "../compat/hooks.ts";
+import { claudeConfigDir } from "../compat/paths.ts";
 import { dataPaths } from "../config/paths.ts";
 import { type HamnessDb, openDatabase } from "../db/open.ts";
 import type { HamnessEvent } from "../events/types.ts";
@@ -27,6 +29,8 @@ export interface DaemonOptions {
   judge?: Judge;
   /** Load AGENTS.md / CLAUDE.md into sessions. Default true; tests turn it off. */
   contextFiles?: boolean;
+  /** Claude Code's config dir, for its hooks. Default `CLAUDE_CONFIG_DIR` or `~/.claude`. */
+  claudeConfigDir?: string;
 }
 
 export interface RunningDaemon {
@@ -74,12 +78,29 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
     const startedAt = Date.now();
     let publish: (event: HamnessEvent) => void = () => {};
+    const hooks = createClaudeHooks({
+      claudeDir: opts.claudeConfigDir ?? claudeConfigDir(process.env),
+      dataDir: paths.dataDir,
+    });
     const rules = opts.safety
       ? undefined
       : createSafetyService({
           db: openDb,
           dataDir: paths.dataDir,
           ...(opts.judge ? { judge: opts.judge } : {}),
+          preToolHook: async (call, mode) => {
+            const cwd = call.cwd ?? "";
+            const out = await hooks.preToolUse(
+              {
+                sessionId: call.sessionId,
+                cwd,
+                ...(call.transcriptPath ? { transcriptPath: call.transcriptPath } : {}),
+                permissionMode: claudePermissionMode(mode),
+              },
+              { tool: call.tool, args: call.args, toolUseId: call.toolCallId },
+            );
+            return out && { verdict: out.decision, reason: out.reason, hook: `hook: ${out.hook}` };
+          },
         });
     const hub = new SessionHub({
       db: openDb,
@@ -88,6 +109,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       safety: opts.safety ?? (rules as NonNullable<typeof rules>).check,
       ...(rules ? { safetyMode: (cwd: string) => rules.modeFor(cwd) } : {}),
       ...(opts.contextFiles !== undefined ? { contextFiles: opts.contextFiles } : {}),
+      hooks,
       publish: (event) => publish(event),
     });
     const api = startApiServer({

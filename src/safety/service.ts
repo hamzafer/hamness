@@ -12,6 +12,8 @@ import { type Evaluation, evaluate, type Rule } from "./rules.ts";
 /**
  * The safety check every tool call passes (ADR 0006), in order:
  *
+ *   hooks ── deny ─────────────────────────────────────────▶ deny (source: hook, final)
+ *         └─ allow / ask: recorded, then the rules still run (a rule deny wins)
  *   yolo mode ─────────────────────────────────────────────▶ allow (source: mode)
  *   rules ── allow / deny ─────────────────────────────────▶ verdict (source: rule)
  *         └─ ask ─────────────────────────────────────────▶ user
@@ -42,12 +44,25 @@ export interface JudgeVerdict {
 /** Decides undecided calls in `auto` mode. Throwing means ask. Budget and back-off live in it. */
 export type Judge = (req: JudgeRequest) => Promise<JudgeVerdict>;
 
+/** What a Claude Code PreToolUse hook decided (ticket #9). */
+export interface HookVerdict {
+  verdict: "allow" | "ask" | "deny";
+  reason: string;
+  /** The hook's command, stored as the decision's rule. */
+  hook: string;
+}
+
+/** Runs the PreToolUse hooks for a call. Undefined: no hook decided. Throwing means no decision. */
+export type PreToolHook = (call: GuardedCall, mode: SafetyMode) => Promise<HookVerdict | undefined>;
+
 export interface SafetyServiceOptions {
   db: HamnessDb;
   dataDir: string;
   home?: string;
   /** Ticket #5. Until then `auto` asks the user for undecided calls, like `ask`. */
   judge?: Judge;
+  /** Claude Code PreToolUse hooks; they run before the rules. */
+  preToolHook?: PreToolHook;
 }
 
 export interface SafetyService {
@@ -104,7 +119,25 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       since = t0,
     ) => store.add({ ...base, ...d, mode, latencyMs: performance.now() - since });
 
-    if (mode === "yolo") {
+    // Claude Code hooks first: a deny is final; an allow or ask still meets the rules.
+    let hook: HookVerdict | undefined;
+    if (opts.preToolHook) {
+      const th = performance.now();
+      try {
+        hook = await opts.preToolHook(call, mode);
+      } catch {
+        hook = undefined;
+      }
+      if (hook) {
+        const reason = redactText(hook.reason);
+        hook = { ...hook, reason };
+        record({ verdict: hook.verdict, source: "hook", reason, rule: hook.hook }, th);
+        if (hook.verdict === "deny") return { allow: false, reason };
+      }
+    }
+
+    if (mode === "yolo" && hook?.verdict !== "ask") {
+      if (hook?.verdict === "allow") return { allow: true };
       record({ verdict: "allow", source: "mode", reason: "yolo mode allows every call" });
       return { allow: true };
     }
@@ -124,7 +157,10 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       record({ verdict: "deny", source: "rule", reason: because, ...ruleOf });
       return { allow: false, reason: because };
     }
-    if (evaluation.verdict === "allow" && !looping) {
+    if (hook?.verdict === "allow" && evaluation.verdict !== "ask" && !looping) {
+      return { allow: true };
+    }
+    if (evaluation.verdict === "allow" && !looping && hook?.verdict !== "ask") {
       record({ verdict: "allow", source: "rule", reason: because, ...ruleOf });
       return { allow: true };
     }
@@ -137,6 +173,10 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       record({ verdict: "ask", source: "rule", reason, rule: "doom_loop" });
     } else if (evaluation.verdict === "ask") {
       record({ verdict: "ask", source: "rule", reason, ...ruleOf });
+    } else if (hook?.verdict === "ask") {
+      // The hook's ask is already recorded; like an explicit ask rule, it offers no "always".
+      reason = hook.reason;
+      suggestions = [];
     } else {
       // Undecided: the judge's turn in auto mode.
       if (mode === "auto" && opts.judge) {

@@ -136,6 +136,8 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
     }
   | ({ type: "agent.context" } & ContextFill)
   | { type: "agent.error"; message: string }
+  /** Something the user should know that is not an error (a hook blocked a prompt, ...). */
+  | { type: "agent.notice"; message: string }
   | { type: "safety.approval.request"; approval: PendingApproval }
   | {
       type: "safety.approval.resolved";
