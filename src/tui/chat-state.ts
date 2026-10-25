@@ -1,10 +1,12 @@
 import type {
+  CompactionReason,
   HamnessEvent,
   PendingApproval,
   SessionInfo,
   SessionSnapshot,
   TranscriptItem,
 } from "../events/types.ts";
+import { formatTokens } from "./rail-state.ts";
 
 /**
  * A line hamness itself writes in the chat (a stop, a task command's answer). Client-side
@@ -31,6 +33,8 @@ export interface ChatState {
   notice?: string;
   /** Tool calls waiting for the user, oldest first. */
   approvals: PendingApproval[];
+  /** True while Pi compacts the context (`/compact`, or on its own). */
+  compacting?: boolean;
 }
 
 export function initialState(snapshot: SessionSnapshot): ChatState {
@@ -134,9 +138,36 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
     case "safety.judge":
       state.session.judge = e.state;
       return;
+    case "agent.thinking":
+      state.session.thinkingLevel = e.level;
+      return;
+    case "session.name":
+      state.session.name = e.name;
+      return;
+    case "safety.mode":
+      state.session.mode = e.mode;
+      return;
+    case "agent.compaction.start":
+      state.compacting = true;
+      return;
+    case "agent.compaction.end": {
+      state.compacting = false;
+      if (e.error) addSystemLine(state, `Compaction failed: ${e.error}`, "error");
+      else if (e.aborted) addSystemLine(state, "Compaction stopped.", "muted");
+      else addSystemLine(state, compactedLine(e.reason, e.tokensBefore, e.tokensAfter), "ok");
+      return;
+    }
     default:
       return;
   }
+}
+
+/** `Compacted: 142k → 18k tokens`, said differently when Pi did it on its own. */
+export function compactedLine(reason: CompactionReason, before?: number, after?: number): string {
+  const head = reason === "manual" ? "Compacted" : "Context was nearly full, so it was compacted";
+  return before !== undefined && after !== undefined
+    ? `${head}: ${formatTokens(before)} → ${formatTokens(after)} tokens`
+    : `${head}.`;
 }
 
 /**

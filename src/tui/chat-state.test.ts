@@ -125,4 +125,61 @@ describe("chat state", () => {
       { kind: "system", id: "sys-2", text: "no open task", tone: "error" },
     ]);
   });
+
+  test("thinking level, name and safety mode follow their events", () => {
+    const state = initialState(snapshot);
+    let seq = 0;
+    const send = (body: Record<string, unknown>) =>
+      applyEvent(state, { sessionId: SID, seq: ++seq, ...body } as AgentEvent);
+    send({ type: "agent.thinking", level: "high" });
+    send({ type: "session.name", name: "parser work" });
+    send({ type: "safety.mode", mode: "yolo", warning: "careful" });
+    expect(state.session).toMatchObject({
+      thinkingLevel: "high",
+      name: "parser work",
+      mode: "yolo",
+    });
+  });
+
+  test("compaction: progress while it runs, then one line with the sizes", () => {
+    const state = initialState(snapshot);
+    let seq = 0;
+    const send = (body: Record<string, unknown>) =>
+      applyEvent(state, { sessionId: SID, seq: ++seq, ...body } as AgentEvent);
+    send({ type: "agent.compaction.start", reason: "manual" });
+    expect(state.compacting).toBe(true);
+    send({
+      type: "agent.compaction.end",
+      reason: "manual",
+      aborted: false,
+      tokensBefore: 142_000,
+      tokensAfter: 18_000,
+    });
+    expect(state.compacting).toBe(false);
+    expect(state.items.at(-1)).toMatchObject({
+      kind: "system",
+      text: "Compacted: 142k → 18k tokens",
+      tone: "ok",
+    });
+    send({ type: "agent.compaction.start", reason: "threshold" });
+    send({
+      type: "agent.compaction.end",
+      reason: "threshold",
+      aborted: false,
+      tokensBefore: 190_000,
+      tokensAfter: 20_500,
+    });
+    expect(state.items.at(-1)).toMatchObject({
+      text: "Context was nearly full, so it was compacted: 190k → 20.5k tokens",
+    });
+    send({ type: "agent.compaction.start", reason: "manual" });
+    send({ type: "agent.compaction.end", reason: "manual", aborted: false, error: "no model" });
+    expect(state.items.at(-1)).toMatchObject({
+      text: "Compaction failed: no model",
+      tone: "error",
+    });
+    send({ type: "agent.compaction.start", reason: "manual" });
+    send({ type: "agent.compaction.end", reason: "manual", aborted: true });
+    expect(state.items.at(-1)).toMatchObject({ text: "Compaction stopped.", tone: "muted" });
+  });
 });
