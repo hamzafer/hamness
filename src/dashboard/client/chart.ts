@@ -6,6 +6,8 @@ export interface AreaChartOptions {
   /** What the values are, e.g. "Cost". Names the chart for screen readers. */
   label: string;
   format: (v: number) => string;
+  /** A shorter value format for the y-axis on narrow widths ($2k). Default: `format`. */
+  compact?: (v: number) => string;
   /** Short tick label for a bucket start. */
   tick: (start: number) => string;
   /** Long label for the tooltip. */
@@ -24,6 +26,25 @@ export function niceMax(max: number): number {
   return 10 * pow;
 }
 
+/** The y-axis steps, as fractions of the top. */
+const STEPS = [0, 0.25, 0.5, 0.75, 1];
+/** A generous width of one 11px mono character, so a label never runs off the card. */
+const CHAR_PX = 7;
+
+/**
+ * The y-axis labels and the left gutter that fits them: compact labels on narrow widths, and
+ * a gutter sized to the longest label, so `$2,000.00` is never cut at the card's edge.
+ */
+export function yAxis(
+  top: number,
+  opts: { format: (v: number) => string; compact?: (v: number) => string; narrow: boolean },
+): { labels: string[]; left: number } {
+  const fmt = opts.narrow && opts.compact ? opts.compact : opts.format;
+  const labels = STEPS.map((f) => fmt(top * f));
+  const longest = Math.max(...labels.map((l) => l.length));
+  return { labels, left: Math.max(opts.narrow ? 40 : 48, Math.ceil(longest * CHAR_PX) + 12) };
+}
+
 /**
  * One series over time as a soft area with a 2px line, recessive grid, a crosshair and
  * tooltip on hover, and arrow-key stepping when focused. Redraws on resize.
@@ -40,21 +61,30 @@ export function areaChart(opts: AreaChartOptions): HTMLElement {
     const width = Math.max(280, Math.round(root.clientWidth || 640));
     const narrow = width < 520;
     const height = narrow ? 200 : 260;
-    const pad = { top: 12, right: 12, bottom: 28, left: narrow ? 48 : 60 };
-    const innerW = width - pad.left - pad.right;
-    const innerH = height - pad.top - pad.bottom;
     const n = opts.points.length;
     const top = niceMax(Math.max(0, ...opts.points.map((p) => p.value)));
+    const axis = yAxis(top, {
+      format: opts.format,
+      ...(opts.compact ? { compact: opts.compact } : {}),
+      narrow,
+    });
+    const pad = { top: 12, right: 12, bottom: 28, left: axis.left };
+    const innerW = width - pad.left - pad.right;
+    const innerH = height - pad.top - pad.bottom;
     const x = (i: number) => pad.left + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
     const y = (v: number) => pad.top + innerH - (v / top) * innerH;
 
-    const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => {
+    const grid = STEPS.map((f, i) => {
       const v = top * f;
       return s(
         "g",
         { class: "grid" },
         s("line", { x1: pad.left, x2: width - pad.right, y1: y(v), y2: y(v) }),
-        s("text", { x: pad.left - 8, y: y(v), dy: "0.32em", "text-anchor": "end" }, opts.format(v)),
+        s(
+          "text",
+          { x: pad.left - 8, y: y(v), dy: "0.32em", "text-anchor": "end" },
+          axis.labels[i] ?? "",
+        ),
       );
     });
 

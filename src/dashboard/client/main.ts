@@ -1,4 +1,4 @@
-import { count, duration, money } from "../../stats/format.ts";
+import { count, duration, money, moneyCompact } from "../../stats/format.ts";
 import type {
   DecisionListRow,
   EvidenceRow,
@@ -199,9 +199,16 @@ const METRICS: Record<
     label: string;
     value: (b: StatsReport["series"]["buckets"][number]) => number;
     format: (v: number) => string;
+    /** Shorter y-axis labels for narrow widths. */
+    compact?: (v: number) => string;
   }
 > = {
-  cost: { label: "Cost", value: (b) => b.costMicros, format: (v) => money(Math.round(v)) },
+  cost: {
+    label: "Cost",
+    value: (b) => b.costMicros,
+    format: (v) => money(Math.round(v)),
+    compact: (v) => moneyCompact(Math.round(v)),
+  },
   tokens: { label: "Tokens", value: (b) => b.tokens, format: (v) => count(Math.round(v)) },
   tasks: { label: "Tasks", value: (b) => b.tasks, format: (v) => count(Math.round(v)) },
 };
@@ -296,6 +303,7 @@ function overview(r: StatsReport): Node[] {
           points,
           label: m.label,
           format: m.format,
+          ...(m.compact ? { compact: m.compact } : {}),
           tick: hourly ? hourLabel : dayLabel,
           title: hourly ? (t) => `${dayLabel(t)}, ${hourLabel(t)}` : dayLabel,
           partialLast: true,

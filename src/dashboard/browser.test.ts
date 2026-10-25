@@ -266,6 +266,14 @@ suite("dashboard in a browser", () => {
           () => document.documentElement.scrollWidth - window.innerWidth,
         );
         expect(overflow).toBeLessThanOrEqual(0);
+        // Every y-axis label sits inside the chart's card, none cut at its left edge.
+        const cut = await phone.evaluate(() => {
+          const card = document.querySelector(".hero")?.getBoundingClientRect();
+          return [...document.querySelectorAll(".chart .grid text")].filter(
+            (t) => card && t.getBoundingClientRect().left < card.left,
+          ).length;
+        });
+        expect(cut).toBe(0);
         await phone.screenshot({
           path: join(shots, `overview-${scheme}-phone.png`),
           fullPage: true,
