@@ -770,7 +770,7 @@ export class SessionHub {
         // The task row points at the session row. An unused session has no task, so
         // override and abandon throw there and must not store it.
         this.persist(live);
-        return live.tasks.start(action.goal);
+        return live.tasks.start(action.goal, "user");
       case "override":
         return live.tasks.override(action.reason);
       case "abandon":

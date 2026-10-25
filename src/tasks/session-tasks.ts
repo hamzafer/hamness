@@ -7,7 +7,7 @@ import { parseClaim } from "./claims.ts";
 import { decideGate, type GateResult } from "./gate.ts";
 import { proveClaim } from "./proof.ts";
 import { cdOutsideProblem } from "./proof-shape.ts";
-import { TaskStore } from "./store.ts";
+import { type TaskOpener, TaskStore } from "./store.ts";
 import type { CheckResult, CheckView, EvidenceClaim, TaskView } from "./types.ts";
 
 /** A task event before the hub stamps it with the session and its sequence number. */
@@ -163,8 +163,8 @@ export class SessionTasks {
     if (!this.openTask()) this.current = undefined;
   }
 
-  /** `task_start(goal)` or `/task goal`. */
-  start(goal: string): TaskView {
+  /** `task_start(goal)` (`by` the agent) or `/task goal` (`by` the user). */
+  start(goal: string, by: TaskOpener = "agent"): TaskView {
     const text = goal.trim();
     if (!text) throw new TaskStateError("a task needs a goal");
     const open = this.openTask();
@@ -177,22 +177,22 @@ export class SessionTasks {
     let id: string;
     if (open) {
       id = open.id;
-      this.store.promote(id, goalOf(text));
+      this.store.promote(id, goalOf(text), by);
     } else {
-      id = this.store.open(this.opts.sessionId, goalOf(text), false, this.branch());
+      id = this.store.open(this.opts.sessionId, goalOf(text), false, this.branch(), by);
     }
     this.current = id;
     return this.emitStart(id);
   }
 
   /**
-   * `task_done(summary)`: the proof gate. A task that did nothing to prove (no failed evidence,
-   * no file changes, no subagents) and passed no check is dropped like a chat turn (ADR 0012).
+   * `task_done(summary)`: the proof gate. An agent's task that only read (`droppable`) and
+   * passed no check is dropped like a chat turn (ADR 0012).
    */
   done(summary: string): TaskView {
     const open = this.requireOpen("call task_start first");
     const gate = this.gate(open.id);
-    if (!gate.verified && !this.didWork(open.id)) {
+    if (!gate.verified && this.droppable(open.id)) {
       const view = this.store.view(open.id) as TaskView;
       this.drop(open.id);
       return { ...view, dropped: true };
@@ -299,12 +299,29 @@ export class SessionTasks {
     return { evidenceId, result, task: this.store.view(open.id) as TaskView };
   }
 
-  /** Work that went unproven: failed evidence, file changes (edit, write, bash writes) or subagents. */
+  /**
+   * The implicit task's rule at turn end: work that went unproven is failed evidence, file
+   * changes (edit, write, bash writes) or subagents.
+   */
   private didWork(id: string): boolean {
     return (
       this.store.failedCount(id) > 0 ||
       this.store.changedFiles(id, this.opts.cwd) ||
       this.store.hasSubagents(id)
+    );
+  }
+
+  /**
+   * Whether `task_done` may drop an explicit task as no task (ADR 0012): the agent opened it
+   * (never a user's `/task`), it has no evidence rows at all, no subagents, and every tool call
+   * in it is known read-only. An allowlist: anything it can't classify is work.
+   */
+  private droppable(id: string): boolean {
+    return (
+      this.store.openedBy(id) === "agent" &&
+      this.store.evidenceRows(id) === 0 &&
+      !this.store.hasSubagents(id) &&
+      this.store.onlyReadOnlyCalls(id)
     );
   }
 

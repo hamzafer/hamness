@@ -171,3 +171,60 @@ export function bashWrites(command: string, cwd: string, home = homedir()): Bash
   }
   return writes ? { writes, paths } : NONE;
 }
+
+/** Commands that only read: the default safety rules' read-only list, plus `find`. */
+const READ_ONLY_HEADS = new Set([
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "grep",
+  "rg",
+  "pwd",
+  "echo",
+  "which",
+  "stat",
+  "tree",
+  "find",
+]);
+const READ_ONLY_GIT = new Set(["status", "diff", "log", "show"]);
+const FIND_ACTIONS = /^-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/;
+
+/** A flag that makes an otherwise read-only command write or run something. */
+function writingFlag(head: string, args: string[]): boolean {
+  switch (head) {
+    case "git":
+      return args.some((a) => a.startsWith("--output"));
+    case "rg":
+      return args.some((a) => a.startsWith("--pre"));
+    case "tree":
+      return args.some((a) => a.startsWith("-o"));
+    case "find":
+      return args.some((a) => FIND_ACTIONS.test(a));
+    default:
+      return false;
+  }
+}
+
+/** A redirect that can't write a file: input, `/dev/...`, or a descriptor copy (`2>&1`). */
+const harmless = (r: { op: string; target: string }) =>
+  r.op === "<" || r.target.startsWith("/dev/") || r.target.startsWith("&");
+
+/**
+ * True only for a bash command known to change nothing: every command in it is on the
+ * read-only list, with no writing flag, no redirect into a file and nothing decided at run
+ * time. Unparseable input, heredocs and anything not listed (`python -c`, `sed -i`, scripts)
+ * are not read-only. An allowlist, so a task is never dropped for work this can't see (ADR 0012).
+ */
+export function bashReadOnly(command: string): boolean {
+  if (!command.trim()) return false;
+  const parsed = parseCommand(command);
+  if (!parsed.ok) return false;
+  return parsed.segments.every((seg) => {
+    const [head, ...args] = seg.words;
+    if (!head || seg.dynamic || !seg.redirects.every(harmless)) return false;
+    if (head === "git") return READ_ONLY_GIT.has(args[0] ?? "") && !writingFlag(head, args);
+    return READ_ONLY_HEADS.has(head) && !writingFlag(head, args);
+  });
+}

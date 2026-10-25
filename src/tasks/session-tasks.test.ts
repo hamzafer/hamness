@@ -72,12 +72,17 @@ function modelCall(t: SessionTasks, costMicros: number, input = 100, output = 10
   });
 }
 
-/** An `edit` call on the current task: a file change that needs proof. */
-function edited(t: SessionTasks) {
+/** A tool call on the current task, as the hub records one. */
+function call(t: SessionTasks, tool: string, args: Record<string, unknown> = {}) {
   chat.addToolCall(
     { ...ids, taskId: t.attributionId() },
-    { messageId: undefined, tool: "edit", argsJson: "{}" },
+    { messageId: undefined, tool, argsJson: JSON.stringify(args) },
   );
+}
+
+/** An `edit` call on the current task: a file change that needs proof. */
+function edited(t: SessionTasks) {
+  call(t, "edit");
 }
 
 const row = (id: string) =>
@@ -127,10 +132,19 @@ describe("explicit tasks", () => {
     expect(t.done("wrote it").outcome).toBe("unverified");
   });
 
-  test("task_done with no evidence and no changes drops the task, like a chat turn", () => {
+  test("task_done with no evidence and only read-only calls drops the task, like a chat turn", () => {
     const t = tasks();
     const task = t.start("read the docs and summarize the repo");
     modelCall(t, 500);
+    for (const [tool, args] of [
+      ["read", { path: "README.md" }],
+      ["grep", { pattern: "x" }],
+      ["ls", {}],
+      ["find", { pattern: "*.md" }],
+      ["bash", { command: "cat README.md | head -20" }],
+    ] as const) {
+      call(t, tool, args);
+    }
     const done = t.done("summarized");
     expect(done.dropped).toBe(true);
     expect(row(task.id)).toBeNull();
@@ -141,6 +155,49 @@ describe("explicit tasks", () => {
     expect(calls).toEqual([{ task_id: null }]);
     expect(t.attributionId()).toBeUndefined();
     expect(t.view()).toBeUndefined();
+  });
+
+  test("an explicit task with an MCP call, or bash that writes through a program, stays unverified", () => {
+    for (const [tool, args] of [
+      ["mcp__fs__write_file", { path: "x.txt", content: "1" }],
+      ["bash", { command: `python -c "open('x.txt','w').write('1')"` }],
+      ["some_unknown_tool", {}],
+    ] as const) {
+      const t = tasks();
+      const task = t.start("do it");
+      call(t, tool, args);
+      const done = t.done("done");
+      expect(done.dropped).toBeUndefined();
+      expect(row(task.id)?.outcome).toBe("unverified");
+    }
+  });
+
+  test("a task the user opened with /task is never dropped", () => {
+    const t = tasks();
+    const task = t.start("user goal", "user");
+    const done = t.done("nothing to do");
+    expect(done.dropped).toBeUndefined();
+    expect(row(task.id)?.outcome).toBe("unverified");
+  });
+
+  test("a /task that promotes the turn's implicit task is never dropped either", () => {
+    const t = tasks();
+    t.beginTurn("look");
+    const task = t.start("user goal", "user");
+    expect(t.done("x").dropped).toBeUndefined();
+    expect(row(task.id)?.outcome).toBe("unverified");
+  });
+
+  test("a task with any evidence row, even one that could not run, is not dropped", async () => {
+    const t = new SessionTasks({
+      ...optsFor(),
+      safety: async () => ({ allow: false, reason: "no" }),
+    });
+    const task = t.start("check it");
+    const proof = await t.prove({ kind: "command", command: PASS });
+    expect(proof.result.status).toBe("error");
+    expect(t.done("done").dropped).toBeUndefined();
+    expect(row(task.id)?.outcome).toBe("unverified");
   });
 
   test("task_done with only failing evidence is unverified", async () => {
