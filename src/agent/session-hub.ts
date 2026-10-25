@@ -725,7 +725,8 @@ export class SessionHub {
     if (sub.status === "aborted") sub.error ??= "stopped";
     this.store.setAgentStatus(sub.id, sub.status);
     sub.agent?.runner.dispose();
-    if (sub.status !== "done") {
+    if (sub.status === "aborted") this.emit(live, { type: "agent.stopped" }, sub.id);
+    else if (sub.status !== "done") {
       this.emit(live, { type: "agent.error", message: sub.error ?? sub.status }, sub.id);
     }
     if (sub.agent) this.setBusy(live, sub.agent, false);
@@ -989,7 +990,13 @@ export class SessionHub {
         reply.text = e.text;
         reply.done = true;
         agent.lastText = e.text;
-        if (e.error) agent.lastError = explainModelError(e.error, this.opts.dataDir, e.provider);
+        // Pi ends a reply cut short by `abort()` as `aborted`, with an error message. A user
+        // stop is not a failure (`agent.stopped` says it); real errors stay errors.
+        const error =
+          e.error && e.stopReason !== "aborted"
+            ? explainModelError(e.error, this.opts.dataDir, e.provider)
+            : undefined;
+        if (error) agent.lastError = error;
         else delete agent.lastError;
         if (agent === live) live.lastReply = e.text;
         this.store.setMessageContent(reply.rowId, redactText(e.text));
@@ -1008,7 +1015,7 @@ export class SessionHub {
           messageId: reply.rowId,
           role: "assistant",
           text: e.text,
-          ...(e.error ? { error: explainModelError(e.error, this.opts.dataDir, e.provider) } : {}),
+          ...(error ? { error } : {}),
         });
         emit({
           type: "agent.usage",
@@ -1064,6 +1071,7 @@ export class SessionHub {
         agent.currentReplyRow = undefined;
         // A subagent's last status waits for its result (`finishSubagent`); no Stop hooks.
         if (agent !== live) return;
+        if (e.aborted) emit({ type: "agent.stopped" });
         this.afterRun(live, e.aborted).catch(() => {
           live.currentReplyRow = undefined;
           live.tasks.endTurn();
