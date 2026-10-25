@@ -217,17 +217,19 @@ export function billingOf(
 /**
  * How `provider` is billed right now, from Pi's own auth state: a subscription login in use, or
  * the API key it resolves (and from where). `fallback` answers before Pi has checked a provider.
- * Undefined when the provider has no credential.
+ * `keyed` answers when Pi sees no credential: Pi reads the process env, but hamness passes its
+ * own `env`, so an API key there still bills. Undefined when the provider has no credential.
  */
 export function liveBilling(
   runtime: Pick<ModelRuntime, "isUsingSubscription" | "getProviderAuthStatus" | "isUsingOAuth">,
   provider: string,
   env: Env,
   fallback: (provider: string) => Billing | undefined = () => undefined,
+  keyed: (provider: string) => Billing | undefined = () => undefined,
 ): Billing | undefined {
   if (runtime.isUsingSubscription(provider)) return subscriptionKind(provider);
   const status = runtime.getProviderAuthStatus(provider);
-  if (!status.configured) return undefined;
+  if (!status.configured) return keyed(provider);
   if (runtime.isUsingOAuth(provider)) return fallback(provider);
   if (status.source === "stored") return fallback(provider);
   const source =
@@ -334,7 +336,10 @@ export async function loadModels(opts: { dataDir: string; env: Env }): Promise<{
   await runtime.getAvailable().catch(() => []);
   const fallback = (provider: string) =>
     billingOf(provider, { plans, env: opts.env, fileKeys, stored });
-  const billing = (provider: string) => liveBilling(runtime, provider, opts.env, fallback);
+  // Keys only, no plan logins: a plan Pi no longer sees (signed out) must not count as billed.
+  const keyed = (provider: string) =>
+    billingOf(provider, { plans: [], env: opts.env, fileKeys, stored });
+  const billing = (provider: string) => liveBilling(runtime, provider, opts.env, fallback, keyed);
   return {
     runtime,
     ...(model ? { model } : {}),
