@@ -195,6 +195,8 @@ interface LiveSession extends AgentState {
   /** True during `/compact`, and while `/new`, `/resume` or `/fork` replaces the session. */
   compacting: boolean;
   replacing: boolean;
+  /** SessionStart hooks or a model switch still under way: not idle, so it never sleeps. */
+  inFlight: number;
   /** `/name`. */
   sessionName?: string | undefined;
   /** The mode the user set for this session (`/mode`), if any. */
@@ -427,10 +429,15 @@ export class SessionHub {
     return this.track(cwd, this.create(cwd));
   }
 
-  /** Wakes the session, or undefined when Pi's file is gone (no context to come back to). */
+  /**
+   * `-c`: wakes the session and keeps it the cwd's latest; undefined when Pi's file is gone
+   * (no context to come back to).
+   */
   private async wakeResumable(id: string, cwd: string): Promise<LiveSession | undefined> {
     try {
-      return await this.wake(id, { cwd, ended: true });
+      const live = await this.wake(id, { cwd, ended: true });
+      this.store.makeLatest(live.id, cwd);
+      return live;
     } catch (err) {
       if (err instanceof SessionCommandError && err.status === 409) return undefined;
       throw err;
@@ -451,7 +458,15 @@ export class SessionHub {
    */
   async ensureAwake(sessionId: string): Promise<void> {
     if (this.byId.has(sessionId)) return;
-    await this.wake(sessionId, { ended: false }).catch(() => undefined);
+    try {
+      await this.wake(sessionId, { ended: false });
+    } catch (err) {
+      // No such session, or Pi's file is gone: the route answers as for any unknown session.
+      if (err instanceof SessionCommandError && (err.status === 404 || err.status === 409)) {
+        return;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -466,12 +481,26 @@ export class SessionHub {
       return Promise.resolve(live);
     }
     const pending = this.waking.get(id);
-    if (pending) return pending;
-    const waking = this.revive(id, opts);
-    this.waking.set(id, waking);
-    const done = () => this.waking.delete(id);
-    waking.then(done, done);
-    return waking;
+    if (pending) {
+      return pending.then((l) => {
+        sameFolder(l.cwd, opts.cwd);
+        return l;
+      });
+    }
+    return this.starting(id, this.revive(id, opts));
+  }
+
+  /**
+   * Registers the start of a stored session's agent under its id, so a wake and a `/resume`
+   * of one id never start two agents: whichever comes second waits for the first.
+   */
+  private starting(id: string, start: Promise<LiveSession>): Promise<LiveSession> {
+    this.waking.set(id, start);
+    const done = () => {
+      if (this.waking.get(id) === start) this.waking.delete(id);
+    };
+    start.then(done, done);
+    return start;
   }
 
   private async revive(id: string, opts: { cwd?: string; ended: boolean }): Promise<LiveSession> {
@@ -536,6 +565,7 @@ export class SessionHub {
       !live.busy &&
       !live.compacting &&
       !live.replacing &&
+      live.inFlight === 0 &&
       live.approvals.size === 0 &&
       [...live.subagents.values()].every((sub) => FINISHED.has(sub.status))
     );
@@ -733,12 +763,15 @@ export class SessionHub {
     const parsed = parseModelSpec(spec);
     const model = parsed && live.models.runtime.getModel(parsed.provider, parsed.id);
     if (!model) throw new ModelSwitchError(`unknown model ${spec.trim() || "(empty)"}`);
+    live.inFlight += 1;
     try {
       await live.runner.setModel(model);
     } catch (err) {
       throw new ModelSwitchError(
         explainModelError((err as Error).message, this.opts.dataDir, model.provider),
       );
+    } finally {
+      live.inFlight -= 1;
     }
     // An unsaved session stores its model when its row is written.
     if (!live.unsaved) this.store.setModel(this.ids(live), live.runner.model);
@@ -785,7 +818,8 @@ export class SessionHub {
     live.replacing = true;
     let next: LiveSession;
     try {
-      next = await this.create(live.cwd, plan);
+      const start = this.create(live.cwd, plan);
+      next = await (plan.kind === "resume" ? this.starting(plan.stored.sessionId, start) : start);
     } catch (err) {
       live.replacing = false;
       throw err;
@@ -856,9 +890,15 @@ export class SessionHub {
       throw new SessionCommandError("that session belongs to another folder", 400);
     }
     // Live in another window (or waking): switch to it rather than start a second agent.
+    // (No await before the replacement registers its start, so no wake slips in between.)
+    const waking = this.waking.get(targetId);
     const awake =
-      this.byId.get(targetId) ?? (await this.waking.get(targetId)?.catch(() => undefined));
+      this.byId.get(targetId) ?? (waking ? await waking.catch(() => undefined) : undefined);
     if (awake) return this.snapshotOf(await this.handOver(live, awake));
+    if (waking) {
+      // That wake failed; start over, so the checks below see the state now.
+      return this.resume(sessionId, targetId);
+    }
     const file = SessionManager.findById(live.cwd, stored.piSessionId, this.sessionDir);
     // A session with no message (one holding a task moved by `/new`) never had a Pi file.
     if (!file && this.store.hasMessages(targetId)) {
@@ -1269,16 +1309,21 @@ export class SessionHub {
       runGen: 0,
       compacting: false,
       replacing: false,
+      inFlight: 0,
       ...(sessionName ? { sessionName } : {}),
       ...(ownMode ? { ownMode } : {}),
       ...(stored ? {} : { unsaved: { piSessionId: runner.piSessionId, startedAt } }),
     };
     if (stored && !resume) this.saveSettings(live);
-    live.ready = this.sessionStartHooks(
-      live,
+    const started = live;
+    started.inFlight += 1;
+    started.ready = this.sessionStartHooks(
+      started,
       resume ? "resume" : plan.kind === "new" ? "clear" : "startup",
       model,
-    );
+    ).finally(() => {
+      started.inFlight -= 1;
+    });
     this.byId.set(sessionId, live);
     return live;
   }

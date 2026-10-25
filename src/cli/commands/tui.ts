@@ -26,16 +26,22 @@ export const TUI_USAGE = [
 export type TuiLaunch = { launch: Launch; openResume: boolean };
 
 /** Parses `hamness [tui]`'s flags (ADR 0023). */
-export function parseTuiArgs(args: readonly string[]): TuiLaunch | { error: string } {
+export function parseTuiArgs(
+  args: readonly string[],
+): TuiLaunch | { error: string } | { help: true } {
+  const end = args.indexOf("--");
+  const options = end === -1 ? args : args.slice(0, end);
+  const operands = end === -1 ? [] : args.slice(end + 1);
+  if (options.some((a) => a === "-h" || a === "--help")) return { help: true };
   let cont = false;
   let resume: { id?: string } | undefined;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i] as string;
+  for (let i = 0; i < options.length; i++) {
+    const arg = options[i] as string;
     if (arg === "-c" || arg === "--continue") {
       cont = true;
     } else if (arg === "-r" || arg === "--resume") {
-      const next = args[i + 1];
-      resume = next !== undefined && !next.startsWith("-") ? { id: next } : {};
+      const next = options[i + 1];
+      resume = next !== undefined && !next.startsWith("-") ? { id: next.trim() } : {};
       if (resume.id !== undefined) i++;
     } else if (arg.startsWith("--resume=")) {
       const id = arg.slice("--resume=".length).trim();
@@ -47,6 +53,11 @@ export function parseTuiArgs(args: readonly string[]): TuiLaunch | { error: stri
       return { error: `unexpected argument '${arg}'` };
     }
   }
+  // After `--`: the id of a `-r` that has none yet, even one starting with a dash.
+  for (const arg of operands) {
+    if (resume && !resume.id) resume = { id: arg };
+    else return { error: `unexpected argument '${arg}'` };
+  }
   if (cont && resume) return { error: "use -c or -r, not both" };
   if (cont) return { launch: { kind: "continue" }, openResume: false };
   if (resume?.id) return { launch: { kind: "session", id: resume.id }, openResume: false };
@@ -56,6 +67,10 @@ export function parseTuiArgs(args: readonly string[]): TuiLaunch | { error: stri
 /** Opens the chat TUI for the current directory, starting the daemon if needed. */
 export async function tuiCommand({ args, dataDir, env, io }: CliContext): Promise<number> {
   const parsed = parseTuiArgs(args);
+  if ("help" in parsed) {
+    io.out(TUI_USAGE);
+    return 0;
+  }
   if ("error" in parsed) {
     io.err(`hamness: ${parsed.error}`);
     io.err(TUI_USAGE);

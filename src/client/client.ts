@@ -11,7 +11,7 @@ import type {
 } from "../agent/session-hub.ts";
 import type { Env } from "../config/paths.ts";
 import { dataPaths, ensureDataDir } from "../config/paths.ts";
-import { getStatus } from "../daemon/status.ts";
+import { DAEMON_FEATURES, type DaemonStatus, getStatus } from "../daemon/status.ts";
 import type {
   ApprovalDecision,
   HamnessEvent,
@@ -21,6 +21,7 @@ import type {
   ThinkingLevel,
 } from "../events/types.ts";
 import type { TaskAction, TaskView } from "../tasks/types.ts";
+import { VERSION } from "../version.ts";
 
 /** What a client (TUI, later the dashboard) needs from the daemon. */
 export interface DaemonClient {
@@ -89,6 +90,18 @@ export class DaemonError extends Error {
 
 const MAIN = join(import.meta.dir, "..", "cli", "main.ts");
 
+export const DAEMON_OUTDATED =
+  "hamness was updated; restart the daemon with `hamness stop`, then run hamness again";
+
+/**
+ * A daemon still running an older hamness: another version, or an API without a feature this
+ * client needs. An old daemon would ignore `start: "new"` and attach to the latest session.
+ */
+function outdated(status: Extract<DaemonStatus, { running: true }>): boolean {
+  if (status.version !== VERSION) return true;
+  return DAEMON_FEATURES.some((f) => !status.features?.includes(f));
+}
+
 /**
  * Makes sure a daemon serves `dataDir`: if none answers, starts `hamness daemon` detached
  * (output to `<dataDir>/daemon.log`) and polls its status until it is up.
@@ -98,7 +111,10 @@ export async function ensureDaemon(
   opts: { env?: Env; timeoutMs?: number } = {},
 ): Promise<{ url: string; started: boolean }> {
   const now = await getStatus(dataDir);
-  if (now.running) return { url: now.url, started: false };
+  if (now.running) {
+    if (outdated(now)) throw new Error(DAEMON_OUTDATED);
+    return { url: now.url, started: false };
+  }
 
   ensureDataDir(dataDir);
   const logPath = join(dataDir, "daemon.log");

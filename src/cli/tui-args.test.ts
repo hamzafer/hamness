@@ -34,6 +34,25 @@ describe("hamness's launch flags (ADR 0023)", () => {
     expect(parseTuiArgs(["--resume="])).toEqual({ error: "--resume= needs a session id" });
   });
 
+  test("-h / --help anywhere asks for the usage", () => {
+    for (const args of [["-h"], ["-c", "--help"], ["-r", "abc", "-h"]]) {
+      expect(parseTuiArgs(args)).toEqual({ help: true });
+    }
+  });
+
+  test('-r "" is -r with no id: the picker', () => {
+    expect(parseTuiArgs(["-r", ""])).toEqual({ launch: { kind: "new" }, openResume: true });
+  });
+
+  test("-- ends the options: an id after it may start with a dash", () => {
+    expect(parseTuiArgs(["-r", "--", "-odd"])).toEqual({
+      launch: { kind: "session", id: "-odd" },
+      openResume: false,
+    });
+    expect(parseTuiArgs(["--"])).toEqual({ launch: { kind: "new" }, openResume: false });
+    expect(parseTuiArgs(["-c", "--", "x"])).toEqual({ error: "unexpected argument 'x'" });
+  });
+
   test("the help documents both", () => {
     for (const text of [USAGE, TUI_USAGE]) {
       expect(text).toContain("-c, --continue");
@@ -60,6 +79,12 @@ describe("the flags reach the TUI command", () => {
     const t = io();
     await runCli(["-c"], { HAMNESS_HOME: home.dir }, t.cli);
     expect(t.err.join("\n")).not.toContain("unknown command");
+  });
+
+  test("`hamness -c --help` prints the TUI's usage and exits 0", async () => {
+    const t = io();
+    expect(await runCli(["-c", "--help"], { HAMNESS_HOME: home.dir }, t.cli)).toBe(0);
+    expect(t.out.join("\n")).toContain("Usage: hamness tui");
   });
 
   test("a bad flag exits 2 with the TUI's usage", async () => {

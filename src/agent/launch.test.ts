@@ -30,13 +30,24 @@ afterEach(() => {
   home.cleanup();
 });
 
+/** How many agents the hub started (each start asks for the models once). */
+let starts = 0;
+/** Set to make the next agent start fail. */
+let startError: Error | undefined;
+
 function startHub() {
   const modes = new Map<string, SafetyMode>();
   published = [];
+  starts = 0;
+  startError = undefined;
   hub = new SessionHub({
     db,
     dataDir: join(home.dir, "data"),
-    models: async () => fake,
+    models: async () => {
+      starts += 1;
+      if (startError) throw startError;
+      return fake;
+    },
     contextFiles: false,
     publish: (e) => published.push(e),
     safetyModes: {
@@ -129,5 +140,87 @@ describe("sleeping sessions", () => {
     );
     const list = await h.listSessions(work, one.session.id);
     expect(list.filter((s) => s.current).map((s) => s.id)).toEqual([one.session.id]);
+  });
+});
+
+describe("review fixes", () => {
+  /** A prompted session, then a fresh launch that puts it to sleep. */
+  async function sleeping(h: SessionHub) {
+    fake.script([{ text: "a" }]);
+    const old = await h.attach(work, { kind: "new" });
+    h.prompt(old.session.id, "hi");
+    await until(() => idle(old.session.id));
+    const fresh = await h.attach(work, { kind: "new" });
+    expect(h.snapshot(old.session.id)).toBeUndefined();
+    return { old: old.session.id, fresh: fresh.session.id };
+  }
+
+  test("/resume racing a wake starts one agent for the id, whichever comes first", async () => {
+    const h = startHub();
+    const { old, fresh } = await sleeping(h);
+    const before = starts;
+    await Promise.all([h.resume(fresh, old), h.ensureAwake(old)]);
+    expect(starts - before).toBe(1);
+    expect(h.snapshot(old)).toBeDefined();
+
+    const again = await h.attach(work, { kind: "new" });
+    expect(h.snapshot(old)).toBeUndefined();
+    const before2 = starts;
+    await Promise.all([h.ensureAwake(old), h.resume(again.session.id, old)]);
+    expect(starts - before2).toBe(1);
+  });
+
+  test("a wake already under way still checks the folder", async () => {
+    const h = startHub();
+    const { old } = await sleeping(h);
+    const other = join(home.dir, "other");
+    mkdirSync(other);
+    const waking = h.ensureAwake(old);
+    await expect(h.attach(other, { kind: "session", id: old })).rejects.toThrow(/another folder/);
+    await waking;
+  });
+
+  test("a session switching models is not put to sleep", async () => {
+    const h = startHub();
+    const s = await h.attach(work, { kind: "new" });
+    const switching = h.setModel(s.session.id, "fake/claude-haiku-5-5");
+    const next = h.attach(work, { kind: "new" });
+    expect(h.snapshot(s.session.id)).toBeDefined();
+    await Promise.all([switching, next]);
+  });
+
+  test("a session whose SessionStart hooks still run is not put to sleep", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = startHub();
+    hub?.stop();
+    hub = new SessionHub({
+      db,
+      dataDir: join(home.dir, "data"),
+      models: async () => fake,
+      contextFiles: false,
+      publish: () => {},
+      hooks: {
+        sessionStart: async () => {
+          await gate;
+          return {};
+        },
+      } as unknown as NonNullable<ConstructorParameters<typeof SessionHub>[0]["hooks"]>,
+    });
+    void h;
+    const s = await hub.attach(work, { kind: "new" });
+    await hub.attach(work, { kind: "new" }).catch(() => undefined);
+    expect(hub.snapshot(s.session.id)).toBeDefined();
+    release();
+  });
+
+  test("a wake that fails for another reason than a missing session is not swallowed", async () => {
+    const h = startHub();
+    const { old } = await sleeping(h);
+    startError = new Error("disk on fire");
+    await expect(h.ensureAwake(old)).rejects.toThrow("disk on fire");
+    await h.ensureAwake("nope");
   });
 });

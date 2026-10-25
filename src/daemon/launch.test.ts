@@ -187,6 +187,31 @@ describe("--continue resumes the folder's latest session", () => {
   });
 });
 
+describe("waking a session does not make it the latest", () => {
+  test("a request that wakes an older session leaves --continue on the one prompted last", async () => {
+    fake.script([{ text: "a" }, { text: "b" }]);
+    const { call, fresh, say, launch } = await start();
+    const older = await fresh();
+    await say(older.session.id, "older");
+    const newer = await fresh();
+    await say(newer.session.id, "newer");
+    await fresh(); // both sleep now
+    expect((await call("GET", `/v1/sessions/${older.session.id}/status`)).status).toBe(200);
+    expect((await launch({ start: "continue" })).body.session.id).toBe(newer.session.id);
+  });
+
+  test("an explicit --resume <id> does make it the latest", async () => {
+    fake.script([{ text: "a" }, { text: "b" }]);
+    const { fresh, say, launch } = await start();
+    const older = await fresh();
+    await say(older.session.id, "older");
+    const newer = await fresh();
+    await say(newer.session.id, "newer");
+    await launch({ sessionId: older.session.id });
+    expect((await launch({ start: "continue" })).body.session.id).toBe(older.session.id);
+  });
+});
+
 describe("--resume <id> resumes that session", () => {
   test("live or from before a restart, even when it is not the latest", async () => {
     fake.script([{ text: "a" }, { text: "b" }]);

@@ -14,7 +14,7 @@ import { createSafetyService, type SafetyCheck } from "../safety/index.ts";
 import { type BackendJudge, createJudgeController } from "../safety/judge/index.ts";
 import { VERSION } from "../version.ts";
 import { claimState, type DaemonState, releaseState, writeState } from "./state.ts";
-import { getStatus } from "./status.ts";
+import { DAEMON_FEATURES, getStatus } from "./status.ts";
 
 /** The default API port. `HAMNESS_PORT` or `--port` overrides it; 0 picks a free one. */
 export const DEFAULT_PORT = 7357;
@@ -133,7 +133,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     const api = startApiServer({
       token,
       port: opts.port ?? DEFAULT_PORT,
-      health: () => ({ ok: true, version: VERSION, pid, schemaVersion: openDb.schemaVersion() }),
+      health: () => ({
+        ok: true,
+        version: VERSION,
+        pid,
+        schemaVersion: openDb.schemaVersion(),
+        features: DAEMON_FEATURES,
+      }),
       hello: () => ({
         type: "daemon.hello",
         version: VERSION,
