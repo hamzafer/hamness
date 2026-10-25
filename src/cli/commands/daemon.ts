@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon } from "../../daemon/daemon.ts";
-import { judgeFromKeys } from "../../safety/judge/index.ts";
+import { type BackendJudge, chooseJudge } from "../../safety/judge/index.ts";
 import type { CliContext } from "../run.ts";
 
 export const DAEMON_USAGE = [
@@ -33,13 +33,15 @@ export async function daemonCommand({ args, env, dataDir, io }: CliContext): Pro
     return 2;
   }
 
-  let judge: ReturnType<typeof judgeFromKeys>;
+  let judge: BackendJudge | undefined;
   try {
-    judge = judgeFromKeys({ dataDir, env });
+    const choice = await chooseJudge({ dataDir, env });
+    judge = choice.backend;
+    if (judge) io.out(`hamness daemon: judge ${choice.model} (${choice.billing})`);
+    else io.out(`hamness daemon: the judge is off: ${choice.off} (auto mode asks)`);
   } catch (err) {
     io.err(`hamness daemon: the judge is off: ${(err as Error).message}`);
   }
-  if (!judge) io.out("hamness daemon: no Anthropic API key, so the judge is off (auto mode asks)");
 
   let daemon: Awaited<ReturnType<typeof startDaemon>>;
   try {

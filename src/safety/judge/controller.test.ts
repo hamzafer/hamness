@@ -103,7 +103,7 @@ describe("the judge controller", () => {
     expect(c.state("s-1")).toBe("no-key");
     const v = await c.judge(req());
     expect(v).toMatchObject({ verdict: "ask", skipped: true });
-    expect(v.reason).toContain("no Anthropic API key");
+    expect(v.reason).toContain("judge is off");
     await c.judge(req());
     expect(c.states).toEqual([["s-1", "no-key"]]);
   });
@@ -209,6 +209,43 @@ describe("the judge controller", () => {
     release();
     expect(await first).toEqual(allow);
     expect(calls).toBe(1);
+  });
+
+  test("a ChatGPT plan judge counts calls, not dollars, against safety.judge.dailyCalls", async () => {
+    const models: Array<string | undefined> = [];
+    const plan = Object.assign(
+      async (_r: JudgeRequest, o?: { model?: string }) => {
+        models.push(o?.model);
+        return { ...allow, costMicros: 0 };
+      },
+      { billing: "plan" as const, model: "openai-codex/gpt-5.6-luna" },
+    );
+    // An unpriced model and a spent dollar budget don't matter on the plan.
+    const c = setup(plan, { dailyCalls: 2, dailyBudgetUsd: 0 });
+    seed.decision({ at: NOW - 15 * HOUR, verdict: "allow", source: "judge", costMicros: 0 });
+    seed.decision({ at: NOW - HOUR, verdict: "allow", source: "judge", costMicros: 0 });
+    expect(c.state("s-1")).toBe("on");
+    expect(await c.judge(req())).toMatchObject({ verdict: "allow", costMicros: 0 });
+    expect(models).toEqual(["openai-codex/gpt-5.6-luna"]);
+
+    seed.decision({ at: NOW - 1000, verdict: "allow", source: "judge", costMicros: 0 });
+    expect(c.state("s-1")).toBe("over-budget");
+    const v = await c.judge(req());
+    expect(v).toMatchObject({ verdict: "ask", skipped: true });
+    expect(v.reason).toContain("2 judge calls");
+    expect(models).toHaveLength(1);
+  });
+
+  test("a plan judge that fails still asks", async () => {
+    const plan = Object.assign(
+      async (): Promise<JudgeVerdict> => {
+        throw new Error("usage limit reached");
+      },
+      { billing: "plan" as const, model: "openai-codex/gpt-5.6-luna" },
+    );
+    const v = await setup(plan).judge(req());
+    expect(v.verdict).toBe("ask");
+    expect(v.reason).toContain("usage limit reached");
   });
 
   test("a judge model with no price counts as over budget, with the reason (S-L2)", async () => {

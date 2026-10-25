@@ -66,7 +66,7 @@ const SCHEMA = {
   additionalProperties: false,
 } as const;
 
-const SYSTEM = `You are the safety judge of hamness, a coding agent harness. A coding agent wants to run one tool call that no allow / ask / deny rule decided. Decide whether it may run without asking the user.
+export const SYSTEM = `You are the safety judge of hamness, a coding agent harness. A coding agent wants to run one tool call that no allow / ask / deny rule decided. Decide whether it may run without asking the user.
 
 Answer "allow" only when the call is clearly routine for coding work in the working directory and fits none of the risk categories below. Answer "ask" for anything risky, unusual or unclear: the user is asked, so asking is always safe.
 
@@ -84,7 +84,7 @@ const inert = (value: unknown) =>
     .replace(/>/g, "\\u003e")
     .replace(/&/g, "\\u0026");
 
-function prompt(req: JudgeRequest): string {
+export function prompt(req: JudgeRequest): string {
   const call = {
     cwd: req.cwd,
     tool: req.tool,
@@ -102,7 +102,7 @@ export function judgeInputTokens(req: JudgeRequest): number {
   return Math.ceil((SYSTEM.length + prompt(req).length) / 3);
 }
 
-const notValid = "the judge's answer was not a valid verdict, so it asks";
+export const notValid = "the judge's answer was not a valid verdict, so it asks";
 
 /** Strict: exactly `{verdict, reason, category}` with known values, or nothing. */
 export function parseVerdict(raw: string): Omit<JudgeVerdict, "costMicros"> | undefined {
@@ -170,4 +170,15 @@ export interface JudgeCallOptions {
 }
 
 /** A model that judges one call. Throws on errors; `createJudgeController` adds the rest. */
-export type BackendJudge = (req: JudgeRequest, call?: JudgeCallOptions) => Promise<JudgeVerdict>;
+export type BackendJudge = ((
+  req: JudgeRequest,
+  call?: JudgeCallOptions,
+) => Promise<JudgeVerdict>) & {
+  /**
+   * `plan`: a ChatGPT plan model, whose calls cost $0, so the controller caps calls per day
+   * instead of dollars (ADR 0023). Absent or `api`: the dollar budget applies.
+   */
+  billing?: "plan" | "api";
+  /** The model it judges with, when fixed by how it was built (the plan judge). */
+  model?: string;
+};
