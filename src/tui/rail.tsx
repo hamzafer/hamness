@@ -153,7 +153,9 @@ function CheckRow(props: { check: RailCheck; now: number; width: number }) {
 
 /** Full screen: the session's tasks, one line each, with how they ended. */
 function TaskList(props: { tasks: RailTask[]; width: number }) {
-  const goalWidth = () => Math.max(10, Math.min(48, props.width - 32));
+  // The goals get what the widest status line leaves (the two-space indent, a two-space gap).
+  const goalWidth = () =>
+    Math.max(10, props.width - 4 - Math.max(0, ...props.tasks.map((t) => taskStatus(t).length)));
   return (
     <box flexDirection="column" paddingTop={1}>
       <text fg={COLORS.muted}>tasks this session</text>

@@ -16,6 +16,7 @@ import type {
 import { ORB_LABEL } from "../orbs/activity.ts";
 import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
 import {
+  addCompactionFailure,
   addSystemLine,
   applyEvent,
   argSummary,
@@ -37,7 +38,7 @@ import {
   parseSlash,
 } from "./commands.ts";
 import { HelpPanel } from "./help.tsx";
-import { promptHint, shortPath } from "./layout.ts";
+import { promptHint, shortPath, welcomeLine, wrappedRows } from "./layout.ts";
 import { markdownStyle } from "./markdown.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { animationOff, ORB_FPS, ORB_ROWS, Orb } from "./orb.tsx";
@@ -88,6 +89,8 @@ export interface AppProps {
   animate?: boolean;
   /** `/copy`'s clipboard. Default: pbcopy, wl-copy or xclip, then OSC 52. */
   copy?: (text: string) => Promise<"system" | "terminal">;
+  /** How long an approval ignores keys after it shows. Default 400ms; tests pass 0. */
+  approvalArmMs?: number;
 }
 
 export function App(props: AppProps) {
@@ -189,9 +192,14 @@ export function App(props: AppProps) {
   /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
   const chatWidth = () => Math.max(20, dims().width - RAIL_WIDTH - 2);
   const home = props.home ?? homedir();
+  /** The judge's state for the header: in `auto`, and in `yolo` (it's back on `/mode auto`). */
+  const judgeShown = () =>
+    state.session.mode === "auto" || state.session.mode === "yolo"
+      ? state.session.judge
+      : undefined;
   /** The cwd in the header's room left after its other parts. */
   const headerPath = () => {
-    const judge = state.session.mode === "auto" && state.session.judge;
+    const judge = judgeShown();
     const rest =
       `hamness ·  · ${state.session.model}`.length +
       (state.session.name ? `${state.session.name} · `.length : 0) +
@@ -204,7 +212,16 @@ export function App(props: AppProps) {
   const [promptRows, setPromptRows] = createSignal(1);
   const fitPrompt = () =>
     setPromptRows(
-      Math.min(PROMPT_MAX_ROWS, Math.max(1, input?.lineCount ?? 1, input?.virtualLineCount ?? 1)),
+      Math.min(
+        PROMPT_MAX_ROWS,
+        Math.max(
+          1,
+          input?.lineCount ?? 1,
+          input?.virtualLineCount ?? 1,
+          // Inside the box's border.
+          wrappedRows(input?.plainText ?? "", chatWidth() - 2),
+        ),
+      ),
     );
   /** The `/model` picker's list while it is open. */
   const [picker, setPicker] = createSignal<ModelInfo[] | undefined>();
@@ -212,6 +229,8 @@ export function App(props: AppProps) {
   const [help, setHelp] = createSignal(false);
   /** A command's pick list (`/resume`, `/fork`, `/thinking`, `/mode`) while it is open. */
   const [list, setList] = createSignal<PickerSpec | undefined>();
+  /** The open picker's filter: kept here so it survives an approval hiding the picker. */
+  const [pickQuery, setPickQuery] = createSignal("");
   /** The `/status` panel while it is open. */
   const [status, setStatus] = createSignal<SessionStatus | undefined>();
 
@@ -284,11 +303,14 @@ export function App(props: AppProps) {
     if (arg) return switchModel(arg);
     props.client
       .models()
-      .then((models) =>
-        models.length
-          ? setPicker(models)
-          : setState("notice", "No models available: add a key with `hamness keys set <provider>`"),
-      )
+      .then((models) => {
+        if (!models.length) {
+          setState("notice", "No models available: add a key with `hamness keys set <provider>`");
+          return;
+        }
+        setPickQuery("");
+        setPicker(models);
+      })
       .catch((err: Error) => setState("notice", err.message));
   };
 
@@ -298,7 +320,10 @@ export function App(props: AppProps) {
     session: () => state.session,
     say,
     patchSession: (patch) => setState("session", patch),
-    pick: (spec) => setList(spec),
+    pick: (spec) => {
+      setPickQuery("");
+      setList(spec);
+    },
     showHelp: () => setHelp(true),
     showStatus: (s) => setStatus(s),
     model: modelCommand,
@@ -316,6 +341,7 @@ export function App(props: AppProps) {
         sendQueued();
       }
     },
+    compactionFailed: (message) => setState(produce((s) => addCompactionFailure(s, message))),
     setInput,
     prompts: () =>
       state.items.flatMap((i) =>
@@ -391,7 +417,8 @@ export function App(props: AppProps) {
         if (!m) return;
         if (key.name === "tab") return complete(m);
         const what = menuEnter(menuQuery(draft()) ?? "", matches(), menuIndex(), menuMoved());
-        if (what.kind === "hint") return submit("/");
+        // A bare `/`: the menu stays open to pick from.
+        if (what.kind === "hint") return;
         if (what.kind === "complete" || needsArgs(what.match.command)) return complete(what.match);
         return submit(what.match.label);
       }
@@ -427,7 +454,7 @@ export function App(props: AppProps) {
           paddingLeft={1}
           paddingRight={1}
         >
-          <box flexDirection="row" height={1}>
+          <box flexDirection="row" height={1} flexShrink={0}>
             <text fg={COLORS.muted}>hamness · </text>
             <Show when={state.session.name}>
               {(name: () => string) => <text fg={COLORS.assistant}>{`${name()} · `}</text>}
@@ -435,7 +462,7 @@ export function App(props: AppProps) {
             <text fg={COLORS.muted}>
               {headerPath()} · {state.session.model}
             </text>
-            <Show when={state.session.mode === "auto" && state.session.judge}>
+            <Show when={judgeShown()}>
               {(judge: () => JudgeState) => (
                 <text fg={judge() === "on" ? COLORS.muted : COLORS.warn}>
                   {` · ${JUDGE_LABEL[judge()]}`}
@@ -446,7 +473,21 @@ export function App(props: AppProps) {
               <text fg={COLORS.warn}> · working…</text>
             </Show>
           </box>
-          <scrollbox stickyScroll stickyStart="bottom" flexGrow={1} minHeight={0}>
+          {/* The scrollbar keeps its column even while it has nothing to scroll: text wraps short
+              of it, so it never covers a line's last character when it appears. */}
+          <scrollbox
+            stickyScroll
+            stickyStart="bottom"
+            flexGrow={1}
+            minHeight={0}
+            contentOptions={{ paddingRight: 1 }}
+          >
+            <Show when={!state.items.some((i) => i.kind === "message" && i.role === "user")}>
+              <text fg={COLORS.muted}>
+                {/* The indent and the scrollbar's column come off the pane's width. */}
+                {`  ${welcomeLine(state.session.cwd, home, state.session.model, chatWidth() - 3)}`}
+              </text>
+            </Show>
             <For each={state.items}>
               {(item) =>
                 item.kind === "message" ? (
@@ -486,7 +527,12 @@ export function App(props: AppProps) {
           </Show>
           <Show when={state.approvals.length === 0 && list()}>
             {(spec: () => PickerSpec) => (
-              <Picker spec={spec()} onClose={() => setList(undefined)} />
+              <Picker
+                spec={spec()}
+                onClose={() => setList(undefined)}
+                query={pickQuery()}
+                onQuery={setPickQuery}
+              />
             )}
           </Show>
           <Show when={state.approvals.length === 0 && picker()}>
@@ -496,6 +542,8 @@ export function App(props: AppProps) {
                 current={state.session.model}
                 onPick={switchModel}
                 onClose={() => setPicker(undefined)}
+                query={pickQuery()}
+                onQuery={setPickQuery}
               />
             )}
           </Show>
@@ -504,6 +552,9 @@ export function App(props: AppProps) {
               <ApprovalPrompt
                 approval={first()}
                 queued={state.approvals.length}
+                width={chatWidth()}
+                maxHeight={Math.max(6, Math.floor(dims().height / 2))}
+                {...(props.approvalArmMs !== undefined ? { armMs: props.approvalArmMs } : {})}
                 onAnswer={(decision) =>
                   props.client
                     .answerApproval(first().id, decision)
@@ -545,7 +596,7 @@ export function App(props: AppProps) {
  * The prompt box: Enter sends; Shift+Enter (terminals that report it) and Ctrl+J add a
  * new line. Ctrl+J arrives as a linefeed in most terminals, or as `j` with Ctrl in kitty's.
  */
-const PROMPT_MAX_ROWS = 8;
+const PROMPT_MAX_ROWS = 6;
 const PROMPT_KEYS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "kpenter", action: "submit" },

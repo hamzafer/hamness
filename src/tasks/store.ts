@@ -156,6 +156,62 @@ export class TaskStore {
     );
   }
 
+  /** The session's newest checked evidence (`limit` rows), oldest first. Pending claims don't count. */
+  checkedEvidence(
+    sessionId: string,
+    limit: number,
+  ): Array<{
+    id: string;
+    taskId: string;
+    claim: EvidenceClaim;
+    status: "passed" | "failed" | "error";
+    summary?: string;
+    createdAt: number;
+    checkedAt?: number;
+  }> {
+    return this.sql
+      .query<
+        {
+          id: string;
+          task_id: string;
+          claim_json: string;
+          status: "passed" | "failed" | "error";
+          result_json: string | null;
+          created_at: number;
+          checked_at: number | null;
+        },
+        [string, number]
+      >(
+        `SELECT e.id, e.task_id, e.claim_json, e.status, e.result_json, e.created_at, e.checked_at
+         FROM evidence e JOIN tasks t ON t.id = e.task_id
+         WHERE t.session_id = ? AND e.status != 'pending'
+         ORDER BY e.created_at DESC, e.id DESC LIMIT ?`,
+      )
+      .all(sessionId, limit)
+      .reverse()
+      .flatMap((r) => {
+        let claim: EvidenceClaim;
+        let result: { summary?: unknown } = {};
+        try {
+          claim = JSON.parse(r.claim_json);
+          result = r.result_json ? JSON.parse(r.result_json) : {};
+        } catch {
+          return [];
+        }
+        return [
+          {
+            id: r.id,
+            taskId: r.task_id,
+            claim,
+            status: r.status,
+            ...(typeof result.summary === "string" ? { summary: result.summary } : {}),
+            createdAt: r.created_at,
+            ...(r.checked_at !== null ? { checkedAt: r.checked_at } : {}),
+          },
+        ];
+      });
+  }
+
   /** The task's evidence as the gate reads it (`gate.ts`). */
   gateEvidence(taskId: string): GateEvidence[] {
     return this.sql

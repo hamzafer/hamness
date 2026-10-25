@@ -1,6 +1,6 @@
 import type { SessionStatus } from "../agent/session-hub.ts";
 import { oneLine } from "./commands.ts";
-import { shortPath } from "./layout.ts";
+import { plural, shortPath } from "./layout.ts";
 import { PICKER_COLORS } from "./picker.tsx";
 import { formatCost, formatTokens } from "./rail-state.ts";
 
@@ -16,7 +16,7 @@ export function statusRows(s: SessionStatus, home: string): Array<readonly [stri
   const cache = t.cacheRead + t.cacheWrite;
   const tokens = `${formatTokens(t.total)} · ${formatTokens(t.input)} in, ${formatTokens(t.output)} out${cache ? `, ${formatTokens(cache)} cache` : ""}`;
   const task = s.task
-    ? `${oneLine(s.task.goal, 44)} · ${s.task.outcome}${s.task.evidence ? ` · ${s.task.passed}/${s.task.evidence} checks` : ""}`
+    ? `${oneLine(s.task.goal, 44)} · ${s.task.outcome}${s.task.evidence ? ` · ${s.task.passed}/${plural(s.task.evidence, "check")}` : ""}`
     : "none";
   const rows: Array<readonly [string, string]> = [];
   if (s.name) rows.push(["Session", s.name]);
@@ -28,7 +28,11 @@ export function statusRows(s: SessionStatus, home: string): Array<readonly [stri
     ["Cost", formatCost(s.costMicros)],
     [
       "Messages",
-      `${s.messages.user} prompts, ${s.messages.assistant} replies, ${s.messages.toolCalls} tool calls`,
+      [
+        plural(s.messages.user, "prompt"),
+        plural(s.messages.assistant, "reply", "replies"),
+        plural(s.messages.toolCalls, "tool call"),
+      ].join(", "),
     ],
     ["Task", task],
   );

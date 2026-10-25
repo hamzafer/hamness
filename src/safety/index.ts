@@ -42,7 +42,7 @@ export type SafetyCheck = (call: GuardedCall, ctx?: SafetyContext) => Promise<Sa
 
 export const allowAll: SafetyCheck = async () => ({ allow: true });
 
-export { redactArgs, redactText } from "./redact.ts";
+export { redactArgs, redactSecrets, redactText } from "./redact.ts";
 export type {
   ApprovalAnswer,
   HookVerdict,

@@ -7,6 +7,7 @@ import { type DaemonClient, DaemonError, type SessionCommands } from "../client/
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import type { TaskView } from "../tasks/types.ts";
 import { App } from "./app.tsx";
+import { COMMANDS, matchCommands } from "./commands.ts";
 
 type Setup = Awaited<ReturnType<typeof testRender>>;
 let setup: Setup | undefined;
@@ -238,6 +239,7 @@ async function render(fake: ReturnType<typeof fakeClient>, opts: { onExit?: () =
         snapshot={snapshot}
         home="/home/user"
         animate={false}
+        approvalArmMs={0}
         copy={fake.copy}
         {...(opts.onExit ? { onExit: opts.onExit } : {})}
       />
@@ -287,6 +289,26 @@ describe("the / menu", () => {
     const inputRow = lines.findIndex((l) => l.includes("│/"));
     expect(menuRow).toBeGreaterThan(-1);
     expect(inputRow).toBeGreaterThan(menuRow);
+  });
+
+  test("its counter shows the highlighted row and the filtered total", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await s.mockInput.typeText("/");
+    const all = COMMANDS.length;
+    await frameWhere(s, (f) => f.includes(`1 of ${all}`));
+    s.mockInput.pressArrow("down");
+    s.mockInput.pressArrow("down");
+    await frameWhere(s, (f) => f.includes(`3 of ${all}`));
+    expect(s.captureCharFrame()).toContain(`3 of ${all}`);
+    await s.mockInput.typeText("co");
+    const n = matchCommands("co").length;
+    const frame = await frameWhere(s, (f) => f.includes(`1 of ${n} `));
+    expect(frame).toContain(`1 of ${n} `);
+    expect(frame).not.toContain(`of ${all}`);
+    s.mockInput.pressArrow("down");
+    await frameWhere(s, (f) => f.includes(`2 of ${n} `));
+    expect(s.captureCharFrame()).toContain(`2 of ${n} `);
   });
 
   test("typing filters it, fuzzily", async () => {
@@ -368,7 +390,7 @@ describe("the / menu", () => {
 });
 
 describe("Enter in the menu, and what never reaches the model", () => {
-  test("a fuzzy-only match completes instead of running; a bare / only hints", async () => {
+  test("a fuzzy-only match completes instead of running; a bare / keeps the menu open", async () => {
     const fake = fakeClient();
     const s = await render(fake);
     await s.mockInput.typeText("/opt");
@@ -381,7 +403,11 @@ describe("Enter in the menu, and what never reaches the model", () => {
     await s.mockInput.typeText("/");
     await frameWhere(s, (f) => f.includes("Start fresh"));
     s.mockInput.pressEnter();
-    await frameWhere(s, (f) => f.includes("Type / to see commands."));
+    await Bun.sleep(30);
+    const frame = await frameWhere(s, () => true);
+    expect(frame).toContain("Start fresh");
+    expect(frame).not.toContain("Type / to see commands.");
+    expect(frame).toMatch(/│\/\s/);
     expect(fake.calls).toEqual([]);
     expect(fake.prompts).toEqual([]);
   });
@@ -423,6 +449,7 @@ describe("Enter in the menu, and what never reaches the model", () => {
           snapshot={snapshot}
           home="/home/user"
           animate={false}
+          approvalArmMs={0}
           copy={async () => "terminal"}
         />
       ),
@@ -453,6 +480,8 @@ describe("an approval comes first", () => {
     const s = await render(fake);
     await run(s, "/resume");
     await frameWhere(s, (f) => f.includes("Resume a session"));
+    await s.mockInput.typeText("release");
+    await frameWhere(s, (f) => f.includes("Resume a session · release"));
     fake.send({ type: "safety.approval.request", approval });
     const asked = await frameWhere(s, (f) => f.includes("approve this tool call"));
     expect(asked).not.toContain("Resume a session");
@@ -464,8 +493,12 @@ describe("an approval comes first", () => {
       decision: "deny",
       by: "user",
     });
-    // The picker is back, and Esc now only closes it.
-    await frameWhere(s, (f) => f.includes("Resume a session"));
+    // The picker is back with its filter, and Esc now only clears it, then closes it.
+    const back = await frameWhere(s, (f) => f.includes("Resume a session"));
+    expect(back).toContain("Resume a session · release");
+    expect(back).not.toContain("an old question");
+    s.mockInput.pressEscape();
+    await frameWhere(s, (f) => f.includes("an old question"));
     s.mockInput.pressEscape();
     await frameWhere(s, (f) => !f.includes("Resume a session"));
     expect(answers).toEqual(["deny"]);
@@ -566,6 +599,32 @@ describe("session commands", () => {
     expect(fake.calls).toEqual([`list ${CWD}`, `resume ${SID} ${OLD}`]);
   });
 
+  test("/resume and /fork filter as you type", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/resume");
+    await frameWhere(s, (f) => f.includes("Resume a session"));
+    await s.mockInput.typeText("release");
+    const frame = await frameWhere(s, (f) => !f.includes("an old question"));
+    expect(frame).not.toContain("an old question");
+    expect(frame).toContain("release");
+    s.mockInput.pressEnter();
+    await frameWhere(s, (f) => f.includes("Resumed: release notes"));
+    expect(fake.calls).toEqual([`list ${CWD}`, `resume ${SID} ${OLD}`]);
+  });
+
+  test("a filter that matches nothing says so; Enter picks nothing", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/fork");
+    await frameWhere(s, (f) => f.includes("Fork from a prompt"));
+    await s.mockInput.typeText("zzz");
+    await frameWhere(s, (f) => f.includes("Nothing matches"));
+    s.mockInput.pressEnter();
+    await Bun.sleep(30);
+    expect(fake.calls).toEqual([]);
+  });
+
   test("/resume of a session whose file is gone says so", async () => {
     const fake = fakeClient();
     const s = await render(fake);
@@ -592,6 +651,36 @@ describe("session commands", () => {
     expect(fake.calls).toEqual([`fork ${SID} u2`]);
     expect(frame).not.toContain("Added lexer.test.ts.");
     expect(frame).toMatch(/│now write a test for it/);
+  });
+
+  test("a long prompt put back by /fork shows whole: the input grows, up to six rows", async () => {
+    const fake = fakeClient();
+    const forked = fake.client.fork;
+    const words = Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ");
+    const text = `first line of the prompt\n${words} the-last-word`;
+    fake.client.fork = async (id, messageId) => ({ ...(await forked(id, messageId)), text });
+    const s = await render(fake);
+    await run(s, "/fork");
+    await frameWhere(s, (f) => f.includes("Fork from a prompt"));
+    s.mockInput.pressEnter();
+    const frame = await frameWhere(
+      s,
+      (f) => f.includes("Forked.") && f.includes("│first line of the prompt"),
+    );
+    expect(frame).toContain("│first line of the prompt");
+    const lines = frame.split("\n");
+    const top = lines.findIndex((l) => l.includes("│first line of the prompt"));
+    const bottom = lines.findIndex((l, i) => i > top && l.trimStart().startsWith("└"));
+    // The first line and every wrapped row of the second, down to its last word.
+    expect(bottom - top).toBeGreaterThanOrEqual(3);
+    expect(lines[bottom - 1]).toContain("the-last-word");
+    // Longer than six rows: the box stops growing at six and scrolls.
+    for (let i = 0; i < 8; i++) s.mockInput.pressKey("j", { ctrl: true });
+    const tall = await frameWhere(s, (f) => !f.includes("│first line of the prompt"));
+    const rows = tall.split("\n");
+    const end = rows.findLastIndex((l) => l.trimStart().startsWith("└"));
+    const start = rows.findLastIndex((l, i) => i < end && l.trimStart().startsWith("┌"));
+    expect(end - start - 1).toBe(6);
   });
 
   test("/status shows a compact panel; Esc closes it", async () => {
@@ -692,12 +781,74 @@ describe("session commands", () => {
 
   test("a daemon error shows inline", async () => {
     const fake = fakeClient();
-    fake.client.exportSession = async () => {
-      throw new DaemonError("/work/demo/s.html exists; send overwrite: true to replace it", 409);
+    fake.client.listSessions = async () => {
+      throw new DaemonError("the session index is locked", 500);
     };
     const s = await render(fake);
-    await run(s, "/export s.html");
-    await frameWhere(s, (f) => f.includes("s.html exists"));
+    await run(s, "/resume");
+    await frameWhere(s, (f) => f.includes("the session index is locked"));
+  });
+
+  test("/export onto an existing file says how to replace it; --force does", async () => {
+    const fake = fakeClient();
+    const forced: boolean[] = [];
+    fake.client.exportSession = async (_id, _format, opts) => {
+      forced.push(opts?.overwrite === true);
+      if (!opts?.overwrite) {
+        throw new DaemonError(
+          "/work/demo/out.jsonl exists; send overwrite: true to replace it",
+          409,
+        );
+      }
+      return "/work/demo/out.jsonl";
+    };
+    const s = await render(fake);
+    await run(s, "/export jsonl out.jsonl");
+    const frame = await frameWhere(s, (f) => f.includes("out.jsonl exists."));
+    expect(frame).toContain("out.jsonl exists. Use /export jsonl out.jsonl --force to replace it.");
+    expect(frame).not.toContain("overwrite: true");
+    await run(s, "/export jsonl out.jsonl --force");
+    await frameWhere(s, (f) => f.includes("Exported to /work/demo/out.jsonl"));
+    expect(forced).toEqual([false, true]);
+  });
+
+  test("/judge resume that didn't bring the judge back says why, without contradicting itself", async () => {
+    const fake = fakeClient();
+    let next: "paused" | "no-key" = "paused";
+    fake.client.resumeJudge = async () => next;
+    const s = await render(fake);
+    await run(s, "/judge resume");
+    await frameWhere(s, (f) => f.includes("The judge is still paused. Try /judge resume again."));
+    next = "no-key";
+    await run(s, "/judge resume");
+    const frame = await frameWhere(s, (f) => f.includes("off without an Anthropic API key"));
+    expect(frame).not.toContain("isn't paused: it is still paused");
+  });
+
+  test("a failed /compact says so once, in one readable line", async () => {
+    const fake = fakeClient();
+    const raw =
+      "Summarization failed: API integrators: you can reduce refusals for your users by " +
+      "configuring a fallback model — see https://docs.example.com/refusals-and-fallback";
+    fake.client.compact = async () => {
+      fake.send({ type: "agent.compaction.start", reason: "manual" });
+      fake.send({
+        type: "agent.compaction.end",
+        reason: "manual",
+        aborted: false,
+        error: `Compaction failed: ${raw}`,
+      });
+      throw new DaemonError(raw, 409);
+    };
+    const s = await render(fake);
+    await run(s, "/compact");
+    const frame = await frameWhere(s, (f) => f.includes("Compaction failed"));
+    await Bun.sleep(30);
+    const after = await frameWhere(s, () => true);
+    expect(frame).toContain("Compaction failed: the model refused to write the summary.");
+    expect(after.match(/Compaction failed/g)?.length).toBe(1);
+    expect(after).not.toContain("Summarization failed");
+    expect(after).not.toContain("API integrators");
   });
 
   test("a setting refused while the session switches or compacts (409) says to try again", async () => {

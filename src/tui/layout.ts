@@ -28,6 +28,58 @@ export function shortPath(path: string, home: string, max: number): string {
   return `…/${last}`.length <= max ? `…/${last}` : last;
 }
 
+/**
+ * Rows `text` takes in a box `width` columns wide (wide characters count two), wrapped at
+ * spaces (a longer word breaks inside it). The input box grows by this: the textarea only
+ * counts its wrapped rows after it has drawn them.
+ */
+export function wrappedRows(text: string, width: number): number {
+  const w = Math.max(1, width);
+  let rows = 0;
+  for (const line of text.split("\n")) {
+    let used = 0;
+    let lineRows = 1;
+    for (const word of line.split(" ")) {
+      const cols = Bun.stringWidth(word);
+      const need = used === 0 ? cols : used + 1 + cols;
+      if (need <= w) {
+        used = need;
+        continue;
+      }
+      if (used > 0) lineRows++;
+      // The word on fresh rows, broken where it is longer than one.
+      lineRows += Math.max(0, Math.ceil(cols / w) - 1);
+      used = cols % w || w;
+    }
+    rows += lineRows;
+  }
+  return Math.max(1, rows);
+}
+
+const WELCOME_HINT = "Type / for commands";
+
+/**
+ * The empty chat's one line in `width` columns: folder, model and the hint. Short of room the
+ * folder goes first, then the model's provider, then the model; the hint always stays.
+ */
+export function welcomeLine(cwd: string, home: string, model: string, width: number): string {
+  const sep = " · ";
+  const bare = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
+  const room = width - model.length - WELCOME_HINT.length - 2 * sep.length;
+  const folder = room >= 8 ? shortPath(cwd, home, room) : "";
+  if (folder && folder.length <= room) return [folder, model, WELCOME_HINT].join(sep);
+  for (const m of [model, bare]) {
+    const line = `${m}${sep}${WELCOME_HINT}`;
+    if (line.length <= width) return line;
+  }
+  return WELCOME_HINT;
+}
+
+/** `1 prompt`, `2 prompts`: the count and the word in the number it needs. */
+export function plural(n: number, word: string, many = `${word}s`): string {
+  return `${n} ${n === 1 ? word : many}`;
+}
+
 /** The input box's hint, longest first. */
 export const PROMPT_HINTS: readonly string[] = [
   "Ask hamness… (Enter sends, Shift+Enter or Ctrl+J new line, Esc stops, /help lists commands, Ctrl+C leaves)",

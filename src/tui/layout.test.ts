@@ -1,5 +1,77 @@
 import { describe, expect, test } from "bun:test";
-import { PROMPT_HINTS, promptHint, shortPath } from "./layout.ts";
+import { PROMPT_HINTS, plural, promptHint, shortPath, welcomeLine, wrappedRows } from "./layout.ts";
+import { statusRows } from "./status-panel.tsx";
+
+describe("plural", () => {
+  test("one of a thing is singular, any other count plural", () => {
+    expect(plural(1, "prompt")).toBe("1 prompt");
+    expect(plural(0, "prompt")).toBe("0 prompts");
+    expect(plural(2, "reply", "replies")).toBe("2 replies");
+    expect(plural(1, "reply", "replies")).toBe("1 reply");
+  });
+
+  test("/status counts read right for one of each", () => {
+    const rows = statusRows(
+      {
+        sessionId: "s-1",
+        cwd: "/work/demo",
+        model: "fake/m",
+        thinkingLevel: "off",
+        busy: false,
+        tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
+        costMicros: 0,
+        messages: { user: 1, assistant: 1, toolCalls: 1 },
+        task: {
+          id: "t1",
+          goal: "g",
+          implicit: false,
+          outcome: "open",
+          evidence: 1,
+          passed: 1,
+          costMicros: 0,
+          tokens: 0,
+          startedAt: 0,
+          durationMs: 0,
+        },
+      },
+      HOME,
+    );
+    const row = (k: string) => rows.find(([key]) => key === k)?.[1];
+    expect(row("Messages")).toBe("1 prompt, 1 reply, 1 tool call");
+    expect(row("Task")).toBe("g · open · 1/1 check");
+  });
+});
+
+describe("welcomeLine", () => {
+  test("folder, model and the hint when they fit; parts drop, never the hint, when they don't", () => {
+    const model = "anthropic/claude-opus-5-5";
+    expect(welcomeLine("/home/user/dev/app", HOME, model, 100)).toBe(
+      `~/dev/app · ${model} · Type / for commands`,
+    );
+    for (const width of [20, 30, 40, 46, 60]) {
+      const line = welcomeLine("/home/user/dev/projects/some-app", HOME, model, width);
+      expect(line.length).toBeLessThanOrEqual(width);
+      expect(line).toContain("Type / for commands");
+    }
+    expect(welcomeLine("/home/user/dev/app", HOME, model, 46)).toContain("claude-opus-5-5");
+  });
+});
+
+describe("wrappedRows", () => {
+  test("counts the rows text takes when wrapped at word breaks", () => {
+    expect(wrappedRows("", 10)).toBe(1);
+    expect(wrappedRows("short", 10)).toBe(1);
+    expect(wrappedRows("one\ntwo\n", 10)).toBe(3);
+    expect(wrappedRows("aaaa bbbb cccc", 10)).toBe(2);
+    expect(wrappedRows("aaaa bbbbb", 10)).toBe(1);
+    // A word longer than the row breaks inside it.
+    expect(wrappedRows("x".repeat(25), 10)).toBe(3);
+    // Wide characters take two columns each.
+    expect(wrappedRows("日本語の文", 10)).toBe(1);
+    expect(wrappedRows("日本語の文章です", 10)).toBe(2);
+    expect(wrappedRows("日本 語の文章", 10)).toBe(2);
+  });
+});
 
 const HOME = "/home/user";
 

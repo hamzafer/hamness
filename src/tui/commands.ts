@@ -1,8 +1,14 @@
 import type { SessionStatus } from "../agent/session-hub.ts";
 import { type DaemonClient, DaemonError, type SessionCommands } from "../client/client.ts";
-import type { SafetyMode, SessionInfo, SessionSnapshot, ThinkingLevel } from "../events/types.ts";
-import type { SystemLine } from "./chat-state.ts";
-import { shortPath } from "./layout.ts";
+import type {
+  JudgeState,
+  SafetyMode,
+  SessionInfo,
+  SessionSnapshot,
+  ThinkingLevel,
+} from "../events/types.ts";
+import { JUDGE_BACK_ON, type SystemLine } from "./chat-state.ts";
+import { plural, shortPath } from "./layout.ts";
 import type { PickerSpec } from "./picker.tsx";
 import { formatCost } from "./rail-state.ts";
 import { parseTaskCommand, taskConfirmation } from "./task-commands.ts";
@@ -34,6 +40,8 @@ export interface CommandContext {
     call: () => Promise<SessionSnapshot>,
     line: (snapshot: SessionSnapshot) => string,
   ): Promise<SessionSnapshot | undefined>;
+  /** A failed `/compact`: one readable line, even when its event says it too. */
+  compactionFailed(message: string): void;
   /** Puts text in the input box. */
   setInput(text: string): void;
   /** The user's prompts in this chat, oldest first, for `/fork`. */
@@ -87,17 +95,59 @@ export function relativeTime(at: number, now: number): string {
   return `${Math.floor(s / 86_400)}d ago`;
 }
 
-/** `/export [html|jsonl] [path]`; a lone path ending in `.jsonl` means jsonl. */
-export function parseExportArgs(arg: string): { format: "html" | "jsonl"; path?: string } {
-  const m = /^(html|jsonl)(?:\s+([\s\S]+))?$/.exec(arg.trim());
-  if (m)
-    return m[2]
-      ? { format: m[1] as "html" | "jsonl", path: m[2].trim() }
-      : { format: m[1] as "html" | "jsonl" };
-  const path = arg.trim();
-  if (!path) return { format: "html" };
-  return { format: path.endsWith(".jsonl") ? "jsonl" : "html", path };
+/**
+ * `/export [html|jsonl] [path] [--force]`; a lone path ending in `.jsonl` means jsonl.
+ * `--force` replaces a file that is already there.
+ */
+export function parseExportArgs(arg: string): {
+  format: "html" | "jsonl";
+  path?: string;
+  force?: true;
+} {
+  // `--force` counts only as the first or the last word, cut out of the text as typed.
+  let rest = arg.trim();
+  let force = false;
+  const head = /^--force(?:\s+|$)/.exec(rest);
+  const tail = /(?:^|\s+)--force$/.exec(rest);
+  if (head) {
+    rest = rest.slice(head[0].length);
+    force = true;
+  } else if (tail) {
+    rest = rest.slice(0, tail.index);
+    force = true;
+  }
+  const out = ((): { format: "html" | "jsonl"; path?: string } => {
+    const m = /^(html|jsonl)(?:\s+([\s\S]+))?$/.exec(rest);
+    if (m)
+      return m[2]
+        ? { format: m[1] as "html" | "jsonl", path: m[2].trim() }
+        : { format: m[1] as "html" | "jsonl" };
+    if (!rest) return { format: "html" };
+    return { format: rest.endsWith(".jsonl") ? "jsonl" : "html", path: rest };
+  })();
+  return force ? { ...out, force: true } : out;
 }
+
+/** The daemon's refusal to replace a file (`… exists; send overwrite: true …`), said for the TUI. */
+function exportExistsLine(
+  err: unknown,
+  format: string,
+  path: string | undefined,
+): string | undefined {
+  if (!(err instanceof DaemonError) || err.status !== 409 || !/ exists; /.test(err.message)) {
+    return undefined;
+  }
+  const target = path ?? err.message.slice(0, err.message.indexOf(" exists; "));
+  const name = path ?? target.split("/").at(-1) ?? target;
+  return `${name} exists. Use /export ${format} ${target} --force to replace it.`;
+}
+
+/** `/judge resume` when the judge didn't come back on: still paused, or off for another reason. */
+const JUDGE_NOT_ON: Record<Exclude<JudgeState, "on">, string> = {
+  paused: "The judge is still paused. Try /judge resume again.",
+  "over-budget": "The judge isn't paused: it is over today's budget.",
+  "no-key": "The judge isn't paused: it is off without an Anthropic API key.",
+};
 
 const MODES: ReadonlyArray<readonly [SafetyMode, string]> = [
   ["ask", "Rules decide, then you"],
@@ -153,7 +203,13 @@ export const COMMANDS: readonly SlashCommand[] = [
     args: "[instructions]",
     description: "Summarize the context to free up room",
     run: (ctx, arg) => {
-      ctx.client.compact(ctx.session().id, arg || undefined).catch(fail(ctx));
+      ctx.client.compact(ctx.session().id, arg || undefined).catch((err: unknown) => {
+        const [line, tone] = errorLine(err);
+        // Busy: the usual try-again line. Else the compaction itself failed, and its event
+        // (`agent.compaction.end`) says so too: one line for both.
+        if (line === BUSY_LINE) ctx.say(line, tone);
+        else ctx.compactionFailed(line);
+      });
     },
   },
   {
@@ -174,7 +230,7 @@ export const COMMANDS: readonly SlashCommand[] = [
           cells: [
             sessionLabel(s),
             relativeTime(s.lastActivityAt, now),
-            `${s.messageCount} ${s.messageCount === 1 ? "message" : "messages"}`,
+            plural(s.messageCount, "message"),
             formatCost(s.costMicros),
           ],
           current: s.current,
@@ -326,13 +382,20 @@ export const COMMANDS: readonly SlashCommand[] = [
   {
     name: "export",
     args: "[html|jsonl] [path]",
-    description: "Save the session to a file",
+    description: "Save the session to a file; --force replaces one",
     run: (ctx, arg) => {
-      const { format, path } = parseExportArgs(arg);
+      const { format, path, force } = parseExportArgs(arg);
       ctx.client
-        .exportSession(ctx.session().id, format, path ? { path } : {})
+        .exportSession(ctx.session().id, format, {
+          ...(path ? { path } : {}),
+          ...(force ? { overwrite: true } : {}),
+        })
         .then((written) => ctx.say(`Exported to ${shortPath(written, ctx.home, 200)}`))
-        .catch(fail(ctx));
+        .catch((err: unknown) => {
+          const exists = exportExistsLine(err, format, path);
+          if (exists) ctx.say(exists, "warn");
+          else fail(ctx)(err);
+        });
     },
   },
   {
@@ -360,9 +423,16 @@ export const COMMANDS: readonly SlashCommand[] = [
     description: "Turn a paused judge back on",
     run: (ctx, arg) => {
       if (arg !== "resume") return ctx.say("Usage: /judge resume", "warn");
+      const before = ctx.session().judge;
       ctx.client
         .resumeJudge(ctx.session().id)
-        .then((judge) => ctx.patchSession({ judge }))
+        .then((judge) => {
+          // The judge's own event (`safety.judge`) says "back on" when it gets here first.
+          if (judge === "on" && ctx.session().judge === "paused") ctx.say(JUDGE_BACK_ON);
+          else if (judge === "on" && before !== "paused") ctx.say("The judge is already on.");
+          else if (judge !== "on") ctx.say(JUDGE_NOT_ON[judge], "warn");
+          ctx.patchSession({ judge });
+        })
         .catch(fail(ctx));
     },
   },

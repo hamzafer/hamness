@@ -1,4 +1,4 @@
-import type { EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
+import type { CheckView, EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
 
 /**
  * Everything the daemon streams to clients over `/v1/events`, and the session shapes its HTTP API returns.
@@ -99,6 +99,8 @@ export interface SessionSnapshot {
   context?: ContextFill;
   /** The session's current task, or its last one. */
   task?: TaskView;
+  /** The session's last finished proof checks, oldest first (the rail's check rows). */
+  checks?: CheckView[];
 }
 
 /** One agent's stored usage. `tokens` adds input, output, cache read and cache write. */

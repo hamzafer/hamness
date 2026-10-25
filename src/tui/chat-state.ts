@@ -6,6 +6,7 @@ import type {
   SessionSnapshot,
   TranscriptItem,
 } from "../events/types.ts";
+import { plural } from "./layout.ts";
 import { formatTokens } from "./rail-state.ts";
 
 /**
@@ -135,9 +136,16 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
     case "agent.model":
       state.session.model = e.model;
       return;
-    case "safety.judge":
+    case "safety.judge": {
+      const was = state.session.judge;
       state.session.judge = e.state;
+      if (e.state === "paused" && was !== "paused") {
+        addSystemLine(state, judgePausedLine(e.reason), "warn");
+      } else if (e.state === "on" && was === "paused") {
+        addSystemLine(state, JUDGE_BACK_ON, "muted");
+      }
       return;
+    }
     case "agent.thinking":
       state.session.thinkingLevel = e.level;
       return;
@@ -152,7 +160,7 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       return;
     case "agent.compaction.end": {
       state.compacting = false;
-      if (e.error) addSystemLine(state, `Compaction failed: ${e.error}`, "error");
+      if (e.error) addCompactionFailure(state, e.error);
       else if (e.aborted) addSystemLine(state, "Compaction stopped.", "muted");
       else addSystemLine(state, compactedLine(e.reason, e.tokensBefore, e.tokensAfter), "ok");
       return;
@@ -160,6 +168,52 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
     default:
       return;
   }
+}
+
+/**
+ * A raw model, API or policy error as one readable line: Pi's stacked prefixes
+ * (`Compaction failed: Summarization failed: …`) dropped, an API's `529 {json}` body unwrapped
+ * to its message, a model refusal said plainly, and the rest kept to its first line (retry
+ * hints included), at most `ERROR_MAX` characters.
+ */
+export function readableError(raw: string): string {
+  let text = raw.trim();
+  for (;;) {
+    const next = text.replace(/^(compaction|summarization) failed:\s*/i, "");
+    if (next === text) break;
+    text = next;
+  }
+  const body = /^\d{3}\s+(\{[\s\S]*\})\s*$/.exec(text)?.[1];
+  if (body) {
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown };
+      const message = parsed.error?.message ?? parsed.message;
+      if (typeof message === "string" && message.trim()) text = message.trim();
+    } catch {}
+  }
+  if (/model refused|refusal/i.test(text)) return "the model refused to write the summary.";
+  const first = (text.split("\n")[0] ?? "").trim();
+  const short = first.length > ERROR_MAX ? `${first.slice(0, ERROR_MAX - 1)}…` : first;
+  return short || "unknown error.";
+}
+
+const ERROR_MAX = 200;
+
+/** `Compaction failed: …` once: the event and the command's own rejection say the same thing. */
+export function addCompactionFailure(state: ChatState, raw: string): void {
+  const text = `Compaction failed: ${readableError(raw)}`;
+  const recent = state.items.slice(-3);
+  if (recent.some((i) => i.kind === "system" && i.text === text)) return;
+  addSystemLine(state, text, "error");
+}
+
+export const JUDGE_BACK_ON = "The judge is back on.";
+
+/** The chat's line when the judge backs off; the daemon's reason says after how many asks. */
+export function judgePausedLine(reason: string): string {
+  const n = /asked (\d+) times/.exec(reason)?.[1];
+  const after = n ? ` after ${plural(Number(n), "ask")}` : "";
+  return `The judge paused${after}; /judge resume turns it back on`;
 }
 
 /** `Compacted: 142k → 18k tokens`, said differently when Pi did it on its own. */

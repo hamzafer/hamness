@@ -305,6 +305,32 @@ describe("the task slot", () => {
     expect(frame).toMatch(/sub123.*1s.*0 tok/);
   });
 
+  test("full screen gives a long task goal the width there is", async () => {
+    const goal = `make the parser accept trailing commas in every list form ${"and more ".repeat(6)}end`;
+    const state = stateAfter([
+      [
+        0,
+        {
+          type: "task.start",
+          task: {
+            id: "t1",
+            goal,
+            implicit: false,
+            outcome: "open",
+            evidence: 0,
+            passed: 0,
+            costMicros: 0,
+            tokens: 0,
+            startedAt: 0,
+            durationMs: 0,
+          },
+        },
+      ],
+    ]);
+    const frame = await frameOf(state, 1000, { width: 150, height: 30, full: true });
+    expect(frame).toMatch(new RegExp(`  ${goal} +open · 0/0 proof`));
+  });
+
   test("beside the chat only the newest checks show", async () => {
     const events: Array<[number, Record<string, unknown>]> = [];
     for (const n of [1, 2, 3, 4]) {

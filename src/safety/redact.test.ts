@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { redactArgs, redactText } from "./redact.ts";
+import { redactArgs, redactSecrets, redactText } from "./redact.ts";
 
 // Synthetic, obviously fake secrets built at run time so no scanner mistakes them for real ones.
 const fake = (prefix: string, n = 32) => `${prefix}${"a1B2".repeat(Math.ceil(n / 4)).slice(0, n)}`;
@@ -81,6 +81,39 @@ describe("redactText", () => {
     expect(redactText('{"client_secret": "s3cr3t", "name": "x"}')).toBe(
       '{"client_secret": "[redacted]", "name": "x"}',
     );
+  });
+
+  test("a value stops at backticks, quotes, parens and brackets", () => {
+    expect(redactText("set `API_KEY=abc123` first")).toBe("set `API_KEY=[redacted]` first");
+    expect(redactText("(TOKEN=abc) and [SECRET=xyz]")).toBe(
+      "(TOKEN=[redacted]) and [SECRET=[redacted]]",
+    );
+    expect(redactText("run `tool --token abc`.")).toBe("run `tool --token [redacted]`.");
+  });
+
+  test("auth is a whole word: author and authority are not secrets", () => {
+    const text = "GIT_AUTHOR_NAME=jane AUTHORITY=ca --author=me";
+    expect(redactText(text)).toBe(text);
+    expect(redactText("AUTH=abc --auth xyz")).toBe("AUTH=[redacted] --auth [redacted]");
+  });
+
+  test("redactSecrets (assistant replies): only unmistakable secrets, a marker Markdown keeps", () => {
+    const key = fake("sk-ant-api03-", 40);
+    expect(redactSecrets(`Use ${key} here.`)).toBe("Use ‹redacted› here.");
+    expect(redactSecrets("git clone https://user:hunter2@example.test/r.git")).toBe(
+      "git clone https://user:‹redacted›@example.test/r.git",
+    );
+    // Markdown and code that only name secrets are left alone.
+    const reply = [
+      "Set `API_KEY=your-key` in **.env**, then run `tool --token $TOKEN`.",
+      "",
+      "```bash",
+      'export DB_PASSWORD="$(cat secret.txt)"',
+      "curl -H 'Authorization: Bearer $TOKEN' https://api.example.test",
+      "```",
+      "See [the docs](https://docs.example.test/auth) by the author.",
+    ].join("\n");
+    expect(redactSecrets(reply)).toBe(reply);
   });
 
   test("ordinary text is left alone", () => {

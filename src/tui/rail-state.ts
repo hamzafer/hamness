@@ -65,7 +65,8 @@ function railTask(t: TaskView): RailTask {
 /** One checker run of the proof gate (P-M3): a command re-run, a fetch, a file, a CI read. */
 export interface RailCheck {
   id: string;
-  kind: EvidenceKind;
+  /** Unknown for a check whose start this client never saw. */
+  kind?: EvidenceKind;
   label: string;
   status: "running" | Exclude<EvidenceStatus, "pending">;
   summary?: string;
@@ -139,7 +140,16 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
     mainAgentId,
     seq: snapshot.seq,
     agents,
-    checks: [],
+    // Finished checks the daemon stored: a resumed or reattached session keeps its rows.
+    checks: (snapshot.checks ?? []).slice(-RAIL_CHECKS_KEPT).map((c) => ({
+      id: c.id,
+      kind: c.kind,
+      label: c.label,
+      status: c.status,
+      ...(c.summary !== undefined ? { summary: c.summary } : {}),
+      startedAt: c.startedAt,
+      ...(c.endedAt !== undefined ? { endedAt: c.endedAt } : {}),
+    })),
     tasks: [],
   };
   if (snapshot.context) state.context = { ...snapshot.context };
@@ -299,6 +309,18 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
         check.status = e.status;
         check.summary = e.summary;
         check.endedAt = now;
+      } else {
+        // Its start came before this client attached (a snapshot holds finished checks only).
+        state.checks.push({
+          id: e.evidenceId,
+          label: "earlier check",
+          status: e.status,
+          summary: e.summary,
+          startedAt: now,
+          endedAt: now,
+        });
+        if (state.checks.length > RAIL_CHECKS_KEPT)
+          state.checks.splice(0, state.checks.length - RAIL_CHECKS_KEPT);
       }
       return;
     }

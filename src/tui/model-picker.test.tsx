@@ -70,7 +70,7 @@ function fakeClient(opts: { failSwitch?: string } = {}) {
 }
 
 async function render(client: DaemonClient & SessionCommands) {
-  setup = await testRender(() => <App client={client} snapshot={snapshot} />, {
+  setup = await testRender(() => <App client={client} snapshot={snapshot} approvalArmMs={0} />, {
     width: 100,
     height: 24,
   });
@@ -97,6 +97,59 @@ describe("/model in the TUI", () => {
       (f) => f.includes("· openai/gpt-5.6-luna") && !f.includes("Claude Haiku 5.5"),
     );
     expect(fake.prompts).toEqual([]);
+  });
+
+  test("typing filters the models (letters are not keys), grouped by provider", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    await s.mockInput.typeText("/model");
+    s.mockInput.pressEnter();
+    const all = await s.waitForFrame((f) => f.includes("openai/gpt-5.6-luna"));
+    // One heading per provider.
+    expect(all).toMatch(/│ +anthropic +│/);
+    expect(all).toMatch(/│ +openai +│/);
+    // j and k type, they don't move.
+    await s.mockInput.typeText("haik");
+    const frame = await s.waitForFrame((f) => !f.includes("openai/gpt-5.6-luna"));
+    expect(frame).toContain("anthropic/claude-haiku-5-5");
+    expect(frame).not.toMatch(/│ +(● )?anthropic\/claude-opus-5-5/);
+    expect(frame).toContain("haik");
+    s.mockInput.pressBackspace();
+    s.mockInput.pressBackspace();
+    s.mockInput.pressBackspace();
+    s.mockInput.pressBackspace();
+    await s.waitForFrame((f) => f.includes("openai/gpt-5.6-luna"));
+    await s.mockInput.typeText("luna");
+    await s.waitForFrame((f) => !f.includes("anthropic/claude-haiku-5-5"));
+    s.mockInput.pressEnter();
+    await s.waitFor(() => fake.switches.length === 1);
+    expect(fake.switches).toEqual(["openai/gpt-5.6-luna"]);
+    expect(fake.prompts).toEqual([]);
+  });
+
+  test("at 80 columns: headings count toward the height, the footer fits one row", async () => {
+    const many = [
+      ...Array.from({ length: 7 }, (_, i) => info(`anthropic/model-a${i}`, `A ${i}`, 1, 2)),
+      ...Array.from({ length: 7 }, (_, i) => info(`openai/model-o${i}`, `O ${i}`, 1, 2)),
+    ];
+    const fake = fakeClient();
+    fake.client.models = async () => many;
+    setup = await testRender(
+      () => <App client={fake.client} snapshot={snapshot} approvalArmMs={0} />,
+      { width: 80, height: 30 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/model");
+    setup.mockInput.pressEnter();
+    const frame = await setup.waitForFrame((f) => f.includes("Switch model"));
+    const lines = frame.split("\n");
+    const top = lines.findIndex((l) => l.includes("Switch model"));
+    const bottom = lines.findIndex((l, i) => i > top && l.trimStart().startsWith("└"));
+    // Eight list rows (headings included), the footer, the border.
+    expect(bottom - top + 1).toBe(8 + 1 + 2);
+    const footer = lines[bottom - 1] ?? "";
+    expect(footer).toContain("Esc");
+    expect(footer).toMatch(/\d+\/14/);
   });
 
   test("/model provider/id switches directly, without the picker", async () => {

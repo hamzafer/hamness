@@ -160,6 +160,26 @@ describe("helpers", () => {
     expect(parseExportArgs("html out/s.html")).toEqual({ format: "html", path: "out/s.html" });
     expect(parseExportArgs("notes.jsonl")).toEqual({ format: "jsonl", path: "notes.jsonl" });
     expect(parseExportArgs("notes.html")).toEqual({ format: "html", path: "notes.html" });
+    expect(parseExportArgs("jsonl out.jsonl --force")).toEqual({
+      format: "jsonl",
+      path: "out.jsonl",
+      force: true,
+    });
+    expect(parseExportArgs("--force notes.html")).toEqual({
+      format: "html",
+      path: "notes.html",
+      force: true,
+    });
+    // Only as the first or last word; the path keeps its spaces as typed.
+    expect(parseExportArgs("html my  notes.html --force")).toEqual({
+      format: "html",
+      path: "my  notes.html",
+      force: true,
+    });
+    expect(parseExportArgs("html a --force b.html")).toEqual({
+      format: "html",
+      path: "a --force b.html",
+    });
   });
 
   test("relativeTime reads like a person would say it", () => {

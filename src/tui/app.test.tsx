@@ -86,7 +86,7 @@ async function render(
   snap: SessionSnapshot = snapshot,
   opts: { kittyKeyboard?: boolean } = {},
 ) {
-  setup = await testRender(() => <App client={client} snapshot={snap} />, {
+  setup = await testRender(() => <App client={client} snapshot={snap} approvalArmMs={0} />, {
     width: 100,
     height: 24,
     ...opts,
@@ -110,6 +110,51 @@ async function frameWhere(s: Setup, pred: (frame: string) => boolean): Promise<s
 }
 
 describe("TUI chat layout (headless)", () => {
+  test("an empty chat shows one quiet welcome line until the first prompt", async () => {
+    const fake = fakeClient();
+    const empty: SessionSnapshot = { ...snapshot, items: [] };
+    const s = await render(fake.client, empty);
+    const frame = await frameWhere(s, (f) => f.includes("Type / for commands"));
+    const line = frame.split("\n").find((l) => l.includes("Type / for commands")) ?? "";
+    expect(line).toContain("/work/demo");
+    expect(line).toContain("anthropic/claude-opus-5-5");
+    fake.send({ type: "agent.message.start", messageId: "u1", role: "user" });
+    fake.send({ type: "agent.message.end", messageId: "u1", role: "user", text: "hello" });
+    const after = await frameWhere(s, (f) => !f.includes("Type / for commands"));
+    expect(after).not.toContain("Type / for commands");
+    expect(after).toContain("› hello");
+    // A chat with a transcript doesn't show it.
+    await setup?.dispose();
+    const full = await render(fakeClient().client);
+    expect(await frameWhere(full, (f) => f.includes("fig."))).not.toContain("Type / for commands");
+  });
+
+  test("the scrollbar never covers the last character of a wrapped line", async () => {
+    // A token too long for one line wraps to full-width rows; earlier lines overflow the pane
+    // so the scrollbar shows.
+    const token = Array.from({ length: 60 }, (_, i) => String(i).padStart(3, "0")).join("");
+    const filler = Array.from({ length: 30 }, (_, i) => `- line ${i}`).join("\n");
+    const long: SessionSnapshot = {
+      ...snapshot,
+      items: [
+        { kind: "message", id: "m1", role: "user", text: "tell me a lot" },
+        { kind: "message", id: "m2", role: "assistant", text: filler },
+        { kind: "message", id: "m3", role: "user", text: token },
+        { kind: "message", id: "m4", role: "assistant", text: token },
+      ],
+    };
+    const s = await render(fakeClient().client, long);
+    const frame = await frameWhere(s, (f) => f.split("059").length > 2);
+    // The chat pane's digit rows, left of the rail: put back together, the token is whole.
+    const rows = frame
+      .split("\n")
+      .map((l) => l.slice(0, 100 - 32))
+      .filter((l) => /^ *(› )?\d{6,}/.test(l));
+    expect(rows.length).toBeGreaterThan(1);
+    // A user prompt (plain text) and a reply (Markdown).
+    expect(rows.map((l) => (l.match(/\d+/) ?? [""])[0]).join("")).toBe(`${token}${token}`);
+  });
+
   test("renders the transcript, a compact tool line, the input box and the rail placeholder", async () => {
     const s = await render(fakeClient().client);
     const frame = await frameWhere(s, (f) => f.includes("The word is fig."));
@@ -390,13 +435,28 @@ describe("TUI chat layout (headless)", () => {
     };
     const s = await render(fake.client, auto);
     expect(s.captureCharFrame()).toContain("judge on");
-    fake.send({ type: "safety.judge", state: "paused", reason: "asked 3 times" });
+    fake.send({
+      type: "safety.judge",
+      state: "paused",
+      reason: "the judge asked 3 times in a row, so it is paused for this session (/judge resume)",
+    });
     await s.waitForFrame((f) => f.includes("judge paused"));
+    await s.waitForFrame((f) =>
+      f.includes("The judge paused after 3 asks; /judge resume turns it back on"),
+    );
     await s.mockInput.typeText("/judge resume");
     s.mockInput.pressEnter();
     await s.waitForFrame((f) => f.includes("judge on"));
+    await s.waitForFrame((f) => f.includes("The judge is back on."));
     expect(fake.resumed).toEqual([SID]);
     expect(fake.prompts).toEqual([]);
+    // Its own event comes after: no second line.
+    fake.send({ type: "safety.judge", state: "on", reason: "the judge is on" });
+    // Resuming a judge that is on says so.
+    await s.mockInput.typeText("/judge resume");
+    s.mockInput.pressEnter();
+    const frame = await s.waitForFrame((f) => f.includes("The judge is already on."));
+    expect(frame.match(/The judge is back on\./g)?.length).toBe(1);
     fake.send({ type: "safety.judge", state: "over-budget", reason: "judge budget reached" });
     await s.waitForFrame((f) => f.includes("judge over budget"));
     fake.send({ type: "safety.judge", state: "no-key", reason: "no key" });
