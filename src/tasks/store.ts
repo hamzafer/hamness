@@ -238,8 +238,8 @@ export class TaskStore {
    * When the task last changed a file (`fileChanges`), by any of its agents. A call still
    * running counts as now (Infinity); a denied one changed nothing. Undefined: no changes.
    */
-  lastFileChange(taskId: string): number | undefined {
-    const changes = this.fileChanges(taskId, "/");
+  lastFileChange(taskId: string, cwd: string): number | undefined {
+    const changes = this.fileChanges(taskId, cwd);
     if (changes.length === 0) return undefined;
     if (changes.some((c) => c.running)) return Number.POSITIVE_INFINITY;
     return Math.max(...changes.map((c) => c.at));
@@ -267,9 +267,23 @@ export class TaskStore {
     return (r?.n ?? 0) > 0;
   }
 
+  /**
+   * Closes the session's tool calls that never ended (the daemon stopped mid-call), as errors:
+   * a call still running counts as a file change "now" and would block verification forever.
+   */
+  closeStaleToolCalls(sessionId: string, now = Date.now()): void {
+    this.sql
+      .query(
+        `UPDATE tool_calls SET status = 'error', result_summary = 'ended without a result',
+           ended_at = ?, updated_at = ?
+         WHERE session_id = ? AND ended_at IS NULL`,
+      )
+      .run(now, now, sessionId);
+  }
+
   /** Whether the task tried to change files (denied tries included). */
-  changedFiles(taskId: string): boolean {
-    return this.fileChanges(taskId, "/", true).length > 0;
+  changedFiles(taskId: string, cwd: string): boolean {
+    return this.fileChanges(taskId, cwd, true).length > 0;
   }
 
   view(id: string, now = Date.now()): TaskView | undefined {

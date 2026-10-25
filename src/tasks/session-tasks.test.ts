@@ -7,6 +7,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { ChatStore } from "../agent/store.ts";
@@ -570,6 +571,48 @@ describe("bash that writes files counts as an edit (ADR 0019, issue #16)", () =>
     bashTool(t, "echo x > a.ts", "denied");
     await tick();
     expect(t.done("fixed").outcome).toBe("verified");
+  });
+
+  test("bash that writes only outside the session folder changes nothing", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    await tick();
+    bashTool(t, "bun test > /tmp/out.txt 2>&1");
+    bashTool(t, `bun test | tee ${join(tmpdir(), "hamness-log.txt")}`);
+    await tick();
+    expect(t.done("fixed").outcome).toBe("verified");
+
+    t.beginTurn("what does the test output say?");
+    const id = t.attributionId() as string;
+    bashTool(t, "bun test 2>&1 | tee /tmp/log.txt");
+    t.endTurn();
+    expect(row(id)).toBeNull();
+  });
+
+  test("a call a crash left running is closed on resume, so it can't block verification", async () => {
+    const first = tasks();
+    const task = first.start("fix");
+    const id = chat.addToolCall(
+      { ...ids, taskId: first.attributionId() },
+      {
+        messageId: undefined,
+        tool: "bash",
+        argsJson: JSON.stringify({ command: "echo x > a.ts" }),
+      },
+    );
+    const resumed = tasks();
+    const r = db.sqlite
+      .query<{ status: string; ended_at: number | null }, [string]>(
+        "SELECT status, ended_at FROM tool_calls WHERE id = ?",
+      )
+      .get(id);
+    expect(r?.status).toBe("error");
+    expect(r?.ended_at).not.toBeNull();
+    await tick();
+    await resumed.prove({ kind: "command", command: PASS });
+    expect(resumed.done("fixed").outcome).toBe("verified");
+    expect(resumed.view()?.id).toBe(task.id);
   });
 
   test("writing package.json through bash makes the check weak", async () => {
