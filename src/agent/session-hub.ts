@@ -303,6 +303,10 @@ export interface SessionListItem {
   current: boolean;
   /** Pi still has its session file, so `/resume` can continue it. */
   resumable: boolean;
+  /** When it was last made the cwd's latest: the order `hamness -c` picks by. */
+  pickedAt?: number;
+  /** Its model calls billed to the ChatGPT plan ($0 each). */
+  planCalls?: number;
 }
 
 /** `GET /v1/sessions/:id/status` (`/session`, `/status`). */
@@ -322,6 +326,8 @@ export interface SessionStatus {
   costMicros: number;
   /** Model calls billed to the ChatGPT plan ($0 each). */
   planCalls?: number;
+  /** The ChatGPT plan tier of the login (`go`, `plus`, `team`, ...), when the model is on it. */
+  planTier?: string;
   /** Pi's counts for the main agent's session file. */
   messages: { user: number; assistant: number; toolCalls: number };
   task?: TaskView;
@@ -984,6 +990,8 @@ export class SessionHub {
       ...(r.firstPrompt ? { firstPrompt: r.firstPrompt } : {}),
       current: r.id === current,
       resumable: r.messageCount === 0 || (r.piSessionId !== null && files.has(r.piSessionId)),
+      pickedAt: r.pickedAt,
+      planCalls: r.planCalls,
     }));
   }
 
@@ -1070,6 +1078,7 @@ export class SessionHub {
     const task = live.tasks.view();
     const file = live.runner.sessionFile;
     const stats = live.runner.stats();
+    const planTier = info.billing === "plan" ? this.planTier() : undefined;
     return {
       sessionId: live.id,
       ...(live.sessionName ? { name: live.sessionName } : {}),
@@ -1083,6 +1092,7 @@ export class SessionHub {
       tokens: usage.tokens,
       costMicros: usage.costMicros,
       planCalls: usage.planCalls,
+      ...(planTier ? { planTier } : {}),
       messages: stats,
       ...(task ? { task } : {}),
       ...(info.mode ? { mode: info.mode, modeSource: live.ownMode ? "session" : "config" } : {}),
