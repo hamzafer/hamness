@@ -45,9 +45,9 @@ describe("live sessions", () => {
     expect(orbLabel("searching")).toBe("Searching the code");
     expect(orbLabel("shaping")).toBe("Editing files");
     expect(orbLabel("listening")).toBe("Waiting for you");
-    expect(orbLabel("composing")).toBe("Writing a reply");
+    expect(orbLabel("composing")).toBe("Writing the reply");
     expect(orbLabel("solving")).toBe("Thinking");
-    expect(orbLabel("working")).toBe("Running tools");
+    expect(orbLabel("working")).toBe("Running commands");
   });
 
   test("the event stream URL is same-origin and carries the token", () => {

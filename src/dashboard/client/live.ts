@@ -4,21 +4,12 @@
  * next event.
  */
 import type { HamnessEvent } from "../../events/types.ts";
-import { LiveRuns } from "../../orbs/activity.ts";
+import { LiveRuns, ORB_LABEL } from "../../orbs/activity.ts";
 import type { OrbState } from "../../orbs/index.ts";
-
-const LABEL: Record<OrbState, string> = {
-  working: "Running tools",
-  searching: "Searching the code",
-  solving: "Thinking",
-  listening: "Waiting for you",
-  composing: "Writing a reply",
-  shaping: "Editing files",
-};
 
 /** What the orb means, in the user's words. */
 export function orbLabel(state: OrbState): string {
-  return LABEL[state];
+  return ORB_LABEL[state];
 }
 
 /** The daemon as a whole, plus one `LiveRuns` per session for the task rows. */
