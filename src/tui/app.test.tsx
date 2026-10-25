@@ -367,6 +367,26 @@ describe("TUI chat layout (headless)", () => {
     });
   }
 
+  test("the echo of a prompt goes through the same live redaction as replies", async () => {
+    const fake = fakeClient();
+    setup = await testRender(() => <App client={fake.client} snapshot={snapshot} />, {
+      width: 100,
+      height: 24,
+    });
+    await setup.renderOnce();
+    const key = `sk-proj-${"AbCdEf1234567890".repeat(3)}`;
+    fake.send({ type: "agent.message.start", messageId: "u9", role: "user" });
+    fake.send({
+      type: "agent.message.end",
+      messageId: "u9",
+      role: "user",
+      text: `use const key = "${key}"; please`,
+    });
+    const frame = await setup.waitForFrame((f) => f.includes("please"));
+    expect(frame).toContain("‹redacted›");
+    expect(frame).not.toContain(key);
+  });
+
   test("assistant replies render as Markdown, also while streaming; prompts stay plain", async () => {
     const fake = fakeClient();
     const md = {

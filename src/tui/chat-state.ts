@@ -6,6 +6,7 @@ import type {
   SessionSnapshot,
   TranscriptItem,
 } from "../events/types.ts";
+import { redactSecrets } from "../safety/redact.ts";
 import { plural } from "./layout.ts";
 import { formatTokens } from "./rail-state.ts";
 
@@ -98,7 +99,9 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
         m = { kind: "message", id: e.messageId, role: e.role, text: "" };
         state.items.push(m);
       }
-      m.text = e.text;
+      // The daemon echoes a prompt as typed (it stores it redacted): the same live redaction
+      // as a reply's, so a pasted key never shows. Replies arrive redacted already.
+      m.text = e.role === "user" ? redactSecrets(e.text) : e.text;
       m.streaming = false;
       if (e.error) m.error = e.error;
       return;
