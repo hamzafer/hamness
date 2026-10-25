@@ -224,9 +224,17 @@ export function httpClient(url: string, token: string): DaemonClient & SessionCo
     compat: (id) => call<SessionCompat>("GET", s(id, "compat")),
     subscribe(onEvent) {
       const ws = new WebSocket(`${url.replace(/^http/, "ws")}/v1/events?token=${token}`);
+      let closing = false;
       ws.onopen = () => markReady();
       ws.onmessage = (e) => onEvent(JSON.parse(String(e.data)) as HamnessEvent);
-      return () => ws.close();
+      // Closed from the other end: the daemon is gone, so the client must not run on as if live.
+      ws.onclose = () => {
+        if (!closing) onEvent({ type: "daemon.gone" });
+      };
+      return () => {
+        closing = true;
+        ws.close();
+      };
     },
   };
 }

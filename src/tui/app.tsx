@@ -69,6 +69,9 @@ const JUDGE_LABEL: Record<JudgeState, string> = {
 /** Events for sessions the chat doesn't show, kept for a switch to one of them. */
 const FOREIGN_KEPT = 500;
 
+/** The notice once the daemon stops or its event stream drops: this chat is no longer live. */
+export const DAEMON_GONE_NOTICE = "The hamness daemon stopped. Restart hamness to reconnect.";
+
 /** The chat's line when another client (or the daemon) replaced this session. */
 const REPLACED_LINE = {
   new: "A new session started from another window.",
@@ -110,7 +113,13 @@ export function App(props: AppProps) {
   const [following, setFollowing] = createSignal(false);
   /** Prompts sent during a switch: they go to the new session once it shows. */
   const queued: string[] = [];
+  /** True once the daemon said it is stopping, or the event stream closed under the chat. */
+  const [daemonGone, setDaemonGone] = createSignal(false);
   const off = props.client.subscribe((e) => {
+    if (e.type === "daemon.stopping" || e.type === "daemon.gone") {
+      setDaemonGone(true);
+      setState("notice", DAEMON_GONE_NOTICE);
+    }
     if ("sessionId" in e && e.sessionId !== state.session.id) {
       if (e.sessionId === left) return;
       foreign.push(e);
@@ -364,6 +373,11 @@ export function App(props: AppProps) {
   const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
+    if (daemonGone()) {
+      // Nothing would receive it: keep the text, and say why.
+      setState("notice", DAEMON_GONE_NOTICE);
+      return;
+    }
     input?.clear();
     setDraft("");
     setPromptRows(1);
