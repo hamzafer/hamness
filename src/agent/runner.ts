@@ -215,7 +215,12 @@ export interface AgentRunner {
   forkPoint(entryId: string): BranchFrom | undefined;
   /** Tools each started MCP server has registered so far (0 or absent: connecting or failed). */
   mcpTools(): Record<string, number>;
-  dispose(): void;
+  /**
+   * Ends the session: aborts its turn, shuts its extensions down (closing its MCP servers,
+   * which kills their processes) and disposes it. Resolves once that is done; calling it
+   * again returns the same promise.
+   */
+  dispose(): Promise<void>;
 }
 
 const SUMMARY_MAX = 200;
@@ -374,6 +379,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
   let seq = 0;
   let currentKey: string | undefined;
   const unsubscribe = session.subscribe((ev) => translate(ev));
+  let disposing: Promise<void> | undefined;
 
   function translate(ev: AgentSessionEvent): void {
     switch (ev.type) {
@@ -552,8 +558,23 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
       return { file, leafId: entry.parentId };
     },
     dispose() {
+      if (disposing) return disposing;
       unsubscribe();
-      session.dispose();
+      // AgentSession.dispose() alone never emits session_shutdown, so Pi's MCP extension
+      // never closed its servers: their stdio children outlived the session and kept the
+      // daemon's process alive after SIGTERM. Shut the extensions down first, as Pi's own
+      // session replacement does, then dispose.
+      session.abort().catch(() => {});
+      const ext = session.extensionRunner;
+      const shutdown = ext.hasHandlers("session_shutdown")
+        ? ext.emit({ type: "session_shutdown", reason: "quit" })
+        : Promise.resolve();
+      disposing = shutdown
+        .catch(() => {})
+        .then(() => {
+          session.dispose();
+        });
+      return disposing;
     },
   };
 }

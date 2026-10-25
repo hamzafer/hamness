@@ -185,7 +185,7 @@ Imported history has no tasks, and its cost is estimated from token counts. The 
 | `hamness keys set <provider>`, `hamness keys list` | store an API key; show which providers have one (never the key) |
 | `hamness login openai`, `hamness logout <provider>` | sign in with a ChatGPT plan; remove a sign-in |
 | `hamness models [--all]` | the models you can switch to, with prices |
-| `hamness status`, `hamness stop` | is the daemon running; stop it (restart it this way after adding a key) |
+| `hamness status`, `hamness stop [--all]` | is the daemon running (and any stray daemon processes); stop it and wait for it to exit (restart it this way after adding a key). `--all` also stops strays |
 | `hamness daemon` | run the daemon in the foreground |
 | `hamness stats`, `hamness dashboard`, `hamness import` | see [Stats](#stats-import-and-the-dashboard) |
 | `hamness audit [--session <id>] [--json]` | recent safety decisions and why |
