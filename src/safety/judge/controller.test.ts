@@ -56,6 +56,25 @@ const allow: JudgeVerdict = {
 const ask: JudgeVerdict = { verdict: "ask", reason: "risky", category: "unclear", costMicros: 5 };
 
 describe("the judge controller", () => {
+  test("a judge that throws or times out still reports the model it called", async () => {
+    const boom = setup(
+      async () => {
+        throw new Error("boom");
+      },
+      { model: "claude-sonnet-5-5" },
+    );
+    const failed = await boom.judge(req());
+    expect(failed.reason).toContain("the judge failed");
+    expect(failed.model).toBe("claude-sonnet-5-5");
+    const slow = setup(() => new Promise<JudgeVerdict>(() => {}), {
+      model: "claude-sonnet-5-5",
+      timeoutSec: 0.02,
+    });
+    const timedOut = await slow.judge(req());
+    expect(timedOut.reason).toContain("did not answer");
+    expect(timedOut.model).toBe("claude-sonnet-5-5");
+  });
+
   test("passes the backend's verdict through, with the configured model", async () => {
     const models: Array<string | undefined> = [];
     const c = setup(

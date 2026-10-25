@@ -229,6 +229,62 @@ describe("explicit tasks", () => {
     expect(row(task.id)?.outcome).toBe("open");
   });
 
+  test("an agent's task that ran git commit and push, with no task_done, stays open", () => {
+    const t = tasks();
+    const task = t.start("commit the fix");
+    bashTool(t, "git commit -am fix");
+    bashTool(t, "git push");
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("an agent's task with an MCP call stays open at turn end", () => {
+    const t = tasks();
+    const task = t.start("file the ticket");
+    call(t, "mcp__tracker__create_issue", { title: "x" });
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("an agent's task whose turn only read files and asked a question stays open", () => {
+    const t = tasks();
+    const task = t.start("refactor the parser");
+    call(t, "read", { path: "src/parser.ts" });
+    bashTool(t, "grep -rn parse src");
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("an agent's task whose reads end in a denied action is dropped", () => {
+    const t = tasks();
+    const task = t.start("clean up");
+    call(t, "read", { path: "README.md" });
+    bashTool(t, "rm -rf dist", "denied");
+    t.endTurn();
+    expect(row(task.id)).toBeNull();
+  });
+
+  test("a denied edit is not work: an implicit turn with only a denied edit is dropped", () => {
+    const t = tasks();
+    t.beginTurn("change it");
+    const id = chat.addToolCall(
+      { ...ids, taskId: t.attributionId() },
+      { messageId: undefined, tool: "edit", argsJson: JSON.stringify({ path: "a.ts" }) },
+    );
+    chat.finishToolCall(id, { status: "denied", summary: "denied" });
+    const taskId = t.attributionId() as string;
+    t.endTurn();
+    expect(row(taskId)).toBeNull();
+  });
+
+  test("a task the user opened with /task is never dropped at turn end", () => {
+    const t = tasks();
+    const task = t.start("my task", "user");
+    bashTool(t, "rm -rf dist", "denied");
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
   test("an agent's task left open with no work and no evidence is dropped at turn end", () => {
     const t = tasks();
     const task = t.start("clean the build folder");

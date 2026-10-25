@@ -171,7 +171,7 @@ describe("hamness CLI", () => {
     expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  test("piped to a reader that stops early (head), a long listing exits 0 with no stack trace", async () => {
+  test("piped to a reader that stops early (head), a long listing exits 141 (SIGPIPE) with no stack trace", async () => {
     // `head -1` closes the pipe after one line, so later writes hit EPIPE.
     const proc = Bun.spawn(
       ["sh", "-c", `bun "${MAIN}" models --all | head -1 >/dev/null; exit 0`],
@@ -198,6 +198,6 @@ describe("hamness CLI", () => {
     await proc.exited;
     expect(stderr).not.toContain("EPIPE");
     expect(stderr1).not.toContain("EPIPE");
-    expect(code).toBe(0);
+    expect(code).toBe(141);
   });
 });
