@@ -12,6 +12,8 @@ import type { TaskOutcome } from "../../tasks/types.ts";
 import { getJson, takeToken, Unauthorized } from "./api.ts";
 import { areaChart } from "./chart.ts";
 import { h } from "./dom.ts";
+import { connectLive, orbLabel, SessionRuns } from "./live.ts";
+import { type OrbHandle, orb } from "./orb.ts";
 
 // ---- State (kept in the query string so a reload keeps the view) ----
 
@@ -510,6 +512,7 @@ function taskRows(t: TaskListRow): HTMLTableRowElement[] {
       { class: "goal" },
       toggle,
       t.implicit ? h("span", { class: "tag" }, "turn") : null,
+      t.outcome === "open" ? taskLive(t.sessionId) : null,
       t.source !== "hamness" ? h("span", { class: "tag" }, SOURCE_LABEL[t.source]) : null,
     ),
     h("td", { class: "hide-sm" }, when(t.startedAt)),
@@ -679,6 +682,51 @@ async function decisionsView(): Promise<Node[]> {
   return [card("Safety decisions", filters, table, more)];
 }
 
+// ---- Live runs (the orb) ----
+
+const runs = new SessionRuns();
+const orbs = new WeakMap<HTMLElement, OrbHandle>();
+let live = false;
+
+/** Shows the orb and what it means in `slot`, or hides the slot when nothing runs. */
+function fillLive(slot: HTMLElement, text: (label: string) => string, state = runs.state()) {
+  if (!state) {
+    slot.hidden = true;
+    slot.replaceChildren();
+    orbs.delete(slot);
+    return;
+  }
+  let handle = orbs.get(slot);
+  if (handle) handle.setState(state);
+  else {
+    handle = orb(state);
+    orbs.set(slot, handle);
+  }
+  const words = text(orbLabel(state));
+  if (slot.textContent !== words || !handle.el.isConnected)
+    slot.replaceChildren(handle.el, h("span", {}, words));
+  slot.hidden = false;
+}
+
+function headerText(label: string): string {
+  const n = runs.active();
+  return n > 1 ? `${label} (${n} agents)` : label;
+}
+
+/** A running task's row: the orb for its session while it has a run going. */
+function taskLive(sessionId: string): HTMLElement {
+  const slot = h("span", { class: "live-note", "data-session": sessionId, hidden: true });
+  fillLive(slot, (l) => l, runs.session(sessionId));
+  return slot;
+}
+
+function syncLive(): void {
+  for (const slot of document.querySelectorAll<HTMLElement>(".top .live"))
+    fillLive(slot, headerText);
+  for (const slot of document.querySelectorAll<HTMLElement>(".live-note[data-session]"))
+    fillLive(slot, (l) => l, runs.session(slot.dataset.session ?? ""));
+}
+
 // ---- Shell ----
 
 const app = document.getElementById("app") as HTMLElement;
@@ -702,6 +750,8 @@ function header(): HTMLElement {
     toggle.textContent = themeText[theme];
     toggle.setAttribute("aria-label", `${themeText[theme]}. Change theme`);
   });
+  const liveSlot = h("span", { class: "live", role: "status", hidden: true });
+  fillLive(liveSlot, headerText);
   const tabs: { value: View; text: string }[] = [
     { value: "overview", text: "Overview" },
     { value: "tasks", text: "Tasks" },
@@ -727,6 +777,7 @@ function header(): HTMLElement {
         ),
       ),
     ),
+    liveSlot,
     toggle,
   );
 }
@@ -776,6 +827,10 @@ async function render(): Promise<void> {
   if (!takeToken()) {
     app.replaceChildren(signedOut());
     return;
+  }
+  if (!live) {
+    live = true;
+    connectLive(takeToken, runs, syncLive);
   }
   const main = h(
     "main",
