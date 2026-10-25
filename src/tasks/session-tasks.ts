@@ -333,9 +333,7 @@ export class SessionTasks {
   /** An explicit task the agent opened with no evidence rows and no work (`didWork`). */
   private idleAgentTask(id: string): boolean {
     return (
-      this.store.openedBy(id) === "agent" &&
-      this.store.evidenceRows(id) === 0 &&
-      !this.didWork(id)
+      this.store.openedBy(id) === "agent" && this.store.evidenceRows(id) === 0 && !this.didWork(id)
     );
   }
 

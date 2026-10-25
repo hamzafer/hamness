@@ -173,11 +173,14 @@ describe("hamness CLI", () => {
 
   test("piped to a reader that stops early (head), a long listing exits 0 with no stack trace", async () => {
     // `head -1` closes the pipe after one line, so later writes hit EPIPE.
-    const proc = Bun.spawn(["sh", "-c", `bun "${MAIN}" models --all | head -1 >/dev/null; exit 0`], {
-      env: env(),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const proc = Bun.spawn(
+      ["sh", "-c", `bun "${MAIN}" models --all | head -1 >/dev/null; exit 0`],
+      {
+        env: env(),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
     const proc2 = Bun.spawn(["bun", MAIN, "models", "--all"], {
       env: env(),
       stdout: "pipe",
