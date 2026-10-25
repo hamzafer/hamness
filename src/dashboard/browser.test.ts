@@ -488,6 +488,8 @@ suite("dashboard in a browser", () => {
       const page = await open("light");
       await page.getByRole("button", { name: "30d", exact: true }).click();
       await loaded(page);
+      await page.getByRole("button", { name: "All", exact: true }).click();
+      await loaded(page);
       await page.locator(".tile").first().waitFor();
       const sub =
         (await page
@@ -714,6 +716,100 @@ suite("dashboard in a browser", () => {
       }, still);
       d.emit(event(sessionId, { type: "agent.status", busy: false }));
       await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "the source starts on hamness when it has sessions, with All one click away and est. on imports",
+    async () => {
+      const page = await open("light");
+      const picked = () =>
+        page
+          .locator(
+            '[aria-label="Source"] [aria-pressed="true"], [aria-label="Source"] [aria-checked="true"]',
+          )
+          .textContent();
+      expect(await picked()).toBe("hamness");
+      expect(page.url()).not.toContain("source=");
+      const bySource = () =>
+        page
+          .locator(".card", { has: page.locator(".card-title", { hasText: /^By source$/ }) })
+          .locator(".barlist-value")
+          .allTextContents();
+      expect(await bySource()).toHaveLength(1);
+      await page.getByRole("button", { name: "All", exact: true }).click();
+      await loaded(page);
+      expect(page.url()).toContain("source=all");
+      expect(await picked()).toBe("All");
+      const rows = await bySource();
+      expect(rows.length).toBe(3);
+      // Imported spend is labeled an estimate; hamness's own is not.
+      expect(rows.some((t) => / est\. · /.test(t))).toBe(true);
+      expect(rows[0]).not.toContain("est.");
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "all calls on the plan: $0 (plan) everywhere, one $0 baseline, also at phone width",
+    async () => {
+      const planHome = tempHome();
+      const pd = await startDaemon({ dataDir: planHome.dir, port: 0, contextFiles: false });
+      try {
+        const seed = seeder(pd.db.sqlite);
+        const now = Date.now();
+        const sid = seed.session({ source: "hamness", at: now - 3 * 3_600_000 });
+        const tid = seed.task({ sessionId: sid, at: now - 2 * 3_600_000, outcome: "verified" });
+        for (const at of [now - 2 * 3_600_000, now - 3_600_000])
+          seed.modelCall({ sessionId: sid, taskId: tid, at, model: "plan-model", billing: "plan" });
+        const token = readFileSync(dataPaths(planHome.dir).token, "utf8").trim();
+        for (const [width, height] of [
+          [1280, 900],
+          [390, 844],
+        ] as const) {
+          const page = await (browser as Browser).newPage({ viewport: { width, height } });
+          await page.goto(`${pd.url}/dash#token=${token}`);
+          await loaded(page);
+          await page.locator(".chart svg").waitFor();
+          await page.waitForFunction(
+            () => document.querySelectorAll(".chart .grid text").length > 0,
+          );
+          expect(await tileValue(page, "Cost").textContent()).toBe("$0 (plan)");
+          expect(await tileValue(page, "Cost per verified task").textContent()).toBe("$0 (plan)");
+          const ticks = await page.locator(".chart .grid text").allTextContents();
+          expect(ticks).toEqual(["$0"]);
+          expect(await page.getByText("All calls on your plan ($0).").count()).toBe(1);
+          const bySource = await page
+            .locator(".card", { has: page.locator(".card-title", { hasText: /^By source$/ }) })
+            .locator(".barlist-value")
+            .allTextContents();
+          expect(bySource[0]).toStartWith("$0 (plan) · ");
+          expect(await page.locator("body").textContent()).not.toContain("$0.00");
+          const overflow = await page.evaluate(
+            () => document.documentElement.scrollWidth - window.innerWidth,
+          );
+          expect(overflow).toBeLessThanOrEqual(0);
+          await page.screenshot({
+            path: join(shots, `plan-only-overview-${width}.png`),
+            fullPage: true,
+          });
+          await page.locator(".top nav").getByRole("button", { name: "Tasks" }).click();
+          await loaded(page);
+          expect(await page.locator("table.tasks tbody td.num").first().textContent()).toBe(
+            "$0 (plan)",
+          );
+          await page.screenshot({
+            path: join(shots, `plan-only-tasks-${width}.png`),
+            fullPage: true,
+          });
+          await page.close();
+        }
+      } finally {
+        await pd.stop();
+        planHome.cleanup();
+      }
     },
     BROWSER_TIMEOUT,
   );

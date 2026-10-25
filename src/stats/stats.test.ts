@@ -416,6 +416,7 @@ describe("sourceSplit", () => {
         source: "hamness",
         sessions: 1,
         modelCalls: 0,
+        planCalls: 0,
         costMicros: 0,
         tokens: 0,
         tasks: 2,
@@ -427,6 +428,7 @@ describe("sourceSplit", () => {
         source: "claude-code",
         sessions: 2,
         modelCalls: 1,
+        planCalls: 0,
         costMicros: 40,
         tokens: 10,
         tasks: 0,
@@ -438,6 +440,7 @@ describe("sourceSplit", () => {
         source: "codex",
         sessions: 0,
         modelCalls: 0,
+        planCalls: 0,
         costMicros: 0,
         tokens: 0,
         tasks: 0,
@@ -449,6 +452,18 @@ describe("sourceSplit", () => {
     expect(sourceSplit(db.sqlite, q("7d", { source: "codex" })).map((r) => r.source)).toEqual([
       "codex",
     ]);
+  });
+
+  test("counts the calls billed to the ChatGPT plan per source", () => {
+    const h = seed.session({ source: "hamness", at: NOW - DAY });
+    seed.modelCall({ sessionId: h, at: NOW - DAY, model: "m", billing: "plan" });
+    seed.modelCall({ sessionId: h, at: NOW - DAY, model: "m", billing: "plan" });
+    seed.modelCall({ sessionId: h, at: NOW - DAY, model: "m", costMicros: 10 });
+    expect(sourceSplit(db.sqlite, q("7d", { source: "hamness" }))[0]).toMatchObject({
+      modelCalls: 3,
+      planCalls: 2,
+      costMicros: 10,
+    });
   });
 });
 

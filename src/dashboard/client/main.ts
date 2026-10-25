@@ -1,5 +1,5 @@
 import type { HamnessEvent } from "../../events/types.ts";
-import { count, duration, modelCost, money, moneyCompact } from "../../stats/format.ts";
+import { count, duration, modelCost, money, moneyCompact, planMoney } from "../../stats/format.ts";
 import type {
   DecisionListRow,
   EvidenceRow,
@@ -23,10 +23,16 @@ import { Refresher, refreshesOn } from "./refresh.ts";
 type View = "overview" | "tasks" | "decisions";
 type Metric = "cost" | "tokens" | "tasks";
 
+/**
+ * `auto` (no `source` in the address): hamness when it has sessions in the range, else All, so
+ * imported Claude Code estimates don't drown out hamness's own numbers. All is one click away.
+ */
+type SourceChoice = Source | "all" | "auto";
+
 interface State {
   view: View;
   range: Range;
-  source: Source | "all";
+  source: SourceChoice;
   metric: Metric;
   chartAs: "chart" | "table";
   outcome: TaskOutcome | "all";
@@ -59,7 +65,7 @@ function readState(): State {
   return {
     view: pick(q.get("view"), ["overview", "tasks", "decisions"], "overview"),
     range: pick(q.get("range"), RANGES, "7d"),
-    source: pick(q.get("source"), ["all", "hamness", "claude-code", "codex"], "all"),
+    source: pick(q.get("source"), ["all", "hamness", "claude-code", "codex"], "auto"),
     metric: pick(q.get("metric"), ["cost", "tokens", "tasks"], "cost"),
     chartAs: pick(q.get("as"), ["chart", "table"], "chart"),
     outcome: pick(q.get("outcome"), ["all", ...OUTCOMES], "all"),
@@ -70,12 +76,38 @@ function readState(): State {
 
 let state = readState();
 
+/** What `auto` came to per range, once known (see `SourceChoice`). */
+const autoSource = new Map<Range, Source | "all">();
+
+/**
+ * The source to ask the server for. `auto` asks for hamness's numbers first: with hamness
+ * sessions in the range that report is the answer (and is returned, to draw), else All. The
+ * overview asks each time, so a first hamness session shows up; other views reuse the answer.
+ */
+async function resolveSource(): Promise<{ source: Source | "all"; report?: StatsReport }> {
+  if (state.source !== "auto") return { source: state.source };
+  const known = autoSource.get(state.range);
+  if (known && state.view !== "overview") return { source: known };
+  const report = await getJson<StatsReport>("/v1/stats", {
+    range: state.range,
+    source: "hamness",
+    tz,
+  });
+  const source = report.kpis.sessions > 0 ? "hamness" : "all";
+  autoSource.set(state.range, source);
+  return source === "hamness" ? { source, report } : { source };
+}
+
+/** The source the toggle shows as picked: `auto` shows what it came to (hamness until known). */
+const shownSource = (): Source | "all" =>
+  state.source === "auto" ? (autoSource.get(state.range) ?? "hamness") : state.source;
+
 function setState(patch: Partial<State>): void {
   state = { ...state, ...patch };
   const q = new URLSearchParams();
   if (state.view !== "overview") q.set("view", state.view);
   if (state.range !== "7d") q.set("range", state.range);
-  if (state.source !== "all") q.set("source", state.source);
+  if (state.source !== "auto") q.set("source", state.source);
   if (state.metric !== "cost") q.set("metric", state.metric);
   if (state.chartAs !== "chart") q.set("as", state.chartAs);
   if (state.outcome !== "all") q.set("outcome", state.outcome);
@@ -225,6 +257,10 @@ function overview(r: StatsReport): Node[] {
   const k = r.kpis;
   const imported = r.source !== null && r.source !== "hamness";
   const est = k.pricing.estimated ? "~" : "";
+  const hamness = r.sources.find((x) => x.source === "hamness");
+  // The cost is all plan calls: `$0 (plan)`, as the TUI says, never a bare `$0.00`.
+  const costText =
+    k.costMicros === 0 ? planMoney(0, k.pricing.planCalls) : `${est}${money(k.costMicros)}`;
   // The rate's denominator: the tasks the proof gate decided (ADR 0012).
   const decided = k.tasks.verified + k.tasks.unverified;
   const aside = [
@@ -239,8 +275,8 @@ function overview(r: StatsReport): Node[] {
     { class: "tiles" },
     tile(
       "Cost",
-      `${est}${money(k.costMicros)}`,
-      `${count(k.modelCalls)} model ${k.modelCalls === 1 ? "call" : "calls"}`,
+      costText,
+      `${count(k.modelCalls)} model ${k.modelCalls === 1 ? "call" : "calls"}${k.pricing.estimated ? ", imported cost est." : ""}`,
     ),
     imported
       ? tile("Tasks", "n/a", "n/a for imported history", { muted: true })
@@ -272,7 +308,7 @@ function overview(r: StatsReport): Node[] {
         )
       : tile(
           "Cost per verified task",
-          money(k.costPerVerifiedTaskMicros),
+          planMoney(k.costPerVerifiedTaskMicros, hamness?.planCalls ?? 0),
           "hamness spend over verified tasks",
         ),
     k.activeSessions > 0
@@ -297,6 +333,12 @@ function overview(r: StatsReport): Node[] {
   const m = METRICS[state.metric];
   const points = r.series.buckets.map((b) => ({ start: b.start, value: m.value(b) }));
   const hourly = r.range === "24h" || r.range === "today";
+  // A cost chart that is flat at $0 because every call was on the plan says so.
+  const allPlan =
+    state.metric === "cost" &&
+    k.costMicros === 0 &&
+    k.modelCalls > 0 &&
+    k.pricing.planCalls === k.modelCalls;
   const heroControls = h(
     "div",
     { class: "card-controls" },
@@ -326,6 +368,7 @@ function overview(r: StatsReport): Node[] {
           tick: hourly ? hourLabel : dayLabel,
           title: hourly ? (t) => `${dayLabel(t)}, ${hourLabel(t)}` : dayLabel,
           partialLast: true,
+          ...(state.metric === "cost" ? { zero: "$0" } : { zero: "0" }),
         })
       : h(
           "div",
@@ -374,6 +417,7 @@ function overview(r: StatsReport): Node[] {
       heroControls,
     ),
     body,
+    allPlan ? h("p", { class: "caption plan-note" }, "All calls on your plan ($0).") : null,
     state.chartAs === "chart"
       ? h(
           "p",
@@ -390,7 +434,7 @@ function overview(r: StatsReport): Node[] {
           r.sources.map((x) => ({
             label: SOURCE_LABEL[x.source],
             value: x.costMicros,
-            text: `${x.source === "hamness" ? "" : est}${money(x.costMicros)} · ${count(x.sessions)} sessions`,
+            text: `${x.source === "hamness" ? planMoney(x.costMicros, x.planCalls) : `${money(x.costMicros)}${x.costMicros > 0 ? " est." : ""}`} · ${count(x.sessions)} sessions`,
             color: x.source,
           })),
         )
@@ -403,7 +447,7 @@ function overview(r: StatsReport): Node[] {
           r.models.map((x) => ({
             label: x.priced ? x.model : `${x.model} *`,
             value: x.costMicros,
-            text: `${x.sources.some((src) => src !== "hamness") ? "~" : ""}${modelCost(x)} · ${count(x.calls)} ${x.calls === 1 ? "call" : "calls"}`,
+            text: `${modelCost(x)}${x.sources.some((src) => src !== "hamness") && x.costMicros > 0 ? " est." : ""} · ${count(x.calls)} ${x.calls === 1 ? "call" : "calls"}`,
           })),
         )
       : empty("No model calls in this range."),
@@ -434,7 +478,8 @@ function overview(r: StatsReport): Node[] {
   );
 
   const notes: string[] = [];
-  if (k.pricing.estimated) notes.push("~ Cost of imported history is estimated from token counts.");
+  if (k.pricing.estimated)
+    notes.push("~ and est.: the cost of imported history is estimated from token counts.");
   if (k.pricing.planCalls > 0)
     notes.push(
       `${count(k.pricing.planCalls)} calls were billed to the ChatGPT plan: $0 (plan), tokens still counted.`,
@@ -551,7 +596,7 @@ function taskRows(t: TaskListRow): HTMLTableRowElement[] {
       t.source !== "hamness" ? h("span", { class: "tag" }, SOURCE_LABEL[t.source]) : null,
     ),
     whenCell(t.startedAt, "when hide-sm"),
-    h("td", { class: "num" }, money(t.costMicros)),
+    h("td", { class: "num" }, planMoney(t.costMicros, t.planCalls)),
     h("td", { class: "num hide-sm" }, duration(t.durationMs)),
     h("td", {}, pill(OUTCOME_KIND[t.outcome], t.outcome)),
     h("td", { class: "num" }, evidenceCell(t)),
@@ -559,7 +604,7 @@ function taskRows(t: TaskListRow): HTMLTableRowElement[] {
   return [row, detail];
 }
 
-async function tasksView(): Promise<Node[]> {
+async function tasksView(source: Source | "all"): Promise<Node[]> {
   const filters = h(
     "div",
     { class: "filters" },
@@ -583,7 +628,7 @@ async function tasksView(): Promise<Node[]> {
   const more = h("button", { type: "button", class: "more", hidden: true }, "Load more");
   const params = {
     range: state.range,
-    source: state.source,
+    source,
     tz,
     outcome: state.outcome === "all" ? undefined : state.outcome,
     turns: state.turns ? undefined : false,
@@ -627,7 +672,7 @@ async function tasksView(): Promise<Node[]> {
         ),
       )
     : empty(
-        state.source === "claude-code" || state.source === "codex"
+        source === "claude-code" || source === "codex"
           ? "Imported history has no tasks: tasks are recorded by hamness sessions."
           : `No tasks ${inRange(state.range)}.`,
       );
@@ -713,7 +758,7 @@ function tableRoles(el: HTMLElement): void {
   }
 }
 
-async function decisionsView(): Promise<Node[]> {
+async function decisionsView(source: Source | "all"): Promise<Node[]> {
   const filters = h(
     "div",
     { class: "filters" },
@@ -733,7 +778,7 @@ async function decisionsView(): Promise<Node[]> {
   const more = h("button", { type: "button", class: "more", hidden: true }, "Load more");
   const params = {
     range: state.range,
-    source: state.source,
+    source,
     tz,
     verdict: state.verdict === "all" ? undefined : state.verdict,
     limit: 100,
@@ -930,7 +975,7 @@ function controls(): HTMLElement {
           text: SOURCE_LABEL[v],
         })),
       ],
-      state.source,
+      shownSource(),
       (source) => setState({ source }),
     ),
   );
@@ -954,15 +999,16 @@ function signedOut(): HTMLElement {
 /** The current view's content, its data fetched; detached until the caller puts it in. */
 async function viewContent(): Promise<Node[]> {
   let content: Node[];
+  const before = shownSource();
+  const { source, report: known } = await resolveSource();
+  // `auto` came to something other than the toggle guessed: show the real pick.
+  if (shownSource() !== before) document.querySelector(".controls")?.replaceWith(controls());
   if (state.view === "overview") {
-    const report = await getJson<StatsReport>("/v1/stats", {
-      range: state.range,
-      source: state.source,
-      tz,
-    });
+    const report =
+      known ?? (await getJson<StatsReport>("/v1/stats", { range: state.range, source, tz }));
     content = overview(report);
-  } else if (state.view === "tasks") content = await tasksView();
-  else content = await decisionsView();
+  } else if (state.view === "tasks") content = await tasksView(source);
+  else content = await decisionsView(source);
   const title = h(
     "h1",
     { class: "sr-only" },

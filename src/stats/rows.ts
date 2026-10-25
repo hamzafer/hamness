@@ -69,6 +69,9 @@ export interface TaskListRow {
   summary: string | null;
   /** Sums over the task's model calls. */
   costMicros: number;
+  modelCalls: number;
+  /** Of those, the calls billed to the ChatGPT plan ($0 each). */
+  planCalls: number;
   tokens: number;
   startedAt: number;
   endedAt: number | null;
@@ -95,6 +98,8 @@ interface TaskSqlRow {
   at: number;
   endedAt: number | null;
   cost: number;
+  calls: number;
+  planCalls: number;
   tokens: number;
   checked: number;
   passed: number;
@@ -117,13 +122,15 @@ export function listTasks(sqlite: Database, q: TaskListQuery): Page<TaskListRow>
       `SELECT t.id, t.session_id AS sessionId, s.title AS sessionName, s.source, t.goal, t.implicit, t.outcome,
          t.outcome_reason AS reason, t.summary, coalesce(t.started_at, t.created_at) AS at,
          t.ended_at AS endedAt,
-         coalesce(mc.cost, 0) AS cost, coalesce(mc.tokens, 0) AS tokens,
+         coalesce(mc.cost, 0) AS cost, coalesce(mc.calls, 0) AS calls,
+         coalesce(mc.planCalls, 0) AS planCalls, coalesce(mc.tokens, 0) AS tokens,
          coalesce(ev.checked, 0) AS checked, coalesce(ev.passed, 0) AS passed,
          coalesce(ev.pending, 0) AS pending,
          t.branch, t.commit_sha AS commitSha, t.pr_url AS prUrl
        FROM tasks t JOIN sessions s ON s.id = t.session_id
        LEFT JOIN (
-         SELECT task_id, sum(cost_micros) AS cost,
+         SELECT task_id, sum(cost_micros) AS cost, count(*) AS calls,
+           coalesce(sum(billing = 'plan'), 0) AS planCalls,
            sum(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS tokens
          FROM model_calls WHERE task_id IS NOT NULL GROUP BY task_id
        ) mc ON mc.task_id = t.id
@@ -163,6 +170,8 @@ export function listTasks(sqlite: Database, q: TaskListQuery): Page<TaskListRow>
       reason: r.reason,
       summary: r.summary,
       costMicros: r.cost,
+      modelCalls: r.calls,
+      planCalls: r.planCalls,
       tokens: r.tokens,
       startedAt: r.at,
       endedAt: r.endedAt,
