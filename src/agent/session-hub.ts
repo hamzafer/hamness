@@ -285,7 +285,19 @@ export interface SessionCompat {
     userInvocable: boolean;
     modelInvocable: boolean;
   }>;
-  mcpServers: Array<{ name: string; scope: string; status: string; reason?: string }>;
+  mcpServers: Array<{
+    name: string;
+    scope: string;
+    /** The configured policy: `start`, `needs-approval`, `disabled`, `unsupported`. */
+    status: string;
+    reason?: string;
+    /**
+     * For a `start` server: the tools it has registered in this session so far. Above 0, it
+     * connected; 0 means still connecting, failed, or a server with no tools (Pi's MCP client
+     * does not expose its connection state).
+     */
+    tools?: number;
+  }>;
 }
 
 interface Subagent {
@@ -848,7 +860,9 @@ export class SessionHub {
 
   /** The skills and MCP servers the session loaded from Claude Code's setup (ADR 0008). */
   compatInfo(sessionId: string): SessionCompat {
-    const compat = this.live(sessionId).compat;
+    const live = this.live(sessionId);
+    const compat = live.compat;
+    const tools = live.runner.mcpTools();
     return {
       skills: (compat?.skills.skills ?? []).map((s) => ({
         name: s.name,
@@ -862,6 +876,7 @@ export class SessionHub {
         scope: m.scope,
         status: m.status,
         ...(m.reason ? { reason: m.reason } : {}),
+        ...(m.status === "start" ? { tools: tools[m.name] ?? 0 } : {}),
       })),
     };
   }

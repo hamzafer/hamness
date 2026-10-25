@@ -17,3 +17,5 @@ The TUI gets Pi's interactive commands (`/new`, `/clear`, `/compact`, `/resume`,
 **Export** without a path writes under `<dataDir>/exports`; a relative path is in the session's cwd; an existing file is replaced only with `overwrite: true`. A symlink at the path is refused, dangling or not: Pi writes into hamness's own folder and the copy to the path opens it with `O_NOFOLLOW`, and `O_EXCL` unless overwriting. The export is unredacted, like Pi's own file, because the user asked for it.
 
 **Compaction is spend.** The summary call is a stored model call (no message), counted toward the open task only: a `/compact` after `/abandon` or `/override` charges no task.
+
+**MCP tool counts** (2026-10-25): `GET /v1/sessions/:id/compat` adds `tools` to each `start` server: how many tools it has registered in the session, counted as Pi registers them. Pi's MCP client keeps its connection state private, so connected vs failed is not reported: above 0 means connected, 0 means connecting, failed or toolless.

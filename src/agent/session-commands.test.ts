@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { type FakeModel, fakeModel } from "../../test/support/fake-model.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { openDatabase } from "../db/open.ts";
@@ -45,6 +45,36 @@ function startHub() {
   });
   return hub;
 }
+
+describe("compat info", () => {
+  test("a started MCP server reports how many tools it registered", async () => {
+    const claudeHome = join(home.dir, "claude-home");
+    mkdirSync(claudeHome);
+    const server = resolve(import.meta.dir, "../../test/support/mcp-server.ts");
+    writeFileSync(
+      join(claudeHome, ".claude.json"),
+      JSON.stringify({
+        mcpServers: { echo: { command: process.execPath, args: [server] } },
+      }),
+    );
+    fake.script([{ text: "Hi." }]);
+    hub = new SessionHub({
+      db,
+      dataDir: join(home.dir, "data"),
+      models: async () => fake,
+      claude: { env: { HOME: claudeHome }, managedDir: join(home.dir, "managed") },
+      publish: () => {},
+    });
+    const s = await hub.attach(work);
+    hub.prompt(s.session.id, "hello");
+    let info = hub.compatInfo(s.session.id);
+    for (let i = 0; i < 100 && !info.mcpServers[0]?.tools; i++) {
+      await Bun.sleep(20);
+      info = hub.compatInfo(s.session.id);
+    }
+    expect(info.mcpServers).toEqual([{ name: "echo", scope: "user", status: "start", tools: 1 }]);
+  });
+});
 
 describe("event numbers across a resume", () => {
   test("a resumed session's seq goes on from its last life, so no client drops its events", async () => {
