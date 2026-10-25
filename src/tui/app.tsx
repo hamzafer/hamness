@@ -16,6 +16,7 @@ import type {
 import { ORB_LABEL } from "../orbs/activity.ts";
 import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
 import {
+  addCompactionFailure,
   addSystemLine,
   applyEvent,
   argSummary,
@@ -316,6 +317,7 @@ export function App(props: AppProps) {
         sendQueued();
       }
     },
+    compactionFailed: (message) => setState(produce((s) => addCompactionFailure(s, message))),
     setInput,
     prompts: () =>
       state.items.flatMap((i) =>

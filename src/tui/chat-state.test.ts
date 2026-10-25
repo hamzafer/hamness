@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent, SessionSnapshot } from "../events/types.ts";
-import { addSystemLine, applyEvent, initialState, waitingForModel } from "./chat-state.ts";
+import {
+  addCompactionFailure,
+  addSystemLine,
+  applyEvent,
+  initialState,
+  waitingForModel,
+} from "./chat-state.ts";
 
 const SID = "s-1";
 const MAIN = "a-main";
@@ -178,6 +184,18 @@ describe("chat state", () => {
       text: "Compaction failed: no model",
       tone: "error",
     });
+    // Pi's stacked prefixes go; a second report of the same failure adds nothing.
+    const before = state.items.length;
+    send({ type: "agent.compaction.start", reason: "manual" });
+    send({
+      type: "agent.compaction.end",
+      reason: "manual",
+      aborted: false,
+      error: "Compaction failed: Summarization failed: rate limited. Retry in 20s.\nstack…",
+    });
+    addCompactionFailure(state, "Summarization failed: rate limited. Retry in 20s.");
+    expect(state.items.length).toBe(before + 1);
+    expect(state.items.at(-1)).toMatchObject({ text: "Compaction failed: rate limited." });
     send({ type: "agent.compaction.start", reason: "manual" });
     send({ type: "agent.compaction.end", reason: "manual", aborted: true });
     expect(state.items.at(-1)).toMatchObject({ text: "Compaction stopped.", tone: "muted" });

@@ -152,7 +152,7 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       return;
     case "agent.compaction.end": {
       state.compacting = false;
-      if (e.error) addSystemLine(state, `Compaction failed: ${e.error}`, "error");
+      if (e.error) addCompactionFailure(state, e.error);
       else if (e.aborted) addSystemLine(state, "Compaction stopped.", "muted");
       else addSystemLine(state, compactedLine(e.reason, e.tokensBefore, e.tokensAfter), "ok");
       return;
@@ -160,6 +160,33 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
     default:
       return;
   }
+}
+
+/**
+ * A raw model, API or policy error as one readable sentence: Pi's stacked prefixes
+ * (`Compaction failed: Summarization failed: …`) dropped, a refusal said plainly, and the rest
+ * cut to its first sentence.
+ */
+export function readableError(raw: string): string {
+  let text = raw.trim();
+  for (;;) {
+    const next = text.replace(/^(compaction|summarization) failed:\s*/i, "");
+    if (next === text) break;
+    text = next;
+  }
+  if (/\brefus(al|als|ed|es)\b/i.test(text)) return "the model refused to write the summary.";
+  const first = (text.split("\n")[0] ?? "").trim();
+  const sentence = /^(.+?[.!?])(\s|$)/.exec(first)?.[1] ?? first;
+  const short = sentence.length > 160 ? `${sentence.slice(0, 159)}…` : sentence;
+  return short || "unknown error.";
+}
+
+/** `Compaction failed: …` once: the event and the command's own rejection say the same thing. */
+export function addCompactionFailure(state: ChatState, raw: string): void {
+  const text = `Compaction failed: ${readableError(raw)}`;
+  const recent = state.items.slice(-3);
+  if (recent.some((i) => i.kind === "system" && i.text === text)) return;
+  addSystemLine(state, text, "error");
 }
 
 /** `Compacted: 142k → 18k tokens`, said differently when Pi did it on its own. */

@@ -34,6 +34,8 @@ export interface CommandContext {
     call: () => Promise<SessionSnapshot>,
     line: (snapshot: SessionSnapshot) => string,
   ): Promise<SessionSnapshot | undefined>;
+  /** A failed `/compact`: one readable line, even when its event says it too. */
+  compactionFailed(message: string): void;
   /** Puts text in the input box. */
   setInput(text: string): void;
   /** The user's prompts in this chat, oldest first, for `/fork`. */
@@ -153,7 +155,13 @@ export const COMMANDS: readonly SlashCommand[] = [
     args: "[instructions]",
     description: "Summarize the context to free up room",
     run: (ctx, arg) => {
-      ctx.client.compact(ctx.session().id, arg || undefined).catch(fail(ctx));
+      ctx.client.compact(ctx.session().id, arg || undefined).catch((err: unknown) => {
+        const [line, tone] = errorLine(err);
+        // Busy: the usual try-again line. Else the compaction itself failed, and its event
+        // (`agent.compaction.end`) says so too: one line for both.
+        if (line === BUSY_LINE) ctx.say(line, tone);
+        else ctx.compactionFailed(line);
+      });
     },
   },
   {
