@@ -184,7 +184,7 @@ describe("resume after a daemon restart", () => {
   });
 });
 
-describe("billing (ADR 0023)", () => {
+describe("billing (ADR 0024)", () => {
   const plan = (): ModelChoice => ({ ...fake, billing: () => ({ kind: "plan" }) });
 
   test("a ChatGPT plan call keeps its tokens, costs $0 and is marked plan", async () => {
@@ -218,9 +218,9 @@ describe("billing (ADR 0023)", () => {
     const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
     await call("POST", `/v1/sessions/${s.session.id}/prompt`, { text: "first" });
     await log.waitFor(settled(s.session.id));
-    // As if the session was last used with Claude, before the ChatGPT plan login.
+    // As if the session was last used with a provider that has no key now.
     d.db.sqlite
-      .query("UPDATE sessions SET model = 'anthropic/claude-opus-5-5' WHERE id = ?")
+      .query("UPDATE sessions SET model = 'cerebras/gpt-oss-120b' WHERE id = ?")
       .run(s.session.id);
     await daemon?.stop();
 
@@ -234,11 +234,40 @@ describe("billing (ADR 0023)", () => {
     await call("POST", `/v1/sessions/${back.session.id}/prompt`, { text: "second" });
     const notice = await log.waitFor((e) => e.type === "agent.notice");
     expect(notice).toMatchObject({
-      message: "Switched to fake/claude-opus-5-5 (plan): anthropic/claude-opus-5-5 has no key.",
+      message: "Switched to fake/claude-opus-5-5 (plan): cerebras/gpt-oss-120b has no key.",
     });
     await log.waitFor(settled(back.session.id));
     expect(
       d.db.sqlite.query("SELECT model FROM sessions WHERE id = ?").get(back.session.id),
     ).toEqual({ model: "fake/claude-opus-5-5" });
+  });
+
+  test("/new keeps the session's live model, even one the default would replace", async () => {
+    fake.script([{ text: "one" }]);
+    const billing = (p: string) => (p === "fake" ? { kind: "plan" as const } : undefined);
+    const { call, log } = await start({ ...fake, billing });
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    await call("POST", `/v1/sessions/${s.session.id}/model`, { model: "fake/claude-haiku-5-5" });
+    await call("POST", `/v1/sessions/${s.session.id}/prompt`, { text: "first" });
+    await log.waitFor(settled(s.session.id));
+    const res = await call("POST", `/v1/sessions/${s.session.id}/new`, {});
+    const next = (await res.json()) as SessionSnapshot;
+    expect(next.session.model).toBe("fake/claude-haiku-5-5");
+  });
+
+  test("an empty reply with no error says so; on the plan the model is set aside", async () => {
+    fake.script([{ text: "" }]);
+    const { call, log } = await start(plan());
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    await call("POST", `/v1/sessions/${s.session.id}/prompt`, { text: "hi" });
+    const end = await log.waitFor((e) => e.type === "agent.message.end" && e.role === "assistant");
+    expect(end).toMatchObject({
+      error: expect.stringContaining("ended without a reply or an error"),
+    });
+    // No other plan model to move to (the fake provider is no ChatGPT plan): it says so, once.
+    const notice = await log.waitFor((e) => e.type === "agent.notice");
+    expect(notice).toMatchObject({ message: expect.stringContaining("no other plan model") });
+    const models = (await (await call("GET", "/v1/models")).json()) as { models: ModelInfo[] };
+    expect(models.models.map((m) => m.id)).not.toContain("fake/claude-opus-5-5");
   });
 });

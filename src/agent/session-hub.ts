@@ -49,6 +49,7 @@ import { type GhRunner, runGh } from "../tasks/checkers/index.ts";
 import { gitBranch, SessionTasks } from "../tasks/session-tasks.ts";
 import { PROOF_GATE_PROMPT, taskTools } from "../tasks/tools.ts";
 import type { TaskAction, TaskView } from "../tasks/types.ts";
+import { isSubscriptionBilling } from "./billing.ts";
 import { explainModelError } from "./errors.ts";
 import {
   billingLabel,
@@ -56,7 +57,6 @@ import {
   type ModelChoice,
   type ModelInfo,
   modelName,
-  PLAN_DEFAULT_MODEL,
   PLAN_UNSUPPORTED_ERROR,
   parseModelSpec,
   planModel,
@@ -127,6 +127,10 @@ const providerOf = (model: string) => model.split("/")[0];
 /** `plan` or `api` for a session's model (`provider/id`); undefined when unknown. */
 const billingKind = (models: ModelChoice, model: string) =>
   models.billing?.(providerOf(model) ?? "")?.kind;
+
+/** What a reply with no text, no tool call and no error shows (ADR 0024). */
+export const SILENT_REPLY =
+  "The model ended without a reply or an error. On a ChatGPT plan this model may not be on your tier; try /model.";
 
 export const DEFAULT_MAX_SUBAGENTS = 4;
 /** Stop hooks may continue a turn this many times in a row (Claude Code's cap). */
@@ -282,7 +286,7 @@ export interface SessionStatus {
   branch?: string;
   model: string;
   /** How the model is paid for: `plan` (ChatGPT subscription) or `api` (pay per token). */
-  billing?: "plan" | "api";
+  billing?: "plan" | "subscription" | "api";
   thinkingLevel: ThinkingLevel;
   busy: boolean;
   context?: ContextFill;
@@ -360,6 +364,8 @@ interface PendingEntry {
 export class SessionHub {
   private readonly store: ChatStore;
   private readonly byId = new Map<string, LiveSession>();
+  /** ChatGPT plan models the backend refused (or answered with nothing) since the daemon started. */
+  private readonly refusedPlanModels = new Set<string>();
   /**
    * The last event number of each session this daemon ran. A resumed session goes on from it
    * (seq counts up per session id, across lives), so a client never drops its new events.
@@ -568,7 +574,35 @@ export class SessionHub {
   async models(): Promise<ModelInfo[]> {
     const first = this.byId.values().next().value as LiveSession | undefined;
     const models = first?.models ?? (await this.opts.models());
-    return listModels(models.runtime, models.billing, models.planTier);
+    // The tier is read now, so a new login shows its own models.
+    const tier = this.planTier() ?? models.planTier;
+    const list = await listModels(models.runtime, models.billing, tier);
+    return list.filter((m) => !this.refusedPlanModels.has(m.id));
+  }
+
+  /** The ChatGPT plan tier of the stored login, read fresh (a new login changes it). */
+  private planTier(): string | undefined {
+    return readPlanLogin(this.opts.dataDir)?.tier;
+  }
+
+  /**
+   * The default models, with a ChatGPT plan default this daemon saw refused swapped for the
+   * tier's next one.
+   */
+  private async baseModels(): Promise<ModelChoice> {
+    const base = await this.opts.models();
+    const name = modelName(base.model);
+    if (!this.refusedPlanModels.has(name)) return base;
+    const next = planModel(
+      base.runtime,
+      [base.model.provider],
+      "main",
+      this.planTier(),
+      this.refusedPlanModels,
+    );
+    const spec = next ? parseModelSpec(next) : undefined;
+    const model = spec && base.runtime.getModel(spec.provider, spec.id);
+    return model ? { ...base, model } : base;
   }
 
   /**
@@ -602,17 +636,31 @@ export class SessionHub {
 
   /**
    * The ChatGPT plan refused the session's model ("not supported when using Codex with a
-   * ChatGPT account"): switch to the plan tier's default and say so (ADR 0023).
+   * ChatGPT account"): switch to the plan tier's default and say so (ADR 0024).
    */
   private async fallBackToPlanDefault(live: LiveSession): Promise<void> {
-    const from = parseModelSpec(live.runner.model);
+    const current = live.runner.model;
+    const from = parseModelSpec(current);
     if (!from) return;
-    const tier = readPlanLogin(this.opts.dataDir)?.tier;
-    const pick = planModel(live.models.runtime, [from.provider], "main", tier);
-    const target = [pick, PLAN_DEFAULT_MODEL].find((m) => m && m !== live.runner.model);
+    // Remembered for the daemon's life: never offered or picked again, so no ping-pong.
+    this.refusedPlanModels.add(current);
+    const target = planModel(
+      live.models.runtime,
+      [from.provider],
+      "main",
+      this.planTier(),
+      this.refusedPlanModels,
+    );
     const to = target ? parseModelSpec(target) : undefined;
     const model = to && live.models.runtime.getModel(to.provider, to.id);
-    if (!to || !model || live.busy) return;
+    if (!to || !model) {
+      this.emit(live, {
+        type: "agent.notice",
+        message: `${from.id} isn't on the ChatGPT plan, and no other plan model is left to try. Pick one with /model.`,
+      });
+      return;
+    }
+    if (live.busy) return;
     await live.runner.setModel(model);
     if (!live.unsaved) this.store.setModel(this.ids(live), live.runner.model);
     const billing = billingKind(live.models, live.runner.model);
@@ -991,7 +1039,7 @@ export class SessionHub {
   }
 
   private async create(cwd: string, plan: StartPlan = { kind: "attach" }): Promise<LiveSession> {
-    const base = await this.opts.models();
+    const base = await this.baseModels();
     const sessionDir = this.sessionDir;
     const resume =
       plan.kind === "attach"
@@ -1004,18 +1052,21 @@ export class SessionHub {
     const savedSpec = resume?.model ?? from?.runner.model;
     const saved = savedSpec ? parseModelSpec(savedSpec) : undefined;
     const savedModel = saved && base.runtime.getModel(saved.provider, saved.id);
-    // A stored or carried model whose provider has no key or login can't answer; the default
-    // can, so switch and say so (a session from before the ChatGPT plan login, ADR 0023).
-    const billing = base.billing;
-    const unusable =
-      savedModel &&
-      billing &&
-      !billing(savedModel.provider) &&
-      billing(base.model.provider) !== undefined;
+    // A resumed session's stored model that Pi can't call (no key or login) while the default
+    // can: switch and say so (a session from before the ChatGPT plan login, ADR 0024). A model
+    // live in the session (`/new`, `/fork`) is the user's and is never switched.
+    let unusable = false;
+    if (savedModel && !from) {
+      const available = await base.runtime.getAvailable().catch(() => undefined);
+      const has = (m: ModelChoice["model"]) =>
+        available?.some((a) => a.provider === m.provider && a.id === m.id) === true;
+      unusable = available !== undefined && !has(savedModel) && has(base.model);
+    }
     const models: ModelChoice = savedModel && !unusable ? { ...base, model: savedModel } : base;
+    const label = base.billing?.(base.model.provider);
     const modelNotice =
-      unusable && billing
-        ? `Switched to ${modelName(base.model)} (${billingLabel(billing(base.model.provider))}): ${modelName(savedModel)} has no key.`
+      unusable && savedModel
+        ? `Switched to ${modelName(base.model)}${label ? ` (${billingLabel(label)})` : ""}: ${modelName(savedModel)} has no key.`
         : undefined;
     const model = `${models.model.provider}/${models.model.id}`;
     const thinkingLevel = asThinking(resume?.thinkingLevel) ?? from?.runner.thinkingLevel;
@@ -1608,14 +1659,24 @@ export class SessionHub {
         agent.lastText = e.text;
         // Pi ends a reply cut short by `abort()` as `aborted`, with an error message. A user
         // stop is not a failure (`agent.stopped` says it); real errors stay errors.
-        const error =
-          e.error && e.stopReason !== "aborted"
+        // A reply with no text, no tool call and no error is a failure too (seen when a ChatGPT
+        // plan tier doesn't serve the model): say so rather than show nothing.
+        const silent = !e.error && e.stopReason === "stop" && !e.text.trim();
+        const error = silent
+          ? SILENT_REPLY
+          : e.error && e.stopReason !== "aborted"
             ? explainModelError(e.error, this.opts.dataDir, e.provider)
             : undefined;
         if (error) agent.lastError = error;
         else delete agent.lastError;
-        // The ChatGPT plan refused this model: switch to the plan's default once the run ends.
-        if (agent === live && e.error && PLAN_UNSUPPORTED_ERROR.test(e.error)) {
+        const plan = isSubscriptionBilling(live.models.billing?.(e.provider));
+        const onPlan = live.models.billing?.(e.provider)?.kind === "plan";
+        // The ChatGPT plan refused this model (or answered with nothing): switch to the
+        // tier's next model once the run ends.
+        if (
+          agent === live &&
+          ((e.error && PLAN_UNSUPPORTED_ERROR.test(e.error)) || (silent && onPlan))
+        ) {
           live.planFallback = true;
         }
         if (agent === live) live.lastReply = e.text;
@@ -1625,8 +1686,8 @@ export class SessionHub {
         const tail = reply.redact.flush();
         if (tail) emit({ type: "agent.message.delta", messageId: reply.rowId, text: tail });
         this.store.setMessageContent(reply.rowId, shown);
-        // A ChatGPT plan call costs $0: tokens are kept, no API price (ADR 0023).
-        const plan = live.models.billing?.(e.provider)?.kind === "plan";
+        // A subscription call costs $0: tokens are kept, no API price (ADR 0024). Billing is
+        // read per call from Pi's auth state, so a login or logout counts at once.
         const priced = plan ? 0 : costMicros(e.model, e.usage);
         const cost = priced ?? Math.round(e.piCostUsd * 1_000_000);
         const modelCallId = this.store.addModelCall(this.ids(live, agent), {
@@ -1714,7 +1775,7 @@ export class SessionHub {
         // The summary is a model call: its spend counts (toward the task, if one is open).
         if (e.usage && e.provider && e.model) {
           this.persist(live);
-          const plan = live.models.billing?.(e.provider)?.kind === "plan";
+          const plan = isSubscriptionBilling(live.models.billing?.(e.provider));
           const priced = plan ? 0 : costMicros(e.model, e.usage);
           const ids =
             agent === live
