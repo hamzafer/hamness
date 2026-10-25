@@ -20,7 +20,8 @@ import { parsePermission, type Rule } from "./rules.ts";
  * Files are read on every check, so edits apply to the next tool call.
  *
  * The judge's settings are user-only (a repo cannot raise the budget):
- * `{ "safety": { "judge": { "model": "claude-haiku-5-5", "dailyBudgetUsd": 1, "timeoutSec": 8 } } }`
+ * `{ "safety": { "judge": { "model": "claude-haiku-5-5", "dailyBudgetUsd": 1, "dailyCalls": 500, "timeoutSec": 8 } } }`
+ * (`dailyCalls` caps judge calls on a ChatGPT plan, which cost $0; ADR 0024)
  */
 
 export type { SafetyMode };
@@ -142,7 +143,12 @@ export function addProjectRules(dataDir: string, cwd: string, rules: Rule[]): st
 }
 
 export interface JudgeConfig {
+  /** The judge model for an API key; a ChatGPT plan login uses the plan's judge model unless `modelSet`. */
   model: string;
+  /** True when the user config names the model. */
+  modelSet: boolean;
+  /** Judge calls per local day on a ChatGPT plan, where calls cost $0 (ADR 0024). */
+  dailyCallCap: number;
   /** Spend cap per local day, in micro-dollars. */
   dailyBudgetMicros: number;
   timeoutMs: number;
@@ -152,6 +158,8 @@ export interface JudgeConfig {
 export const DEFAULT_JUDGE_MODEL = "claude-haiku-5-5";
 export const DEFAULT_JUDGE_BUDGET_USD = 1;
 export const DEFAULT_JUDGE_TIMEOUT_MS = 8000;
+/** Plan judge calls a day: enough for a busy day, small next to the plan's own limits. */
+export const DEFAULT_JUDGE_DAILY_CALLS = 500;
 
 /** The judge's settings from the user config. */
 export function loadJudgeConfig(dataDir: string): JudgeConfig {
@@ -166,13 +174,19 @@ export function loadJudgeConfig(dataDir: string): JudgeConfig {
   if (typeof budget !== "number" || !(budget >= 0)) {
     throw bad(".dailyBudgetUsd must be a number of dollars, 0 or more");
   }
+  const calls = j.dailyCalls ?? DEFAULT_JUDGE_DAILY_CALLS;
+  if (typeof calls !== "number" || !Number.isInteger(calls) || calls < 0) {
+    throw bad(".dailyCalls must be a whole number of calls, 0 or more");
+  }
   const timeout = j.timeoutSec;
   if (timeout !== undefined && (typeof timeout !== "number" || !(timeout > 0))) {
     throw bad(".timeoutSec must be a positive number");
   }
   return {
     model: model.trim(),
+    modelSet: j.model !== undefined,
     dailyBudgetMicros: Math.round(budget * 1_000_000),
+    dailyCallCap: calls,
     timeoutMs: timeout === undefined ? DEFAULT_JUDGE_TIMEOUT_MS : timeout * 1000,
   };
 }

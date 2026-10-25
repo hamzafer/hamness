@@ -31,6 +31,8 @@ export function dataPaths(dataDir: string) {
     database: join(dataDir, "hamness.sqlite"),
     token: join(dataDir, "token"),
     daemonState: join(dataDir, "daemon.json"),
+    /** The live daemon's pid, held until its process exits (daemon.json goes at stop). */
+    daemonLock: join(dataDir, "daemon.lock"),
   } as const;
 }
 

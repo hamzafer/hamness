@@ -41,3 +41,10 @@ export function duration(ms: number): string {
   if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
+
+/** A model's cost: `$0 (plan)` when every call was billed to the ChatGPT plan, else `money`. */
+export function modelCost(m: { costMicros: number; calls: number; planCalls?: number }): string {
+  const plan = m.planCalls ?? 0;
+  if (plan > 0 && plan === m.calls) return "$0 (plan)";
+  return plan > 0 ? `${money(m.costMicros)} (+plan)` : money(m.costMicros);
+}

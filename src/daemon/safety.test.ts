@@ -421,7 +421,7 @@ describe("safety in the daemon", () => {
     expect(ev).toHaveLength(1);
     expect(ev[0]).toMatchObject({ sessionId: s.session.id, state: "no-key" });
     expect(decisions()[0]).toMatchObject({ verdict: "ask", source: "mode" });
-    expect(decisions()[0]?.reason).toContain("no Anthropic API key");
+    expect(decisions()[0]?.reason).toContain("judge is off");
   });
 
   test("ask mode shows no judge state", async () => {

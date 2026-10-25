@@ -3,6 +3,7 @@ import type { KeyBinding, SyntaxStyle, TextareaRenderable } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
+import { billingLabel } from "../agent/billing.ts";
 import type { ModelInfo } from "../agent/models.ts";
 import type { SessionStatus } from "../agent/session-hub.ts";
 import type { DaemonClient, SessionCommands } from "../client/client.ts";
@@ -70,6 +71,9 @@ const JUDGE_LABEL: Record<JudgeState, string> = {
 /** Events for sessions the chat doesn't show, kept for a switch to one of them. */
 const FOREIGN_KEPT = 500;
 
+/** The notice once the daemon stops or its event stream drops: this chat is no longer live. */
+export const DAEMON_GONE_NOTICE = "The hamness daemon stopped. Restart hamness to reconnect.";
+
 /** The chat's line when another client (or the daemon) replaced this session. */
 const REPLACED_LINE = {
   new: "A new session started from another window.",
@@ -117,7 +121,13 @@ export function App(props: AppProps) {
   const [following, setFollowing] = createSignal(false);
   /** Prompts sent during a switch: they go to the new session once it shows. */
   const queued: string[] = [];
+  /** True once the daemon said it is stopping, or the event stream closed under the chat. */
+  const [daemonGone, setDaemonGone] = createSignal(false);
   const off = props.client.subscribe((e) => {
+    if (e.type === "daemon.stopping" || e.type === "daemon.gone") {
+      setDaemonGone(true);
+      setState("notice", DAEMON_GONE_NOTICE);
+    }
     if ("sessionId" in e && e.sessionId !== state.session.id) {
       if (e.sessionId === left) return;
       foreign.push(e);
@@ -200,6 +210,11 @@ export function App(props: AppProps) {
   /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
   const chatWidth = () => Math.max(20, dims().width - RAIL_WIDTH - 2);
   const home = props.home ?? homedir();
+  /** The model and how it is billed: `openai-codex/gpt-5.6-terra · plan`, `anthropic/… · API`. */
+  const modelLabel = () =>
+    state.session.billing
+      ? `${state.session.model} · ${billingLabel({ kind: state.session.billing })}`
+      : state.session.model;
   /** The judge's state for the header: in `auto`, and in `yolo` (it's back on `/mode auto`). */
   const judgeShown = () =>
     state.session.mode === "auto" || state.session.mode === "yolo"
@@ -209,7 +224,7 @@ export function App(props: AppProps) {
   const headerPath = () => {
     const judge = judgeShown();
     const rest =
-      `hamness ·  · ${state.session.model}`.length +
+      `hamness ·  · ${modelLabel()}`.length +
       (state.session.name ? `${state.session.name} · `.length : 0) +
       (judge ? ` · ${JUDGE_LABEL[judge]}`.length : 0) +
       (state.session.busy ? " · working…".length : 0);
@@ -302,7 +317,10 @@ export function App(props: AppProps) {
     setPicker(undefined);
     props.client
       .setModel(state.session.id, model)
-      .then((snap) => setState("session", "model", snap.session.model))
+      .then((snap) => {
+        setState("session", "model", snap.session.model);
+        if (snap.session.billing) setState("session", "billing", snap.session.billing);
+      })
       .catch((err: Error) => setState("notice", err.message));
   };
 
@@ -379,6 +397,11 @@ export function App(props: AppProps) {
   const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
+    if (daemonGone()) {
+      // Nothing would receive it: keep the text, and say why.
+      setState("notice", DAEMON_GONE_NOTICE);
+      return;
+    }
     input?.clear();
     setDraft("");
     setPromptRows(1);
@@ -475,7 +498,7 @@ export function App(props: AppProps) {
               {(name: () => string) => <text fg={COLORS.assistant}>{`${name()} · `}</text>}
             </Show>
             <text fg={COLORS.muted}>
-              {headerPath()} · {state.session.model}
+              {headerPath()} · {modelLabel()}
             </text>
             <Show when={judgeShown()}>
               {(judge: () => JudgeState) => (

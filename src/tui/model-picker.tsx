@@ -1,11 +1,18 @@
+import { billingLabel, isSubscriptionBilling } from "../agent/billing.ts";
 import type { ModelInfo } from "../agent/models.ts";
 import { Picker } from "./picker.tsx";
 
 const money = (usd: number) => `$${Number(usd.toFixed(4))}`;
 
-/** `$4 in / $20 out` per million tokens. */
-export const priceLabel = (m: ModelInfo) =>
-  `${money(m.inputPerMTok)} in / ${money(m.outputPerMTok)} out${m.priced ? "" : " (Pi est.)"}`;
+/**
+ * `$0 (plan)` for a ChatGPT plan model; else `$4 in / $20 out` per million tokens, and where
+ * the pay-per-token key comes from (`API (pay per token, from OPENAI_API_KEY)`).
+ */
+export const priceLabel = (m: ModelInfo) => {
+  if (isSubscriptionBilling(m.billing)) return `$0 (${billingLabel(m.billing)})`;
+  const price = `${money(m.inputPerMTok)} in / ${money(m.outputPerMTok)} out${m.priced ? "" : " (Pi est.)"}`;
+  return m.billing ? `${billingLabel(m.billing, true)} · ${price}` : price;
+};
 
 export interface ModelPickerProps {
   models: readonly ModelInfo[];
@@ -23,7 +30,7 @@ export interface ModelPickerProps {
  * Typing filters, Up/Down moves, Enter switches, Esc closes. `/model provider/id` skips it.
  */
 export function ModelPicker(props: ModelPickerProps) {
-  // Grouped: providers in the order they first appear, models in the daemon's order.
+  // Grouped: providers in the order they first appear (plan ones first, from the daemon).
   const providers = [...new Set(props.models.map((m) => m.provider))];
   const models = providers.flatMap((p) => props.models.filter((m) => m.provider === p));
   return (

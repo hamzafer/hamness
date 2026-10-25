@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { NotSetUpError } from "../agent/models.ts";
 import {
   type Launch,
   ModelSwitchError,
@@ -92,6 +93,8 @@ export function sessionRoutes(hub: SessionHub) {
         return json(await hub.attach(cwd, launch));
       } catch (err) {
         if (err instanceof SessionCommandError) return json({ error: err.message }, err.status);
+        // No model set up: the setup hint as it is, for the TUI to show (ADR 0024).
+        if (err instanceof NotSetUpError) return json({ error: err.message }, 409);
         return json({ error: `could not start the session: ${(err as Error).message}` }, 500);
       }
     }

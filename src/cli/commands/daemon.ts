@@ -1,6 +1,11 @@
 import { parseArgs } from "node:util";
-import { DaemonAlreadyRunningError, DEFAULT_PORT, startDaemon } from "../../daemon/daemon.ts";
-import { judgeFromKeys } from "../../safety/judge/index.ts";
+import {
+  DaemonAlreadyRunningError,
+  DEFAULT_PORT,
+  STOP_DEADLINE_MS,
+  startDaemon,
+} from "../../daemon/daemon.ts";
+import { type BackendJudge, chooseJudge } from "../../safety/judge/index.ts";
 import type { CliContext } from "../run.ts";
 
 export const DAEMON_USAGE = [
@@ -33,13 +38,15 @@ export async function daemonCommand({ args, env, dataDir, io }: CliContext): Pro
     return 2;
   }
 
-  let judge: ReturnType<typeof judgeFromKeys>;
+  let judge: BackendJudge | undefined;
   try {
-    judge = judgeFromKeys({ dataDir, env });
+    const choice = await chooseJudge({ dataDir, env });
+    judge = choice.backend;
+    if (judge) io.out(`hamness daemon: judge ${choice.model} (${choice.billing})`);
+    else io.out(`hamness daemon: the judge is off: ${choice.off} (auto mode asks)`);
   } catch (err) {
     io.err(`hamness daemon: the judge is off: ${(err as Error).message}`);
   }
-  if (!judge) io.out("hamness daemon: no Anthropic API key, so the judge is off (auto mode asks)");
 
   let daemon: Awaited<ReturnType<typeof startDaemon>>;
   try {
@@ -68,6 +75,27 @@ export async function daemonCommand({ args, env, dataDir, io }: CliContext): Pro
     process.once("SIGTERM", () => resolve("SIGTERM"));
   });
   io.out(`hamness daemon: ${signal}, stopping`);
-  await daemon.stop();
-  return 0;
+  // A second signal while stopping ends the process at once.
+  const now = () => {
+    io.err("hamness daemon: second signal, exiting now");
+    process.exit(1);
+  };
+  process.once("SIGINT", now);
+  process.once("SIGTERM", now);
+  // Backstop: stop() is bounded, but nothing may keep this process alive.
+  setTimeout(() => {
+    io.err("hamness daemon: still stopping after the deadline, exiting anyway");
+    process.exit(1);
+  }, STOP_DEADLINE_MS + 2000).unref();
+
+  const report = await daemon.stop({ deadlineMs: STOP_DEADLINE_MS });
+  if (report.open.length) {
+    io.err(
+      `hamness daemon: exiting with ${report.open.join(" and ")} still open after ${STOP_DEADLINE_MS / 1000} s`,
+    );
+  }
+  io.out("hamness daemon: stopped");
+  // Exit explicitly: anything still holding the event loop (a child process, a socket, a
+  // timer) would otherwise keep this process alive with no daemon.json, serving nothing.
+  process.exit(0);
 }

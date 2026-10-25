@@ -62,29 +62,64 @@ function interaction(io: CliIo): AuthInteraction {
 }
 
 /**
- * `hamness login <provider>`: runs Pi's OAuth flow (e.g. ChatGPT plan sign-in for `openai`).
- * Pi stores the credential in `<dataDir>/pi/auth.json` (mode 0600); nothing here prints it.
+ * What `hamness login <name>` signs in to. `openai` (and `chatgpt`) is the ChatGPT plan: Pi's
+ * `openai-codex` provider, OAuth only, so no API key can reach its models (ADR 0024).
+ */
+const LOGIN_PROVIDER: Readonly<Record<string, string>> = {
+  openai: "openai-codex",
+  chatgpt: "openai-codex",
+};
+
+export const loginProvider = (name: string) => LOGIN_PROVIDER[name] ?? name;
+
+/** A login error, with what to do for the ones hamness knows. */
+export function explainLoginError(message: string): string {
+  if (/3p_delegated_access_policy_denied/.test(message)) {
+    return [
+      "your ChatGPT workspace does not allow third-party apps to sign in (3p_delegated_access_policy_denied).",
+      "Ask the workspace admin to allow it, or sign in with a personal ChatGPT account",
+      "(pick the device code option, or sign out of the workspace in the browser first).",
+    ].join("\n  ");
+  }
+  return message;
+}
+
+/**
+ * `hamness login <provider>`: runs Pi's OAuth flow (`openai`: the ChatGPT plan, see
+ * `LOGIN_PROVIDER`). Pi stores the credential in `<dataDir>/pi/auth.json` (mode 0600); nothing
+ * here prints it. `planModel` is the default model the plan gives, for the closing line.
  */
 export async function login(opts: {
   provider: string;
   runtime: LoginRuntime;
   io: CliIo;
   dataDir: string;
+  planModel?: (provider: string) => string | undefined;
 }): Promise<number> {
   const refusal = NO_SUBSCRIPTION_LOGIN[opts.provider];
   if (refusal) {
     opts.io.err(refusal);
     return 1;
   }
+  const provider = loginProvider(opts.provider);
   try {
-    await opts.runtime.login(opts.provider, "oauth", interaction(opts.io), {
+    await opts.runtime.login(provider, "oauth", interaction(opts.io), {
       getDeviceId: () => deviceId(opts.dataDir),
       agentName: "hamness",
     });
   } catch (err) {
-    opts.io.err(`hamness login: ${(err as Error).message}`);
+    opts.io.err(`hamness login: ${explainLoginError((err as Error).message)}`);
     return 1;
   }
-  opts.io.out(`Signed in to ${opts.provider}. Restart the daemon for running sessions to use it.`);
+  if (provider === "openai-codex") {
+    const model = opts.planModel?.(provider);
+    const id = model?.slice(model.indexOf("/") + 1) ?? "gpt-5.6-terra";
+    opts.io.out(`Signed in with your ChatGPT plan. Default model: ${id} (plan).`);
+  } else {
+    opts.io.out(`Signed in to ${provider}.`);
+  }
+  opts.io.out(
+    "Restart the daemon (`hamness stop`, then `hamness`) for running sessions to use it.",
+  );
   return 0;
 }

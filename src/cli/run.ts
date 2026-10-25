@@ -45,7 +45,11 @@ const commands: Record<string, CommandEntry> = {
     usage: DOCTOR_USAGE,
     run: doctorCommand,
   },
-  keys: { summary: "Store API keys (set <provider>, list)", usage: KEYS_USAGE, run: keysCommand },
+  keys: {
+    summary: "Optional pay-per-token API keys (set, remove, list)",
+    usage: KEYS_USAGE,
+    run: keysCommand,
+  },
   login: {
     summary: "Sign in to a provider (openai: ChatGPT plan)",
     usage: LOGIN_USAGE,
@@ -68,7 +72,7 @@ const commands: Record<string, CommandEntry> = {
     run: statusCommand,
   },
   stop: {
-    summary: "Stop the daemon (sessions resume on the next start)",
+    summary: "Stop the daemon (continue a session with hamness -c)",
     usage: STOP_USAGE,
     run: stopCommand,
   },
@@ -135,11 +139,11 @@ export const USAGE = [
   "Environment:",
   "  HAMNESS_HOME   Data dir (database, token, daemon state)",
   "  HAMNESS_PORT   API port for `hamness daemon` (0 picks a free one)",
-  "  HAMNESS_MODEL  Model for new sessions, as provider/id (default anthropic/claude-opus-5-5)",
+  "  HAMNESS_MODEL  Model for new sessions, as provider/id (default: your ChatGPT plan's model)",
   "  HAMNESS_DEBUG  Set to 1 to print stack traces with errors",
   "  CLAUDE_CONFIG_DIR  Claude Code's config dir to read (default ~/.claude)",
-  "  ANTHROPIC_API_KEY  Claude API key (or `hamness keys set anthropic`); env vars win over the key file",
-  "  OPENAI_API_KEY     OpenAI API key (or `hamness keys set openai`, or `hamness login openai`)",
+  "  ANTHROPIC_API_KEY  Optional Claude API key, pay per token (or `hamness keys set anthropic`)",
+  "  OPENAI_API_KEY     Optional OpenAI API key, pay per token; never used by ChatGPT plan models",
 ].join("\n");
 
 const isHelp = (arg: string | undefined) => arg === "-h" || arg === "--help";

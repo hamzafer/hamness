@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { eventLog } from "../../test/support/events.ts";
 import { type FakeModel, fakeModel } from "../../test/support/fake-model.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
+import { NotSetUpError } from "../agent/models.ts";
 import { dataPaths } from "../config/paths.ts";
 import type { HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import { type RunningDaemon, startDaemon } from "./daemon.ts";
@@ -184,6 +185,29 @@ describe("--continue resumes the folder's latest session", () => {
     await daemon?.stop();
     ({ launch } = await start());
     expect((await launch({ start: "continue" })).body.session.id).toBe(one.session.id);
+  });
+});
+
+describe("not set up", () => {
+  test("a fresh launch with no model set up answers with the setup hint, not a 500", async () => {
+    log?.close();
+    daemon = await startDaemon({
+      dataDir: dataDir(),
+      port: 0,
+      models: async () => {
+        throw new NotSetUpError();
+      },
+      contextFiles: false,
+      safety: async () => ({ allow: true as const }),
+    });
+    const token = readFileSync(dataPaths(dataDir()).token, "utf8").trim();
+    const res = await fetch(`${daemon.url}/v1/sessions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ cwd: work, start: "new" }),
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe(new NotSetUpError().message);
   });
 });
 

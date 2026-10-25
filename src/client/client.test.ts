@@ -178,6 +178,24 @@ describe("daemon client", () => {
     expect((err as DaemonError).status).toBe(404);
   });
 
+  test("the event stream raises daemon.gone when the daemon stops, not when the client closes it", async () => {
+    const client = await connectToDaemon(join(home.dir, "data"));
+    const seen: string[] = [];
+    client.subscribe((e) => seen.push(e.type));
+    await client.ready;
+
+    const other = await connectToDaemon(join(home.dir, "data"));
+    const otherSeen: string[] = [];
+    const close = other.subscribe((e) => otherSeen.push(e.type));
+    await other.ready;
+    close();
+
+    await daemon.stop();
+    for (let i = 0; i < 100 && !seen.includes("daemon.gone"); i++) await Bun.sleep(10);
+    expect(seen.at(-1)).toBe("daemon.gone");
+    expect(otherSeen).not.toContain("daemon.gone");
+  });
+
   test("a failed request rejects with the daemon's error", async () => {
     const client = await connectToDaemon(join(home.dir, "data"));
     await expect(client.attach("relative")).rejects.toThrow(/absolute/);

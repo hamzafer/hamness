@@ -10,20 +10,40 @@ export function modeSummary(mode: SafetyMode, judgeOn: boolean): string {
     return "yolo: every tool call no deny rule stops is allowed, with no question (a red banner says so)";
   return judgeOn
     ? "auto: the judge model decides calls no rule decides, and asks you when unsure"
-    : "auto: the judge is off (no Anthropic key), so calls no rule decides ask you";
+    : "auto: the judge is off (no ChatGPT plan login or judge key), so calls no rule decides ask you";
 }
 
-/** How to give a provider a key: the two ways, plus a login where Pi has one. */
+/** The way to start: the ChatGPT plan. */
+export const SIGN_IN = "Sign in with your ChatGPT plan: hamness login openai";
+
+/** The optional extra: pay-per-token API keys. */
+export const API_KEYS_OPTIONAL =
+  "optional: hamness keys set anthropic|openai to use pay-per-token API models";
+
+/** How to give an API model's provider a key (the user chose that model). */
 export function keyHowTo(cred: ModelCredential, dataDir: string): string[] {
-  const lines = [
-    `  hamness keys set ${cred.provider}    (hidden prompt; saved to ${keyFilePath(dataDir)}, mode 0600)`,
-    `  export ${cred.envHint}=...    (an env var wins over the key file)`,
+  const provider = cred.provider ?? "<provider>";
+  return [
+    `  hamness keys set ${provider}    (hidden prompt; saved to ${keyFilePath(dataDir)}, mode 0600)`,
+    `  export ${cred.envHint ?? "<PROVIDER>_API_KEY"}=...    (an env var wins over the key file)`,
   ];
-  if (cred.provider === "openai") lines.push("  hamness login openai    (a ChatGPT plan)");
-  return lines;
 }
 
-/** What `hamness` prints instead of the chat when the default model has no key yet. */
+/** What to do when nothing is set up, or the chosen model has no key: plan first, keys optional. */
+export function setupSteps(cred: ModelCredential, dataDir: string): string[] {
+  if (cred.origin === "none" || cred.origin === "plan") {
+    return [`  ${SIGN_IN}`, `  ${API_KEYS_OPTIONAL}`];
+  }
+  const from =
+    cred.origin === "env" ? "HAMNESS_MODEL" : `defaultModel in ${userConfigPath(dataDir)}`;
+  return [
+    `  ${cred.model} (set by ${from}) is an API model and needs a key:`,
+    ...keyHowTo(cred, dataDir),
+    `  or unset ${cred.origin === "env" ? "HAMNESS_MODEL" : "defaultModel"} and ${SIGN_IN.toLowerCase()}`,
+  ];
+}
+
+/** What `hamness` prints instead of the chat when no model is ready yet. */
 export function firstRunSetup(opts: {
   cred: ModelCredential;
   dataDir: string;
@@ -33,14 +53,11 @@ export function firstRunSetup(opts: {
   return [
     "Welcome to hamness.",
     "",
-    `Chat uses ${cred.model}, which needs an API key first. Either:`,
-    ...keyHowTo(cred, dataDir),
-    ...(cred.provider === "anthropic"
-      ? ["Claude subscriptions are not used: Anthropic is API key only."]
-      : []),
-    "Another model: HAMNESS_MODEL=provider/id (see `hamness models --all`).",
+    "Chat needs a model first.",
+    ...setupSteps(cred, dataDir),
+    "Claude subscriptions are not used: Claude is reached with an optional API key only.",
     "",
-    `Safety mode is ${modeSummary(mode, cred.provider === "anthropic" && cred.source !== "none")}.`,
+    `Safety mode is ${modeSummary(mode, false)}.`,
     `Set "safety": { "mode": "ask" | "auto" | "yolo" } in ${userConfigPath(dataDir)} to change it.`,
     "",
     "Then run `hamness` again. `hamness doctor` checks the whole setup.",

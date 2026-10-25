@@ -38,6 +38,8 @@ jobs:
           BUN_INSTALL: ${{ runner.temp }}/bun-global
           HAMNESS_HOME: ${{ runner.temp }}/hamness-home
           ANTHROPIC_API_KEY: sk-ant-ci-not-a-real-key
+          # No ChatGPT plan login on CI, so name an API model or doctor says "not set up".
+          HAMNESS_MODEL: anthropic/claude-haiku-5-5
         working-directory: ${{ runner.temp }}
         run: |
           bun install -g "$GITHUB_WORKSPACE"

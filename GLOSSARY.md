@@ -18,6 +18,8 @@
 - **Check:** one checker run on a piece of evidence; it has its own row on the side rail while it runs.
 - **Rule:** an allow / ask / deny pattern for a tool call.
 - **Judge:** the small model that decides tool calls no rule decides.
+- **ChatGPT plan:** the user's ChatGPT subscription, signed in with `hamness login openai` (Pi's `openai-codex` provider). The default way to run models; its calls cost $0 and show as "plan" (ADR 0024).
+- **Billing kind:** how a model call is paid for: `plan` (the ChatGPT plan) or `API` (pay per token, from an API key the user chose to use).
 - **Decision:** a safety verdict on one tool call, with source (`rule`, `judge`, `hook`, `user`, `mode`) and reason.
 - **Approval:** a tool call that asks, waiting for the user's answer: allow once, allow always (saves a rule to the project config) or deny. No answer before the timeout is a deny.
 - **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything no deny rule stops, with no questions; ADR 0022).

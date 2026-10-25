@@ -72,15 +72,17 @@ See `GLOSSARY.md` for the terms. The main ones:
 
 ### 4. Safety: rules, judge, audit log
 - **Rules** (allow / ask / deny, opencode style): per tool, with glob patterns on commands and paths, last match wins. Sensible defaults (reads allowed, writes inside the workspace allowed, `rm -rf`, force push, reading `.env` and secrets ask or deny).
-- **Judge:** a call the rules don't decide goes to a small model (default Claude Haiku) that answers with a strict JSON verdict (`allow` / `ask` with a reason and category). Any error, timeout or doubt means `ask`. A daily budget (default $1) applies; over budget, everything undecided asks.
+- **Judge:** a call the rules don't decide goes to a small model (default: the ChatGPT plan's `gpt-5.6-luna` at low thinking, ADR 0024; Claude Haiku on an API key the user chose) that answers with a strict JSON verdict (`allow` / `ask` with a reason and category). Any error, timeout or doubt means `ask`. A daily cap applies: 500 calls on the plan (calls cost $0), $1 on an API key; over it, everything undecided asks.
 - **Back-off:** after 3 judge `ask`s in a row in a session, the judge pauses for that session and everything undecided asks.
 - **Audit log:** every decision is stored with tool, arguments (secrets redacted), source, reason, latency and cost. `hamness audit` and the dashboard show why each action ran.
 - **Modes:** `ask` (rules only, everything undecided asks), `auto` (rules + judge, the default), `yolo` (no questions and no judge, loud banner; deny rules, default and user, still apply, ADR 0022). OS sandboxing is **out of scope for v1**.
 
 ### 5. Models and auth
-- Multi-provider through Pi. Claude is the default model.
-- Auth with API keys (environment variables or a key file with 0600 permissions; macOS Keychain later) and **ChatGPT plan login** where Pi supports it. Claude subscriptions are not used outside Claude Code.
-- Model per session and per subagent, `/model` to switch.
+- Multi-provider through Pi. **No dependence on pay-per-token APIs (ADR 0024):** the default is the user's **ChatGPT plan login** (`hamness login openai`, Pi's `openai-codex` provider). Its model is picked by plan tier (`gpt-6.1-sol` on Plus/Pro/Team/Business, `gpt-5.6-terra` on Go) for the main agent and subagents; the judge uses `gpt-5.6-luna`.
+- Default order: `HAMNESS_MODEL`, then `defaultModel` in the user config, then the ChatGPT plan, then a clear "not set up" state. An API key alone never makes a model the default.
+- API keys stay an optional extra (environment variables or a key file with 0600 permissions; macOS Keychain later), used only by a model the user picks. Claude subscriptions are not used outside Anthropic's apps, so Claude is reached only through an optional API key (ADR 0011).
+- The billing kind shows next to the model everywhere (header, `/status`, `/model`, doctor): "plan" vs "API (pay per token, from <env var>)". Plan calls record their tokens and cost $0 ("$0 (plan)").
+- Model per session and per subagent, `/model` to switch (plan models first).
 
 ### 6. Claude Code compatibility
 - Reads **CLAUDE.md and AGENTS.md** (user level and project level, nearest wins) into the system prompt.

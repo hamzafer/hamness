@@ -3,6 +3,7 @@ import { importTables } from "./0002-import.ts";
 import { safetyDecisions } from "./0003-safety.ts";
 import { tasksAndProof } from "./0006-tasks.ts";
 import { sessionCommands } from "./0007-session-commands.ts";
+import { modelCallBilling } from "./0008-billing.ts";
 import { sessionPicks } from "./0009-session-picks.ts";
 import type { Migration } from "./types.ts";
 
@@ -13,6 +14,7 @@ export const migrations: readonly Migration[] = [
   safetyDecisions,
   tasksAndProof,
   sessionCommands,
+  modelCallBilling,
   sessionPicks,
 ];
 
