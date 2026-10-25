@@ -14,7 +14,7 @@ import { STATS_USAGE, statsCommand } from "./commands/stats.ts";
 import { STATUS_USAGE, statusCommand } from "./commands/status.ts";
 import { STOP_USAGE, stopCommand } from "./commands/stop.ts";
 import { TRUST_USAGE, trustCommand } from "./commands/trust.ts";
-import { TUI_USAGE, tuiCommand } from "./commands/tui.ts";
+import { TUI_OPTIONS, TUI_USAGE, tuiCommand } from "./commands/tui.ts";
 import { WORKTREES_USAGE, worktreesCommand } from "./commands/worktrees.ts";
 import { type CliIo, processIo } from "./io.ts";
 
@@ -119,7 +119,7 @@ export const COMMAND_NAMES: readonly string[] = Object.keys(commands);
 export const USAGE = [
   "Usage: hamness [command] [options]",
   "",
-  "With no command, hamness opens the chat TUI for the current directory",
+  "With no command, hamness opens a fresh chat in the TUI for the current directory",
   "and starts the daemon if it is not running.",
   "",
   "Commands:",
@@ -128,8 +128,9 @@ export const USAGE = [
   "`hamness <command> --help` (or `hamness help <command>`) shows a command's options.",
   "",
   "Options:",
-  "  -h, --help     Show this help",
-  "  -v, --version  Show the version",
+  "  -h, --help         Show this help",
+  "  -v, --version      Show the version",
+  ...TUI_OPTIONS,
   "",
   "Environment:",
   "  HAMNESS_HOME   Data dir (database, token, daemon state)",
@@ -159,14 +160,16 @@ export async function runCli(
     return 0;
   }
   const helpFor = first === "help" ? rest[0] : undefined;
-  const name = helpFor ?? first ?? "tui";
+  // `hamness -c`, `hamness -r <id>`: the TUI's own flags.
+  const tuiFlags = !helpFor && first?.startsWith("-") === true;
+  const name = helpFor ?? (tuiFlags ? "tui" : first) ?? "tui";
   const command = commands[name];
   if (!command) {
     io.err(`hamness: unknown command '${name}'`);
     io.err(USAGE);
     return 2;
   }
-  const args = helpFor ? [] : rest;
+  const args = helpFor ? [] : tuiFlags ? argv : rest;
   if (helpFor || isHelp(args[0])) {
     io.out(command.usage);
     return 0;

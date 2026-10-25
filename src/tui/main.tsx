@@ -1,5 +1,6 @@
 import { createCliRenderer } from "@opentui/core";
 import { render } from "@opentui/solid";
+import type { Launch } from "../agent/session-hub.ts";
 import type { CliIo } from "../cli/io.ts";
 import {
   connectToDaemon,
@@ -16,11 +17,15 @@ export interface TuiOptions {
   cwd: string;
   env: Env;
   io: CliIo;
+  /** Which session (ADR 0023): a fresh one unless `-c` or `-r <id>` asked for another. */
+  launch?: Launch;
+  /** `-r` with no id: open the `/resume` picker at startup. */
+  openResume?: boolean;
 }
 
 /**
- * `hamness` with no command: start the daemon if needed, attach to the session for the cwd,
- * and run the chat until Ctrl+C. Leaving never stops the session.
+ * `hamness` with no command: start the daemon if needed, open a fresh session in the cwd (or
+ * the one `-c` / `-r` asks for), and run the chat until Ctrl+C. Leaving never stops the session.
  */
 export async function runTui(opts: TuiOptions): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -46,7 +51,7 @@ export async function runTui(opts: TuiOptions): Promise<number> {
 
   let snapshot: Awaited<ReturnType<DaemonClient["attach"]>>;
   try {
-    snapshot = await client.attach(opts.cwd);
+    snapshot = await client.attach(opts.cwd, opts.launch ?? { kind: "new" });
   } catch (err) {
     close();
     opts.io.err(`hamness: ${(err as Error).message}`);
@@ -67,7 +72,14 @@ export async function runTui(opts: TuiOptions): Promise<number> {
     renderer.on("destroy", () => resolve());
   });
   await render(
-    () => <App client={replaying} snapshot={snapshot} onExit={() => renderer.destroy()} />,
+    () => (
+      <App
+        client={replaying}
+        snapshot={snapshot}
+        openResume={opts.openResume ?? false}
+        onExit={() => renderer.destroy()}
+      />
+    ),
     renderer,
   );
   await done;
