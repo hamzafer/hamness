@@ -29,6 +29,7 @@ import {
 import { copyToClipboard } from "./clipboard.ts";
 import { CommandMenu } from "./command-menu.tsx";
 import {
+  COMMANDS,
   type CommandContext,
   type CommandMatch,
   errorLine,
@@ -95,7 +96,13 @@ export interface AppProps {
   copy?: (text: string) => Promise<"system" | "terminal">;
   /** How long an approval ignores keys after it shows. Default 400ms; tests pass 0. */
   approvalArmMs?: number;
+  /** `hamness --resume` with no id: open the `/resume` picker at startup. */
+  openResume?: boolean;
 }
+
+/** A fresh launch's hint when another session of the folder holds an open task (ADR 0023). */
+export const openTaskLine = (goal: string) =>
+  `An open task from your last session: ${goal}. /resume to continue it.`;
 
 export function App(props: AppProps) {
   const [state, setState] = createStore(initialState(props.snapshot));
@@ -128,11 +135,12 @@ export function App(props: AppProps) {
       return;
     }
     if (e.type === "session.replaced" && switching() === 0) {
-      // Replaced from elsewhere: follow to the cwd's live session.
+      // Replaced from elsewhere: follow to the session that replaced it (not the cwd's latest:
+      // other windows may have sessions of their own there).
       const from = state.session.id;
       setFollowing(true);
       props.client
-        .attach(state.session.cwd)
+        .attach(state.session.cwd, { kind: "session", id: e.newSessionId })
         .then((snap) => {
           // Unless the chat moved on meanwhile (a switch of this client's own).
           if (state.session.id === from) replaceSession(snap, REPLACED_LINE[e.reason]);
@@ -368,6 +376,13 @@ export function App(props: AppProps) {
     copy: props.copy ?? ((text) => copyToClipboard(text, (t) => renderer.copyToClipboardOSC52(t))),
     exit: () => props.onExit?.(),
   };
+
+  const hint = props.snapshot.openTask;
+  if (hint) say(openTaskLine(hint.goal));
+  if (props.openResume) {
+    const resume = COMMANDS.find((c) => c.name === "resume");
+    void resume?.run(ctx, "");
+  }
 
   const sendPrompt = (text: string) =>
     props.client

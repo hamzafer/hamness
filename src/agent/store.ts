@@ -104,10 +104,11 @@ export class ChatStore {
     this.sql.transaction(() => {
       this.sql
         .query(
-          `INSERT INTO sessions (id, source, external_id, cwd, model, started_at, created_at, updated_at)
-           VALUES (?, 'hamness', ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO sessions (id, source, external_id, cwd, model, started_at, created_at, updated_at,
+             picked_at)
+           VALUES (?, 'hamness', ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(sessionId, piSessionId ?? null, cwd, model, now, now, now);
+        .run(sessionId, piSessionId ?? null, cwd, model, now, now, now, now);
       this.sql
         .query(
           `INSERT INTO agents (id, session_id, kind, model, status, started_at, created_at, updated_at)
@@ -128,7 +129,7 @@ export class ChatStore {
         `${STORED_SESSION}
          WHERE s.source = 'hamness' AND s.cwd = ? AND s.external_id IS NOT NULL
            AND (EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id) OR ${OPEN_TASK})
-         ORDER BY s.updated_at DESC, s.id DESC LIMIT 1`,
+         ORDER BY coalesce(s.picked_at, s.updated_at) DESC, s.id DESC LIMIT 1`,
       )
       .get(cwd);
     return row ? storedSession(row) : undefined;
@@ -208,13 +209,13 @@ export class ChatStore {
     })();
   }
 
-  /** A resumed session is the cwd's current one again (the one a daemon restart picks). */
+  /**
+   * A resumed or woken session runs again. Status only: `updated_at` stays, so a wake never
+   * makes a session the cwd's latest; `/resume`, `-r` and `-c` do that with `makeLatest`.
+   */
   reopenSession(ids: { sessionId: string; agentId: string }): void {
-    const now = Date.now();
     this.sql.transaction(() => {
-      this.sql
-        .query("UPDATE sessions SET ended_at = NULL, updated_at = ? WHERE id = ?")
-        .run(now, ids.sessionId);
+      this.sql.query("UPDATE sessions SET ended_at = NULL WHERE id = ?").run(ids.sessionId);
       this.sql
         .query("UPDATE agents SET status = 'running', ended_at = NULL WHERE id = ?")
         .run(ids.agentId);
@@ -222,13 +223,14 @@ export class ChatStore {
   }
 
   /**
-   * Makes the session the cwd's most recently updated one, the one a daemon restart picks,
-   * even when another of the cwd's rows was touched in the same millisecond.
+   * Makes the session the cwd's latest (`picked_at`), the one `hamness -c` continues, even
+   * when another of the cwd's sessions was picked in the same millisecond.
    */
   makeLatest(sessionId: string, cwd: string): void {
     this.sql
       .query(
-        `UPDATE sessions SET updated_at = max(?, 1 + (SELECT max(updated_at) FROM sessions
+        `UPDATE sessions SET picked_at = max(?, 1 + (SELECT max(coalesce(picked_at, updated_at))
+           FROM sessions
            WHERE source = 'hamness' AND cwd = ?)) WHERE id = ?`,
       )
       .run(Date.now(), cwd, sessionId);
@@ -383,6 +385,34 @@ export class ChatStore {
         }
       }
     })();
+  }
+
+  /**
+   * The cwd's most recent open explicit task held by another session than `except`, for the
+   * hint a fresh launch shows (ADR 0023).
+   */
+  openTaskIn(cwd: string, except: string): { sessionId: string; goal: string } | undefined {
+    const row = this.sql
+      .query<{ session_id: string; goal: string }, [string, string]>(
+        `SELECT t.session_id, t.goal FROM tasks t JOIN sessions s ON s.id = t.session_id
+         WHERE s.source = 'hamness' AND s.cwd = ? AND s.id != ? AND t.outcome = 'open'
+           AND t.implicit = 0
+         ORDER BY s.updated_at DESC, t.created_at DESC LIMIT 1`,
+      )
+      .get(cwd, except);
+    return row ? { sessionId: row.session_id, goal: row.goal } : undefined;
+  }
+
+  /**
+   * Whether `/new`, `/resume` or `/fork` left the session (`endSession`: its main agent is
+   * `done`). `sessions.ended_at` alone does not say: each run sets it too (`endRun`).
+   */
+  wasLeft(sessionId: string): boolean {
+    return !!this.sql
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM agents WHERE session_id = ? AND kind = 'main' AND status = 'done'",
+      )
+      .get(sessionId);
   }
 
   hasOpenExplicitTask(sessionId: string): boolean {

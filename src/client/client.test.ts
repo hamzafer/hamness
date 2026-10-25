@@ -3,9 +3,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeModel } from "../../test/support/fake-model.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
+import { dataPaths } from "../config/paths.ts";
 import { type RunningDaemon, startDaemon } from "../daemon/daemon.ts";
 import { getStatus } from "../daemon/status.ts";
 import type { HamnessEvent } from "../events/types.ts";
+import { VERSION } from "../version.ts";
 import { connectToDaemon, DaemonError, ensureDaemon } from "./client.ts";
 
 let home: ReturnType<typeof tempHome>;
@@ -58,6 +60,31 @@ describe("ensureDaemon", () => {
       for (let i = 0; i < 100 && (await getStatus(dataDir)).running; i++) await Bun.sleep(20);
     });
   }, 15_000);
+
+  test("a daemon from before an update says to restart it, not attach to it", async () => {
+    const dataDir = join(home.dir, "data");
+    mkdirSync(dataDir, { recursive: true });
+    for (const health of [
+      { ok: true, version: "0.0.0-old", pid: process.pid, schemaVersion: 1 },
+      // Same version, but from before the launch choice (no `features`).
+      { ok: true, version: VERSION, pid: process.pid, schemaVersion: 1 },
+    ]) {
+      const old = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: () => Response.json(health),
+      });
+      cleanups.push(() => old.stop(true));
+      writeFileSync(dataPaths(dataDir).token, "t");
+      writeFileSync(
+        dataPaths(dataDir).daemonState,
+        JSON.stringify({ pid: process.pid, url: `http://127.0.0.1:${old.port}` }),
+      );
+      await expect(ensureDaemon(dataDir)).rejects.toThrow(
+        "hamness was updated; restart the daemon with `hamness stop`, then run hamness again",
+      );
+    }
+  });
 
   test("a daemon that can't start says why in one line", async () => {
     const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
@@ -133,6 +160,22 @@ describe("daemon client", () => {
     const next = await client.newSession(id);
     expect(next.session.id).not.toBe(id);
     expect((await client.resume(next.session.id, id)).session.id).toBe(id);
+  });
+
+  test("attach takes the launch's choice: a fresh session, the latest, or one by id", async () => {
+    const work = join(home.dir, "work");
+    mkdirSync(work);
+    const client = await connectToDaemon(join(home.dir, "data"));
+    const first = await client.attach(work, { kind: "new" });
+    const second = await client.attach(work, { kind: "new" });
+    expect(second.session.id).not.toBe(first.session.id);
+    expect((await client.attach(work, { kind: "session", id: first.session.id })).session.id).toBe(
+      first.session.id,
+    );
+    const listed = await client.listSessions(work, second.session.id);
+    expect(listed.every((s) => s.current === (s.id === second.session.id))).toBe(true);
+    const err = await client.attach(work, { kind: "session", id: "nope" }).catch((e: unknown) => e);
+    expect((err as DaemonError).status).toBe(404);
   });
 
   test("the event stream raises daemon.gone when the daemon stops, not when the client closes it", async () => {

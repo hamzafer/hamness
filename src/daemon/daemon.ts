@@ -15,7 +15,7 @@ import { type BackendJudge, createJudgeController } from "../safety/judge/index.
 import { VERSION } from "../version.ts";
 import { describeDaemon, type FoundDaemon, findDaemons } from "./processes.ts";
 import { claimState, type DaemonState, releaseState, writeState } from "./state.ts";
-import { getStatus } from "./status.ts";
+import { DAEMON_FEATURES, getStatus } from "./status.ts";
 
 /** The default API port. `HAMNESS_PORT` or `--port` overrides it; 0 picks a free one. */
 export const DEFAULT_PORT = 7357;
@@ -210,7 +210,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       health: () =>
         stopping
           ? undefined
-          : { ok: true, version: VERSION, pid, schemaVersion: openDb.schemaVersion() },
+          : {
+              ok: true,
+              version: VERSION,
+              pid,
+              schemaVersion: openDb.schemaVersion(),
+              features: DAEMON_FEATURES,
+            },
       hello: () => ({
         type: "daemon.hello",
         version: VERSION,

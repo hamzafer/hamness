@@ -55,14 +55,23 @@ hamness keys set anthropic        # hidden prompt, saved with mode 0600; `hamnes
 ```sh
 hamness doctor    # Bun, model and how it's billed, mode, daemon, data dir, gh, Claude Code setup
 cd your/repo
-hamness           # opens the chat; starts the daemon if needed
+hamness           # opens a fresh chat; starts the daemon if needed
 ```
 
 Not signed in, `hamness` prints a short setup instead of the chat. Ask for something small, like "add a test for the parser and make it pass". The agent opens a task, does the work, proves it with a command hamness re-runs, and the rail shows the task **verified**.
 
 ## The TUI
 
-`hamness` opens the chat for the current directory. The session lives in a background daemon: closing the TUI never stops it, reopening it in the same directory reattaches, and after a daemon restart the directory's last session resumes with its transcript.
+`hamness` opens a fresh chat for the current directory, with the default model. Sessions live in a background daemon: closing the TUI never stops one, and going back is opt-in (ADR 0023):
+
+```sh
+hamness              # a fresh chat, every launch
+hamness -c           # --continue: the latest session in this directory, with its transcript
+hamness -r           # --resume: pick a session in this directory
+hamness -r <id>      # --resume <id>: that session
+```
+
+`/resume` inside the chat switches too. When a session in the directory still has an open task, a fresh chat says so in one line, and `/resume` goes back to it. A second window in the same directory gets its own session; `-c` there joins the latest one instead. All of this works the same after a daemon restart.
 
 The **side rail** on the right shows the current task (goal, outcome, evidence passed of checked; unverified in red), one row per agent (status, current tool and file, elapsed time, tokens, cost), a row per proof check (what hamness is re-running or reading, then how it ended), the context gauge and the session cost. Background shells have no rows yet: Pi's `bash` has no background mode (ADR 0019).
 

@@ -4,6 +4,7 @@ import { type AddressInfo, createServer } from "node:net";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { dataPaths } from "../config/paths.ts";
 import { LATEST_SCHEMA_VERSION } from "../db/migrations/index.ts";
+import { VERSION } from "../version.ts";
 import { DaemonAlreadyRunningError, type RunningDaemon, startDaemon } from "./daemon.ts";
 import { getStatus } from "./status.ts";
 
@@ -187,6 +188,8 @@ describe("getStatus", () => {
       pid: process.pid,
       url: d.url,
       schemaVersion: LATEST_SCHEMA_VERSION,
+      version: VERSION,
+      features: ["launch"],
     });
   });
 

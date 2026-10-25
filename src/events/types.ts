@@ -106,6 +106,11 @@ export interface SessionSnapshot {
   task?: TaskView;
   /** The session's last finished proof checks, oldest first (the rail's check rows). */
   checks?: CheckView[];
+  /**
+   * A fresh launch only: an open explicit task another session of the cwd holds, for a hint
+   * (ADR 0023). The task stays on that session; `/resume` goes back to it.
+   */
+  openTask?: { sessionId: string; goal: string };
 }
 
 /** One agent's stored usage. `tokens` adds input, output, cache read and cache write. */
