@@ -106,6 +106,35 @@ describe("daemon client", () => {
     expect(replies.map((r) => r.text)).toEqual(["hello there"]);
   });
 
+  test("the slash-command calls reach the daemon", async () => {
+    const work = join(home.dir, "work");
+    mkdirSync(work);
+    const client = await connectToDaemon(join(home.dir, "data"));
+    const events: HamnessEvent[] = [];
+    cleanups.push(client.subscribe((e) => events.push(e)));
+    await client.ready;
+    const snap = await client.attach(work);
+    const id = snap.session.id;
+    expect(await client.lastReply(id)).toBeUndefined();
+    await client.prompt(id, "hi");
+    for (let i = 0; i < 200; i++) {
+      if (events.some((e) => e.type === "agent.status" && !e.busy)) break;
+      await Bun.sleep(10);
+    }
+    expect(await client.lastReply(id)).toBe("hello there");
+    expect((await client.rename(id, "demo")).session.name).toBe("demo");
+    expect((await client.status(id)).name).toBe("demo");
+    expect((await client.listSessions(work)).map((s) => s.name)).toEqual(["demo"]);
+    expect((await client.thinking(id)).level).toBeDefined();
+    expect(await client.compat(id)).toEqual({ skills: [], mcpServers: [] });
+    const path = await client.exportSession(id, "jsonl");
+    expect(path.endsWith(".jsonl")).toBe(true);
+    await expect(client.compact(id)).rejects.toThrow(/nothing to compact/i);
+    const next = await client.newSession(id);
+    expect(next.session.id).not.toBe(id);
+    expect((await client.resume(next.session.id, id)).session.id).toBe(id);
+  });
+
   test("a failed request rejects with the daemon's error", async () => {
     const client = await connectToDaemon(join(home.dir, "data"));
     await expect(client.attach("relative")).rejects.toThrow(/absolute/);
