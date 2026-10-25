@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import type { KeyBinding, SyntaxStyle, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient } from "../client/client.ts";
@@ -95,8 +95,11 @@ export function App(props: AppProps) {
    */
   const animate = props.animate ?? !animationOff();
   const [orbClock, setOrbClock] = createSignal(now());
-  const orbsShowing = () =>
-    waitingSince() !== undefined || rail.agents.some((a) => railOrbState(rail, a) !== undefined);
+  // A memo, so the timer only restarts when the answer flips, not on every rail change.
+  const orbsShowing = createMemo(
+    () =>
+      waitingSince() !== undefined || rail.agents.some((a) => railOrbState(rail, a) !== undefined),
+  );
   createEffect(
     on(orbsShowing, (showing) => {
       if (!showing || !animate) return;

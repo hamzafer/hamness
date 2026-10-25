@@ -216,6 +216,35 @@ describe("TUI chat layout (headless)", () => {
     expect(idle).not.toMatch(braille);
   });
 
+  test("the orb timer starts once per busy spell, not on every rail change", async () => {
+    const real = globalThis.setInterval;
+    let orbTimers = 0;
+    globalThis.setInterval = ((fn: () => void, ms?: number) => {
+      if (ms !== undefined && ms < 1000) orbTimers++;
+      return real(fn, ms);
+    }) as typeof setInterval;
+    try {
+      const fake = fakeClient();
+      setup = await testRender(() => <App client={fake.client} snapshot={snapshot} />, {
+        width: 100,
+        height: 24,
+      });
+      await setup.renderOnce();
+      const s = setup;
+      fake.send({ type: "agent.status", busy: true });
+      await s.waitForFrame((f) => f.includes("Thinking…"));
+      for (let i = 0; i < 3; i++) {
+        fake.send({ type: "agent.tool.start", toolCallId: `t${i}`, tool: "read", args: {} });
+        fake.send({ type: "agent.tool.end", toolCallId: `t${i}`, status: "ok", summary: "" });
+      }
+      fake.send({ type: "agent.context", tokens: 1, contextWindow: 10, percent: 10 });
+      await s.renderOnce();
+      expect(orbTimers).toBe(1);
+    } finally {
+      globalThis.setInterval = real;
+    }
+  });
+
   test("HAMNESS_NO_ANIMATION: a still orb that doesn't change with the clock", async () => {
     const fake = fakeClient();
     const clock = { t: 0 };
