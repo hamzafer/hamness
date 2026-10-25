@@ -223,8 +223,9 @@ function fakeClient() {
     copied,
     send,
     sendRaw: (e: HamnessEvent) => listener(e),
-    copy: async (text: string) => {
+    copy: async (text: string): Promise<"system" | "terminal"> => {
       copied.push(text);
+      return "system";
     },
   };
 }
@@ -363,6 +364,148 @@ describe("the / menu", () => {
     for (const t of ["/new", "(also /clear)", "/resume", "(also /sessions)", "/exit", "/mcp"]) {
       expect(frame).toContain(t);
     }
+  });
+});
+
+describe("Enter in the menu, and what never reaches the model", () => {
+  test("a fuzzy-only match completes instead of running; a bare / only hints", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await s.mockInput.typeText("/opt");
+    await frameWhere(s, (f) => f.includes("Summarize the context"));
+    s.mockInput.pressEnter();
+    await frameWhere(s, (f) => /│\/compact /.test(f));
+    expect(fake.calls).toEqual([]);
+    // Clear the box, then a bare slash.
+    for (let i = 0; i < 10; i++) s.mockInput.pressBackspace();
+    await s.mockInput.typeText("/");
+    await frameWhere(s, (f) => f.includes("Start fresh"));
+    s.mockInput.pressEnter();
+    await frameWhere(s, (f) => f.includes("Type / to see commands."));
+    expect(fake.calls).toEqual([]);
+    expect(fake.prompts).toEqual([]);
+  });
+
+  test("a unique prefix runs", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await s.mockInput.typeText("/sk");
+    await frameWhere(s, (f) => f.includes("List the skills"));
+    s.mockInput.pressEnter();
+    await frameWhere(s, (f) => f.includes("Ship the app"));
+  });
+
+  test("command names ignore case", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/MODE yolo");
+    await frameWhere(s, (f) => f.includes("YOLO MODE"));
+    expect(fake.calls).toEqual(["mode yolo"]);
+  });
+
+  test("an unknown /word says how to send it as a message; a leading space does", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/tmp holds the logs");
+    await frameWhere(s, (f) => f.includes("start with a space"));
+    expect(fake.prompts).toEqual([]);
+    await run(s, " /tmp holds the logs");
+    await s.waitFor(() => fake.prompts.length === 1);
+    expect(fake.prompts).toEqual(["/tmp holds the logs"]);
+  });
+
+  test("/copy that only reached the terminal says so", async () => {
+    const fake = fakeClient();
+    setup = await testRender(
+      () => (
+        <App
+          client={fake.client}
+          snapshot={snapshot}
+          home="/home/user"
+          animate={false}
+          copy={async () => "terminal"}
+        />
+      ),
+      { width: 110, height: 30 },
+    );
+    await run(setup, "/copy");
+    await frameWhere(setup, (f) => f.includes("Sent to the terminal clipboard."));
+  });
+});
+
+describe("an approval comes first", () => {
+  const approval = {
+    id: "ap1",
+    toolCallId: "c1",
+    tool: "bash",
+    args: { command: "rm -rf build" },
+    reason: "deletes files",
+    suggestions: [],
+    expiresAt: Date.now() + 60_000,
+  };
+
+  test("a picker open when an approval arrives waits under it: n and Esc answer only once", async () => {
+    const fake = fakeClient();
+    const answers: string[] = [];
+    fake.client.answerApproval = async (_id, d) => {
+      answers.push(d);
+    };
+    const s = await render(fake);
+    await run(s, "/resume");
+    await frameWhere(s, (f) => f.includes("Resume a session"));
+    fake.send({ type: "safety.approval.request", approval });
+    const asked = await frameWhere(s, (f) => f.includes("approve this tool call"));
+    expect(asked).not.toContain("Resume a session");
+    s.mockInput.pressKey("n");
+    await s.waitFor(() => answers.length === 1);
+    fake.send({
+      type: "safety.approval.resolved",
+      approvalId: "ap1",
+      decision: "deny",
+      by: "user",
+    });
+    // The picker is back, and Esc now only closes it.
+    await frameWhere(s, (f) => f.includes("Resume a session"));
+    s.mockInput.pressEscape();
+    await frameWhere(s, (f) => !f.includes("Resume a session"));
+    expect(answers).toEqual(["deny"]);
+    expect(fake.calls).toEqual([`list ${CWD}`]);
+  });
+
+  test("a picker that opens while an approval waits stays hidden; Esc denies, not both", async () => {
+    const fake = fakeClient();
+    const answers: string[] = [];
+    fake.client.answerApproval = async (_id, d) => {
+      answers.push(d);
+    };
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    fake.client.listSessions = async () => {
+      await gate;
+      return SESSIONS;
+    };
+    const s = await render(fake);
+    await run(s, "/resume");
+    fake.send({ type: "safety.approval.request", approval });
+    await frameWhere(s, (f) => f.includes("approve this tool call"));
+    release();
+    await Bun.sleep(20);
+    await s.renderOnce();
+    expect(s.captureCharFrame()).not.toContain("Resume a session");
+    s.mockInput.pressEscape();
+    // A lone Esc is only known after the escape-sequence timeout.
+    await frameWhere(s, () => answers.length === 1);
+    await Bun.sleep(100);
+    fake.send({
+      type: "safety.approval.resolved",
+      approvalId: "ap1",
+      decision: "deny",
+      by: "user",
+    });
+    await frameWhere(s, (f) => f.includes("Resume a session"));
+    expect(answers).toEqual(["deny"]);
   });
 });
 
@@ -578,6 +721,48 @@ describe("session commands", () => {
 });
 
 describe("session.replaced", () => {
+  test("a prompt sent while following another window's switch goes to the new session", async () => {
+    const fake = fakeClient();
+    const sent: string[] = [];
+    fake.client.prompt = async (id, text) => {
+      sent.push(`${id} ${text}`);
+    };
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    fake.client.attach = async () => {
+      await gate;
+      return snap(NEW);
+    };
+    const s = await render(fake);
+    await fake.client.newSession(SID);
+    await run(s, "keep going");
+    await frameWhere(s, (f) => f.includes("Your prompt goes to the new one"));
+    expect(sent).toEqual([]);
+    release();
+    await s.waitFor(() => sent.length === 1);
+    expect(sent).toEqual([`${NEW} keep going`]);
+  });
+
+  test("late events of the session left behind don't replay when it is resumed", async () => {
+    const fake = fakeClient();
+    fake.client.listSessions = async () => SESSIONS.map((s) => ({ ...s, current: s.id === NEW }));
+    const s = await render(fake);
+    await run(s, "/new");
+    await frameWhere(s, (f) => f.includes("New session."));
+    // The old session's last words, with a high number, arrive after the switch.
+    fake.sendRaw({ sessionId: SID, seq: 60, type: "agent.stopped" } as AgentEvent);
+    await run(s, "/resume");
+    await frameWhere(s, (f) => f.includes("Resume a session"));
+    s.mockInput.pressEnter();
+    await frameWhere(s, (f) => f.includes("Resumed:"));
+    fake.send({ type: "agent.message.end", messageId: "r1", role: "assistant", text: "Live." });
+    const frame = await frameWhere(s, (f) => f.includes("Live."));
+    expect(frame).toContain("Live.");
+    expect(frame).not.toContain("Stopped.");
+  });
+
   test("when another window replaces the session, the TUI switches to the new one", async () => {
     const fake = fakeClient();
     const s = await render(fake);

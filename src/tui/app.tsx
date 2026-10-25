@@ -31,6 +31,7 @@ import {
   type CommandMatch,
   errorLine,
   matchCommands,
+  menuEnter,
   menuQuery,
   needsArgs,
   parseSlash,
@@ -86,7 +87,7 @@ export interface AppProps {
   /** Animate the thinking orbs. Default: on, unless `HAMNESS_NO_ANIMATION=1`. */
   animate?: boolean;
   /** `/copy`'s clipboard. Default: pbcopy, wl-copy or xclip, then OSC 52. */
-  copy?: (text: string) => Promise<void>;
+  copy?: (text: string) => Promise<"system" | "terminal">;
 }
 
 export function App(props: AppProps) {
@@ -98,24 +99,36 @@ export function App(props: AppProps) {
   const [railFull, setRailFull] = createSignal(false);
   /** Other sessions' events, newest last: a switch replays its new session's. */
   const foreign: HamnessEvent[] = [];
+  /** The session the chat just left: its late events are never kept for a replay. */
+  let left: string | undefined;
   /** How many of this client's own session switches are running (`switchTo`). */
-  let switching = 0;
+  const [switching, setSwitching] = createSignal(0);
+  /** True while following another window's replace to the new session. */
+  const [following, setFollowing] = createSignal(false);
+  /** Prompts sent during a switch: they go to the new session once it shows. */
+  const queued: string[] = [];
   const off = props.client.subscribe((e) => {
     if ("sessionId" in e && e.sessionId !== state.session.id) {
+      if (e.sessionId === left) return;
       foreign.push(e);
       if (foreign.length > FOREIGN_KEPT) foreign.splice(0, foreign.length - FOREIGN_KEPT);
       return;
     }
-    if (e.type === "session.replaced" && switching === 0) {
+    if (e.type === "session.replaced" && switching() === 0) {
       // Replaced from elsewhere: follow to the cwd's live session.
       const from = state.session.id;
+      setFollowing(true);
       props.client
         .attach(state.session.cwd)
         .then((snap) => {
           // Unless the chat moved on meanwhile (a switch of this client's own).
           if (state.session.id === from) replaceSession(snap, REPLACED_LINE[e.reason]);
         })
-        .catch((err: Error) => setState("notice", err.message));
+        .catch((err: Error) => setState("notice", err.message))
+        .finally(() => {
+          setFollowing(false);
+          sendQueued();
+        });
     }
     setState(produce((s) => applyEvent(s, e)));
     setRail(produce((r) => applyRailEvent(r, e, now())));
@@ -205,6 +218,8 @@ export function App(props: AppProps) {
   /** The input box's text, for the `/` menu. */
   const [draft, setDraft] = createSignal("");
   const [menuIndex, setMenuIndex] = createSignal(0);
+  /** The highlight was moved with the arrows: Enter runs that row. */
+  const [menuMoved, setMenuMoved] = createSignal(false);
   /** Esc closed the menu; it stays closed until the text changes. */
   const [menuClosed, setMenuClosed] = createSignal(false);
   const matches = createMemo((): CommandMatch[] => {
@@ -219,6 +234,7 @@ export function App(props: AppProps) {
     if (text === draft()) return;
     setDraft(text);
     setMenuIndex(0);
+    setMenuMoved(false);
     setMenuClosed(false);
   };
   const setInput = (text: string) => {
@@ -226,6 +242,7 @@ export function App(props: AppProps) {
     input?.gotoBufferEnd();
     setDraft(text);
     setMenuIndex(0);
+    setMenuMoved(false);
     fitPrompt();
   };
 
@@ -239,6 +256,7 @@ export function App(props: AppProps) {
   /** Shows another session in place of this one: its transcript, rail and mode, then `line`. */
   const replaceSession = (snap: SessionSnapshot, line: string) => {
     if (snap.session.id === state.session.id) return;
+    left = state.session.id;
     setState(reconcile(initialState(snap)));
     setRail(reconcile(initialRail(snap, now())));
     const missed = foreign.filter((e) => "sessionId" in e && e.sessionId === snap.session.id);
@@ -285,7 +303,7 @@ export function App(props: AppProps) {
     showStatus: (s) => setStatus(s),
     model: modelCommand,
     switchTo: async (call, line) => {
-      switching++;
+      setSwitching((n) => n + 1);
       try {
         const snap = await call();
         replaceSession(snap, line(snap));
@@ -294,7 +312,8 @@ export function App(props: AppProps) {
         say(...errorLine(err));
         return undefined;
       } finally {
-        switching--;
+        setSwitching((n) => n - 1);
+        sendQueued();
       }
     },
     setInput,
@@ -306,6 +325,16 @@ export function App(props: AppProps) {
     exit: () => props.onExit?.(),
   };
 
+  const sendPrompt = (text: string) =>
+    props.client
+      .prompt(state.session.id, text)
+      .catch((err: Error) => setState("notice", err.message));
+  /** After a switch: the prompts typed meanwhile go to the session now showing. */
+  const sendQueued = () => {
+    if (following() || switching() > 0) return;
+    for (const text of queued.splice(0)) sendPrompt(text);
+  };
+
   const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
@@ -314,9 +343,14 @@ export function App(props: AppProps) {
     setPromptRows(1);
     setState("notice", undefined);
     closePanels();
-    const slash = parseSlash(text);
+    // A leading space sends a line that starts with a slash as a message.
+    const slash = /^\s/.test(value) ? undefined : parseSlash(text);
     if (slash && "unknown" in slash) {
-      return say(`Unknown command ${slash.unknown}. Type / to see commands.`, "warn");
+      if (slash.unknown === "/") return say("Type / to see commands.", "muted");
+      return say(
+        `Unknown command ${slash.unknown}. Type / to see commands. To send it as a message, start with a space.`,
+        "warn",
+      );
     }
     if (slash) {
       Promise.resolve()
@@ -324,9 +358,13 @@ export function App(props: AppProps) {
         .catch((err: unknown) => say(...errorLine(err)));
       return;
     }
-    props.client
-      .prompt(state.session.id, text)
-      .catch((err: Error) => setState("notice", err.message));
+    if (following() || switching() > 0) {
+      // The session is being replaced: not to the one that is ending.
+      queued.push(text);
+      say("Switching sessions. Your prompt goes to the new one.");
+      return;
+    }
+    sendPrompt(text);
   };
 
   /** Tab, or Enter on a command that needs arguments: the name in the input box, ready for them. */
@@ -336,20 +374,26 @@ export function App(props: AppProps) {
     if (key.ctrl && key.name === "c") props.onExit?.();
     // Ctrl+R: the side rail full screen, and back.
     if (key.ctrl && key.name === "r") setRailFull((full) => !full);
+    // An approval owns the keys (its prompt answers them); pickers and panels wait under it.
+    if (state.approvals.length > 0) return;
     if (menuOpen()) {
       const n = matches().length;
       const enter = (key.name === "return" || key.name === "kpenter") && !key.shift;
       if (key.name === "up" || key.name === "down") {
         key.preventDefault();
         setMenuIndex((i) => (i + (key.name === "up" ? n - 1 : 1)) % n);
+        setMenuMoved(true);
         return;
       }
       if (key.name === "tab" || enter) {
         key.preventDefault();
         const m = matches()[Math.min(menuIndex(), n - 1)];
         if (!m) return;
-        if (key.name === "tab" || needsArgs(m.command)) return complete(m);
-        return submit(m.label);
+        if (key.name === "tab") return complete(m);
+        const what = menuEnter(menuQuery(draft()) ?? "", matches(), menuIndex(), menuMoved());
+        if (what.kind === "hint") return submit("/");
+        if (what.kind === "complete" || needsArgs(what.match.command)) return complete(what.match);
+        return submit(what.match.label);
       }
       if (key.name === "escape") {
         key.preventDefault();
@@ -440,12 +484,12 @@ export function App(props: AppProps) {
           <Show when={status()}>
             {(s: () => SessionStatus) => <StatusPanel status={s()} home={home} />}
           </Show>
-          <Show when={list()}>
+          <Show when={state.approvals.length === 0 && list()}>
             {(spec: () => PickerSpec) => (
               <Picker spec={spec()} onClose={() => setList(undefined)} />
             )}
           </Show>
-          <Show when={picker()}>
+          <Show when={state.approvals.length === 0 && picker()}>
             {(models: () => ModelInfo[]) => (
               <ModelPicker
                 models={models()}
