@@ -5,6 +5,11 @@ import { plural, shortPath } from "./layout.ts";
 import { PICKER_COLORS } from "./picker.tsx";
 import { formatCost, formatTokens } from "./rail-state.ts";
 
+/** A plan tier as OpenAI writes it: `team` is `Team`. */
+export function tierName(tier: string): string {
+  return tier.charAt(0).toUpperCase() + tier.slice(1);
+}
+
 /** `/status`'s rows: label and value, in the order a glance wants them. */
 export function statusRows(s: SessionStatus, home: string): Array<readonly [string, string]> {
   const ctx = s.context;
@@ -21,17 +26,19 @@ export function statusRows(s: SessionStatus, home: string): Array<readonly [stri
     : "none";
   const rows: Array<readonly [string, string]> = [];
   if (s.name) rows.push(["Session", s.name]);
+  rows.push(["Model", s.billing ? `${s.model} · ${billingLabel({ kind: s.billing })}` : s.model]);
+  if (s.planTier) rows.push(["ChatGPT plan", tierName(s.planTier)]);
   rows.push(
-    ["Model", s.billing ? `${s.model} · ${billingLabel({ kind: s.billing })}` : s.model],
     ["Thinking", s.thinkingLevel],
     ["Context", context],
     ["Tokens", tokens],
-    ["Cost", s.planCalls && !s.costMicros ? "$0 (plan)" : formatCost(s.costMicros)],
+    ["Cost", formatCost(s.costMicros, s.billing === "plan" || (s.planCalls ?? 0) > 0)],
     [
       "Messages",
       [
         plural(s.messages.user, "prompt"),
-        plural(s.messages.assistant, "reply", "replies"),
+        // Pi counts one per model call (tool-call turns too), not one per prompt.
+        plural(s.messages.assistant, "assistant message"),
         plural(s.messages.toolCalls, "tool call"),
       ].join(", "),
     ],

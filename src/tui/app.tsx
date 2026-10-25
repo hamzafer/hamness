@@ -568,6 +568,7 @@ export function App(props: AppProps) {
               <Picker
                 spec={spec()}
                 onClose={() => setList(undefined)}
+                onSlash={setInput}
                 query={pickQuery()}
                 onQuery={setPickQuery}
               />
@@ -580,6 +581,7 @@ export function App(props: AppProps) {
                 current={state.session.model}
                 onPick={switchModel}
                 onClose={() => setPicker(undefined)}
+                onSlash={setInput}
                 query={pickQuery()}
                 onQuery={setPickQuery}
               />

@@ -5,7 +5,6 @@ import type { OrbState } from "../orbs/index.ts";
 import { ORB_COLS, Orb } from "./orb.tsx";
 import {
   elapsedMs,
-  formatCost,
   formatElapsed,
   formatTokens,
   RAIL_CHECKS,
@@ -14,8 +13,8 @@ import {
   type RailCheck,
   type RailState,
   type RailTask,
+  railCost,
   railOrbState,
-  sessionCostMicros,
 } from "./rail-state.ts";
 
 /** Calm on purpose: plain text, muted labels, red only for errors. */
@@ -104,7 +103,7 @@ export function Rail(props: RailProps) {
           {`      ${formatTokens(ctx()?.tokens ?? 0)} / ${formatTokens(ctx()?.contextWindow ?? 0)}`}
         </text>
       </Show>
-      <Label name="cost" value={formatCost(sessionCostMicros(props.state))} width={width()} />
+      <Label name="cost" value={railCost(props.state)} width={width()} />
       <Show when={props.full && props.state.tasks.length > 0}>
         <TaskList tasks={props.state.tasks} width={width()} />
       </Show>
@@ -112,6 +111,7 @@ export function Rail(props: RailProps) {
         {(agent) => (
           <AgentRow
             agent={agent}
+            cost={railCost(props.state, agent)}
             orb={railOrbState(props.state, agent)}
             orbSeconds={props.orbSeconds}
             now={props.now}
@@ -188,6 +188,8 @@ function Label(props: { name: string; value: string; width: number }) {
 
 function AgentRow(props: {
   agent: RailAgent;
+  /** Its cost, worded (`$0 (plan)` on the plan). */
+  cost: string;
   orb: OrbState | undefined;
   orbSeconds: number | undefined;
   now: number;
@@ -212,7 +214,7 @@ function AgentRow(props: {
   };
   const head = () => `${RAIL_GLYPH[a().status]} ${a().name}`;
   const tool = () => (a().tool ? `${a().tool}${a().file ? `  ${a().file}` : ""}` : "");
-  const totals = () => `${formatTokens(a().tokens)} tok  ${formatCost(a().costMicros)}`;
+  const totals = () => `${formatTokens(a().tokens)} tok  ${props.cost}`;
   return (
     <box flexDirection="column" paddingTop={1}>
       <box flexDirection="row">

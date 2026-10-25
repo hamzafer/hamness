@@ -533,7 +533,7 @@ describe("TUI chat layout (headless)", () => {
     const s = await render(fake.client);
     await s.mockInput.typeText("/abandon wrong approach");
     s.mockInput.pressEnter();
-    await s.waitFor(() => s.captureCharFrame().includes("Task dropped: wrong approach"));
+    await s.waitFor(() => s.captureCharFrame().includes("Task abandoned: wrong approach"));
   });
 
   test("stopping a run with Esc shows a quiet Stopped. line, not an error", async () => {

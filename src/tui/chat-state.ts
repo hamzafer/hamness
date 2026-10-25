@@ -204,12 +204,16 @@ export function readableError(raw: string): string {
 
 const ERROR_MAX = 200;
 
+/** Pi's refusal to compact a session that has too little to summarize: not a failure. */
+export const NOTHING_TO_COMPACT = "Nothing to compact yet (the session is small).";
+
 /** `Compaction failed: …` once: the event and the command's own rejection say the same thing. */
 export function addCompactionFailure(state: ChatState, raw: string): void {
-  const text = `Compaction failed: ${readableError(raw)}`;
+  const small = /nothing to compact/i.test(raw);
+  const text = small ? NOTHING_TO_COMPACT : `Compaction failed: ${readableError(raw)}`;
   const recent = state.items.slice(-3);
   if (recent.some((i) => i.kind === "system" && i.text === text)) return;
-  addSystemLine(state, text, "error");
+  addSystemLine(state, text, small ? "muted" : "error");
 }
 
 export const JUDGE_BACK_ON = "The judge is back on.";

@@ -37,7 +37,7 @@ describe("plural", () => {
       HOME,
     );
     const row = (k: string) => rows.find(([key]) => key === k)?.[1];
-    expect(row("Messages")).toBe("1 prompt, 1 reply, 1 tool call");
+    expect(row("Messages")).toBe("1 prompt, 1 assistant message, 1 tool call");
     expect(row("Task")).toBe("g · open · 1/1 check");
   });
 });

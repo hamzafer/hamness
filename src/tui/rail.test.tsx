@@ -211,7 +211,59 @@ describe("rail number formats", () => {
       "128k",
       "2.5M",
     ]);
-    expect([836, 20_000, 1_234_567].map(formatCost)).toEqual(["$0.0008", "$0.020", "$1.23"]);
+    expect([836, 20_000, 1_234_567].map((m) => formatCost(m))).toEqual([
+      "$0.0008",
+      "$0.020",
+      "$1.23",
+    ]);
+    // Nothing spent: on the plan it says so, never `$0.0000`.
+    expect([formatCost(0, true), formatCost(0), formatCost(836, true)]).toEqual([
+      "$0 (plan)",
+      "$0.00",
+      "$0.0008",
+    ]);
+  });
+
+  test("on the ChatGPT plan the cost rows say $0 (plan), never $0.0000", async () => {
+    const plan: SessionSnapshot = {
+      ...snapshot,
+      session: { ...snapshot.session, model: "openai-codex/gpt-6.1-sol", billing: "plan" },
+      agents: [{ id: MAIN, kind: "main", tokens: 194_000, costMicros: 0 }],
+    };
+    const frame = await frameOf(initialRail(plan, 0), 0);
+    expect(frame).toMatch(/cost\s+\$0 \(plan\)/);
+    expect(frame).toContain("194k tok  $0 (plan)");
+    expect(frame).not.toContain("$0.0000");
+  });
+
+  test("a plan call's usage event marks the agent's cost as the plan's", async () => {
+    const s = initialRail(
+      { ...snapshot, agents: [{ id: MAIN, kind: "main", tokens: 0, costMicros: 0 }] },
+      0,
+    );
+    applyRailEvent(
+      s,
+      {
+        sessionId: SID,
+        seq: 1,
+        type: "agent.usage",
+        modelCallId: "c1",
+        messageId: "m1",
+        provider: "openai-codex",
+        model: "gpt-6.1-sol",
+        inputTokens: 100,
+        outputTokens: 10,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costMicros: 0,
+        priced: true,
+        billing: "plan",
+      },
+      0,
+    );
+    const frame = await frameOf(s, 0);
+    expect(frame).toContain("110 tok  $0 (plan)");
+    expect(frame).toMatch(/cost\s+\$0 \(plan\)/);
   });
 });
 

@@ -182,6 +182,35 @@ function newSessionLine(snap: SessionSnapshot): string {
     : "New session.";
 }
 
+/**
+ * A started MCP server's tool count (ADR 0021): above 0 it connected; 0 means connecting,
+ * failed or toolless, which Pi doesn't tell apart. Other servers show their policy.
+ */
+export function mcpState(s: { status: string; tools?: number }): string {
+  if (s.status !== "start" || s.tools === undefined) return s.status;
+  return s.tools > 0 ? plural(s.tools, "tool") : "not connected";
+}
+
+/** `/fork`'s name for the fork of a named session, within the daemon's name limit. */
+export function forkName(name: string, max = 200): string {
+  const tag = " (fork)";
+  const base = name.length + tag.length > max ? `${name.slice(0, max - tag.length - 1)}…` : name;
+  return `${base}${tag}`;
+}
+
+/** `/resume`'s order: the same "latest" as `hamness -c` (picked last first), then activity. */
+export function byLatest<T extends { pickedAt?: number; lastActivityAt: number }>(
+  sessions: readonly T[],
+): T[] {
+  return sessions
+    .map((s, i) => ({ s, i }))
+    .sort(
+      (a, b) =>
+        (b.s.pickedAt ?? b.s.lastActivityAt) - (a.s.pickedAt ?? a.s.lastActivityAt) || a.i - b.i,
+    )
+    .map(({ s }) => s);
+}
+
 const sessionLabel = (s: { name?: string; firstPrompt?: string }) =>
   s.name ?? (s.firstPrompt ? oneLine(s.firstPrompt, 44) : "Untitled session");
 
@@ -218,10 +247,11 @@ export const COMMANDS: readonly SlashCommand[] = [
     description: "Switch to another session in this folder",
     run: async (ctx) => {
       const now = Date.now();
-      const sessions = await ctx.client
+      const listed = await ctx.client
         .listSessions(ctx.session().cwd, ctx.session().id)
         .catch(fail(ctx));
-      if (!sessions) return;
+      if (!listed) return;
+      const sessions = byLatest(listed);
       if (!sessions.some((s) => !s.current)) {
         ctx.say("No other sessions in this folder yet.");
         return;
@@ -233,7 +263,7 @@ export const COMMANDS: readonly SlashCommand[] = [
             sessionLabel(s),
             relativeTime(s.lastActivityAt, now),
             plural(s.messageCount, "message"),
-            formatCost(s.costMicros),
+            formatCost(s.costMicros, (s.planCalls ?? 0) > 0),
           ],
           current: s.current,
           dim: !s.resumable,
@@ -272,6 +302,7 @@ export const COMMANDS: readonly SlashCommand[] = [
         onPick: (i) => {
           const p = prompts[i];
           if (!p) return;
+          const name = ctx.session().name;
           let text = "";
           ctx
             .switchTo(
@@ -282,8 +313,15 @@ export const COMMANDS: readonly SlashCommand[] = [
               },
               () => "Forked. Your prompt is back in the input box.",
             )
-            .then((snap) => {
-              if (snap) ctx.setInput(text);
+            .then(async (snap) => {
+              if (!snap) return;
+              ctx.setInput(text);
+              // The fork keeps the name, marked as the fork; an unnamed session stays unnamed.
+              if (!name || snap.session.name) return;
+              const named = await ctx.client
+                .rename(snap.session.id, forkName(name))
+                .catch(fail(ctx));
+              if (named) ctx.patchSession({ name: named.session.name ?? forkName(name) });
             });
         },
       });
@@ -464,7 +502,7 @@ export const COMMANDS: readonly SlashCommand[] = [
       for (const s of compat.mcpServers) {
         const why = s.reason ? `: ${oneLine(s.reason, 50)}` : "";
         ctx.say(
-          `  ${s.name.padEnd(width)}${s.status}${why}  (${s.scope})`,
+          `  ${s.name.padEnd(width)}· ${mcpState(s)}${why}  (${s.scope})`,
           s.reason ? "warn" : "muted",
         );
       }
