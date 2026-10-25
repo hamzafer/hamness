@@ -52,6 +52,11 @@ export interface TaskView {
   commitSha?: string;
   /** Why the gate said no; only on the view `task_done` returns for an unverified task. */
   unverifiedReason?: string;
+  /**
+   * Only on the view `task_done` returns for a task it dropped (no evidence, no file changes,
+   * no subagents, ADR 0012): the row is gone and `outcome` is what it was while open.
+   */
+  dropped?: true;
 }
 
 /**

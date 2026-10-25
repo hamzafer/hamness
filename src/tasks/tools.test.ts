@@ -10,3 +10,10 @@ test("the system prompt tells the agent to change files with edit / write, not b
   expect(PROOF_GATE_PROMPT).toContain("hamness may ask the user");
   expect(PROOF_GATE_PROMPT).not.toContain("every time");
 });
+
+test("the system prompt keeps questions out of tasks", () => {
+  expect(PROOF_GATE_PROMPT).toMatch(/task_start only for work that changes/);
+  expect(PROOF_GATE_PROMPT).toContain(
+    "Questions, explanations, reviews and reading the code are not tasks",
+  );
+});

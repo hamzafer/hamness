@@ -78,8 +78,9 @@ export class TaskStore {
   }
 
   /**
-   * Removes an implicit task that turned out to be no task (no evidence, no edits): its rows
-   * stay, counted toward the session but no task (ADR 0012).
+   * Removes an open task that turned out to be no task (no evidence, no edits): an implicit
+   * one at turn end, or an explicit one at `task_done`. Its rows stay, counted toward the
+   * session but no task (ADR 0012). A closed task is never removed.
    */
   drop(id: string): void {
     this.sql.transaction(() => {
@@ -88,7 +89,7 @@ export class TaskStore {
       }
       // Checks that could not run (R-L3): with no task left they belong to nothing.
       this.sql.query("DELETE FROM evidence WHERE task_id = ?").run(id);
-      this.sql.query("DELETE FROM tasks WHERE id = ? AND implicit = 1").run(id);
+      this.sql.query("DELETE FROM tasks WHERE id = ? AND outcome = 'open'").run(id);
     })();
   }
 

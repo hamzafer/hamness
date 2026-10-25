@@ -159,6 +159,7 @@ describe("the agent's task tools", () => {
   test("evidence the agent marks as passed is refused, and task_done is unverified", async () => {
     fake.script([
       tool("task_start", { goal: "pretend" }),
+      tool("write", { path: "out.txt", content: "x" }),
       tool("prove", { kind: "command", command: "cat missing.txt", status: "passed" }),
       tool("task_done", { summary: "trust me" }),
       { text: "ok" },
@@ -166,9 +167,9 @@ describe("the agent's task tools", () => {
     const { run, log, sql } = await start();
     await run("go");
     const ends = toolEnds(log);
-    expect(ends[1]).toMatchObject({ status: "error" });
+    expect(ends[2]).toMatchObject({ status: "error" });
     // Pi's schema check refuses the extra field first; parseClaim would refuse it too.
-    expect(ends[1]?.summary).toContain("status");
+    expect(ends[2]?.summary).toContain("status");
     expect(log.ofType("task.end")[0]?.task).toMatchObject({ outcome: "unverified", evidence: 0 });
     expect(sql.query("SELECT count(*) AS n FROM evidence").get()).toEqual({ n: 0 });
   });
@@ -258,6 +259,7 @@ describe("the proof command list (ADR 0019)", () => {
   test("a command that proves nothing is refused before anything runs", async () => {
     fake.script([
       tool("task_start", { goal: "pretend" }),
+      tool("write", { path: "out.txt", content: "x" }),
       tool("prove", { kind: "command", command: "echo tests pass" }),
       tool("task_done", { summary: "done" }),
       { text: "ok" },
@@ -265,8 +267,8 @@ describe("the proof command list (ADR 0019)", () => {
     const { run, log, sql } = await start();
     await run("go");
     const ends = toolEnds(log);
-    expect(ends[1]).toMatchObject({ status: "error" });
-    expect(ends[1]?.summary).toContain("proves nothing");
+    expect(ends[2]).toMatchObject({ status: "error" });
+    expect(ends[2]?.summary).toContain("proves nothing");
     expect(sql.query("SELECT count(*) AS n FROM evidence").get()).toEqual({ n: 0 });
     expect(log.ofType("task.end")[0]?.task.outcome).toBe("unverified");
   });

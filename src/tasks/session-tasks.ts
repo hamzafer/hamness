@@ -156,16 +156,8 @@ export class SessionTasks {
     const open = this.openTask();
     if (open?.implicit) {
       if (this.gate(open.id).verified) this.closeAs(open.id, "verified");
-      else if (
-        this.store.failedCount(open.id) > 0 ||
-        this.store.changedFiles(open.id, this.opts.cwd) ||
-        this.store.hasSubagents(open.id)
-      )
-        this.closeAs(open.id, "unverified");
-      else {
-        this.store.drop(open.id);
-        this.opts.emit({ type: "task.drop", taskId: open.id });
-      }
+      else if (this.didWork(open.id)) this.closeAs(open.id, "unverified");
+      else this.drop(open.id);
     }
     // Next turn starts fresh unless an explicit task is still open.
     if (!this.openTask()) this.current = undefined;
@@ -193,10 +185,18 @@ export class SessionTasks {
     return this.emitStart(id);
   }
 
-  /** `task_done(summary)`: the proof gate. */
+  /**
+   * `task_done(summary)`: the proof gate. A task that did nothing to prove (no failed evidence,
+   * no file changes, no subagents) and passed no check is dropped like a chat turn (ADR 0012).
+   */
   done(summary: string): TaskView {
     const open = this.requireOpen("call task_start first");
     const gate = this.gate(open.id);
+    if (!gate.verified && !this.didWork(open.id)) {
+      const view = this.store.view(open.id) as TaskView;
+      this.drop(open.id);
+      return { ...view, dropped: true };
+    }
     const task = this.closeAs(open.id, gate.verified ? "verified" : "unverified", {
       summary: summary.trim() || undefined,
     });
@@ -297,6 +297,22 @@ export class SessionTasks {
       ...counts,
     });
     return { evidenceId, result, task: this.store.view(open.id) as TaskView };
+  }
+
+  /** Work that went unproven: failed evidence, file changes (edit, write, bash writes) or subagents. */
+  private didWork(id: string): boolean {
+    return (
+      this.store.failedCount(id) > 0 ||
+      this.store.changedFiles(id, this.opts.cwd) ||
+      this.store.hasSubagents(id)
+    );
+  }
+
+  /** Deletes a task that did nothing; its rows stay, with no task (ADR 0012). */
+  private drop(id: string): void {
+    this.store.drop(id);
+    if (this.current === id) this.current = undefined;
+    this.opts.emit({ type: "task.drop", taskId: id });
   }
 
   private branch(): string | undefined {

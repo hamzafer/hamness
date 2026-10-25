@@ -72,6 +72,14 @@ function modelCall(t: SessionTasks, costMicros: number, input = 100, output = 10
   });
 }
 
+/** An `edit` call on the current task: a file change that needs proof. */
+function edited(t: SessionTasks) {
+  chat.addToolCall(
+    { ...ids, taskId: t.attributionId() },
+    { messageId: undefined, tool: "edit", argsJson: "{}" },
+  );
+}
+
 const row = (id: string) =>
   db.sqlite
     .query<{ outcome: string; implicit: number; goal: string; summary: string | null }, [string]>(
@@ -92,10 +100,47 @@ describe("explicit tasks", () => {
     expect(row(task.id)).toMatchObject({ outcome: "verified", summary: "tests pass", implicit: 0 });
   });
 
-  test("task_done without evidence is unverified", () => {
+  test("task_done with an edit and no evidence is unverified", () => {
     const t = tasks();
-    t.start("refactor");
-    expect(t.done("refactored").outcome).toBe("unverified");
+    const task = t.start("refactor");
+    chat.addToolCall(
+      { ...ids, taskId: t.attributionId() },
+      { messageId: undefined, tool: "edit", argsJson: "{}" },
+    );
+    const done = t.done("refactored");
+    expect(done.outcome).toBe("unverified");
+    expect(done.dropped).toBeUndefined();
+    expect(row(task.id)?.outcome).toBe("unverified");
+  });
+
+  test("task_done with a bash write and no evidence is unverified", () => {
+    const t = tasks();
+    t.start("write a file");
+    chat.addToolCall(
+      { ...ids, taskId: t.attributionId() },
+      {
+        messageId: undefined,
+        tool: "bash",
+        argsJson: JSON.stringify({ command: "echo hi > out.txt" }),
+      },
+    );
+    expect(t.done("wrote it").outcome).toBe("unverified");
+  });
+
+  test("task_done with no evidence and no changes drops the task, like a chat turn", () => {
+    const t = tasks();
+    const task = t.start("read the docs and summarize the repo");
+    modelCall(t, 500);
+    const done = t.done("summarized");
+    expect(done.dropped).toBe(true);
+    expect(row(task.id)).toBeNull();
+    expect(events.at(-1)).toEqual({ type: "task.drop", taskId: task.id });
+    const calls = db.sqlite
+      .query<{ task_id: string | null }, []>("SELECT task_id FROM model_calls")
+      .all();
+    expect(calls).toEqual([{ task_id: null }]);
+    expect(t.attributionId()).toBeUndefined();
+    expect(t.view()).toBeUndefined();
   });
 
   test("task_done with only failing evidence is unverified", async () => {
@@ -147,6 +192,7 @@ describe("the agent cannot set a result", () => {
     );
     const n = db.sqlite.query<{ n: number }, []>("SELECT count(*) AS n FROM evidence").get();
     expect(n?.n).toBe(0);
+    edited(t);
     expect(t.done("done").outcome).toBe("unverified");
   });
 
@@ -204,6 +250,7 @@ describe("user actions", () => {
   test("/override turns an unverified task overridden, with the reason", () => {
     const t = tasks();
     const task = t.start("ship it");
+    edited(t);
     t.done("shipped");
     const over = t.override("checked by hand");
     expect(over).toMatchObject({ id: task.id, outcome: "overridden", reason: "checked by hand" });
@@ -314,6 +361,7 @@ describe("the implicit task per turn", () => {
     const t = tasks();
     t.beginTurn("go");
     const task = t.start("goal");
+    edited(t);
     t.done("done");
     modelCall(t, 7);
     expect(t.attributionId()).toBe(task.id);
@@ -354,6 +402,7 @@ describe("roll-up", () => {
         costMicros: 999,
       },
     );
+    edited(t);
     const done = t.done("ok");
     expect(done.id).toBe(task.id);
     expect(done.costMicros).toBe(2000);
