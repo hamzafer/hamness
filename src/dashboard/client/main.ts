@@ -11,7 +11,7 @@ import type {
 } from "../../stats/index.ts";
 import type { TaskOutcome } from "../../tasks/types.ts";
 import { getJson, takeToken, Unauthorized } from "./api.ts";
-import { areaChart } from "./chart.ts";
+import { areaChart, disposeCharts } from "./chart.ts";
 import { h } from "./dom.ts";
 import { relativeToCwd, shortWhen } from "./format.ts";
 import { announcement, connectLive, orbLabel, SessionRuns } from "./live.ts";
@@ -141,6 +141,7 @@ function segmented<T extends string>(
         {
           type: "button",
           "aria-pressed": o.value === current ? "true" : "false",
+          "data-key": `${label}:${o.value}`,
           onclick: () => onPick(o.value),
         },
         o.text,
@@ -645,6 +646,7 @@ function callCell(d: DecisionListRow): HTMLElement {
     {
       type: "button",
       class: "callbtn",
+      "data-key": `call:${d.id}`,
       "aria-expanded": "false",
       "aria-label": "Show the full call",
     },
@@ -674,6 +676,7 @@ function reasonCell(d: DecisionListRow): HTMLElement {
     {
       type: "button",
       class: "reasonbtn",
+      "data-key": `reason:${d.id}`,
       "aria-expanded": "false",
       title: `Paths relative to ${d.sessionCwd}. Click for the full text.`,
     },
@@ -685,6 +688,25 @@ function reasonCell(d: DecisionListRow): HTMLElement {
     text.textContent = open ? full : short;
   });
   return h("td", { class: "reason" }, toggle, rule);
+}
+
+const TABLE_ROLES: Record<string, string> = {
+  THEAD: "rowgroup",
+  TBODY: "rowgroup",
+  TR: "row",
+  TH: "columnheader",
+  TD: "cell",
+};
+
+/**
+ * Explicit table roles for `el` and what is under it: at phone width the decisions table is laid
+ * out as cards (`display: block` and grid), which makes browsers drop the implicit ones.
+ */
+function tableRoles(el: HTMLElement): void {
+  for (const node of [el, ...el.querySelectorAll("*")]) {
+    const role = TABLE_ROLES[node.tagName];
+    if (role) node.setAttribute("role", role);
+  }
 }
 
 async function decisionsView(): Promise<Node[]> {
@@ -723,13 +745,14 @@ async function decisionsView(): Promise<Node[]> {
           h("td", { class: "tool" }, h("code", {}, d.tool)),
           callCell(d),
           h("td", { class: "verdict" }, pill(VERDICT_KIND[d.verdict], d.verdict)),
-          h("td", { class: "by", "data-label": "by" }, d.decidedBy),
+          h("td", { class: "by" }, d.decidedBy),
           h("td", { class: "hide-sm" }, d.sessionSource ? SOURCE_LABEL[d.sessionSource] : "none"),
           reasonCell(d),
         ),
       );
     more.hidden = !page.nextCursor;
     more.onclick = page.nextCursor ? () => void loadMore(load, page.nextCursor) : null;
+    tableRoles(tbody);
     return page;
   };
   const first = await load();
@@ -739,7 +762,7 @@ async function decisionsView(): Promise<Node[]> {
         { class: "table-wrap" },
         h(
           "table",
-          { class: "decisions" },
+          { class: "decisions", role: "table" },
           h("caption", { class: "sr-only" }, "Safety decisions, newest first"),
           h(
             "thead",
@@ -760,6 +783,8 @@ async function decisionsView(): Promise<Node[]> {
         ),
       )
     : empty(`No safety decisions ${inRange(state.range)}.`);
+  const decisions = table.querySelector<HTMLElement>("table.decisions");
+  if (decisions) tableRoles(decisions);
   return [card("Safety decisions", filters, table, more)];
 }
 
@@ -953,36 +978,73 @@ function loadMore(load: (cursor?: string) => Promise<unknown>, cursor: string | 
  * with no loading state. Skipped while a view loads, while the user has a row open, more pages
  * loaded, the chart's tooltip up or focus inside the view (the next event or poll tries again).
  */
-async function quietRefresh(): Promise<void> {
+/**
+ * Why a background refresh must not replace the view now. `wait`: the user is typing or reading
+ * the chart's tooltip, so try again soon. `keep`: a full load is under way, or the user opened a
+ * row or loaded more pages, which a refresh would undo; the next event or poll looks again.
+ */
+function refreshBlocked(main: HTMLElement | null): "wait" | "keep" | undefined {
+  if (!main?.isConnected) return "keep";
+  if (main.hasAttribute("aria-busy") || main.hasAttribute("data-paged")) return "keep";
+  if (main.querySelector('[aria-expanded="true"]')) return "keep";
+  if (main.querySelector(".chart-tip:not([hidden])")) return "wait";
+  const active = document.activeElement;
+  if (active && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)) return "wait";
+  return undefined;
+}
+
+/** A focused element's identity that survives a re-render: its id, data-key or aria-controls. */
+function focusKey(el: Element | null): string | undefined {
+  if (!el || el === document.body) return undefined;
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const key = el.getAttribute("data-key");
+  if (key !== null) return `[data-key="${CSS.escape(key)}"]`;
+  const controls = el.getAttribute("aria-controls");
+  if (controls !== null) return `[aria-controls="${CSS.escape(controls)}"]`;
+  return undefined;
+}
+
+let refreshSeq = 0;
+
+/**
+ * Refreshes the open view in the background: the old content stays until the new data is in,
+ * with no loading state, and focus comes back to the same control. False when it held off and
+ * should be tried again (see `refreshBlocked`); an older refresh that answers late is dropped.
+ */
+async function quietRefresh(): Promise<boolean> {
   const main = document.getElementById("main");
-  if (!main || main.hasAttribute("aria-busy") || main.hasAttribute("data-paged")) return;
-  if (main.querySelector('[aria-expanded="true"], .chart-tip:not([hidden])')) return;
-  if (document.activeElement && document.activeElement !== document.body) {
-    if (main.contains(document.activeElement)) return;
-  }
+  const before = refreshBlocked(main);
+  if (before) return before === "keep";
   const mine = generation;
+  const seq = ++refreshSeq;
   try {
     const content = await viewContent();
-    if (mine !== generation || !main.isConnected || main.hasAttribute("data-paged")) return;
-    if (main.querySelector('[aria-expanded="true"]')) return;
+    if (mine !== generation || seq !== refreshSeq) return true;
+    const after = refreshBlocked(main);
+    if (after || !main) return after === "keep";
+    const focus = focusKey(document.activeElement);
     const y = window.scrollY;
+    disposeCharts(main);
     main.replaceChildren(...content);
     window.scrollTo(0, y);
+    if (focus) main.querySelector<HTMLElement>(focus)?.focus({ preventScroll: true });
+    return true;
   } catch (err) {
     // Keep what is on screen; a rejected token still signs out.
     if (err instanceof Unauthorized && mine === generation) app.replaceChildren(signedOut());
+    return true;
   }
 }
 
 const refresher = new Refresher({
-  refresh: () => void quietRefresh(),
+  refresh: () => quietRefresh(),
   hidden: () => document.visibilityState === "hidden",
 });
 document.addEventListener("visibilitychange", () => refresher.visibilityChanged());
 
 function onLiveEvent(e: HamnessEvent | undefined): void {
   syncLive();
-  if (e && refreshesOn(e)) refresher.poke();
+  if (e && refreshesOn(e, state.view)) refresher.poke();
 }
 
 async function render(): Promise<void> {
@@ -1010,6 +1072,7 @@ async function render(): Promise<void> {
       ),
     ),
   );
+  disposeCharts(app);
   app.replaceChildren(header(), controls(), main);
   try {
     const content = await viewContent();

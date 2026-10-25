@@ -292,6 +292,31 @@ suite("dashboard in a browser", () => {
         expect(off.wrap).toBeLessThanOrEqual(0);
         expect(off.total).toBeGreaterThan(0);
         expect(off.pills).toBe(0);
+        // The cards keep table semantics: display changes would drop the implicit roles.
+        const roles = await page.evaluate(() => {
+          const t = document.querySelector("main table.decisions");
+          const role = (s: string) =>
+            [...(t?.querySelectorAll(s) ?? [])].every((e) => e.getAttribute("role") !== null)
+              ? [...new Set([...(t?.querySelectorAll(s) ?? [])].map((e) => e.getAttribute("role")))]
+              : ["missing"];
+          return {
+            table: t?.getAttribute("role"),
+            groups: role("thead, tbody"),
+            rows: role("tr"),
+            heads: role("th"),
+            cells: role("td"),
+            labels: t?.querySelectorAll("[data-label]").length,
+          };
+        });
+        expect(roles).toEqual({
+          table: "table",
+          groups: ["rowgroup"],
+          rows: ["row"],
+          heads: ["columnheader"],
+          cells: ["cell"],
+          labels: 0,
+        });
+        expect(await page.getByRole("columnheader", { name: "Verdict" }).count()).toBe(1);
         await page.screenshot({ path: join(shots, `decisions-${scheme}-phone.png`) });
         await page.close();
       }
@@ -380,6 +405,78 @@ suite("dashboard in a browser", () => {
       expect(await page.evaluate(() => (window as unknown as { flashed: boolean }).flashed)).toBe(
         false,
       );
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "a clicked button does not stop live refresh: the view updates and keeps its focus",
+    async () => {
+      const page = await open("light");
+      await page
+        .getByRole("navigation")
+        .getByRole("button", { name: "Decisions", exact: true })
+        .click();
+      await page.locator("main table tbody tr").first().waitFor();
+      const btn = page.locator("main td.call .callbtn").first();
+      await btn.click();
+      await btn.click(); // open, then closed again: focus stays on it
+      const key = await btn.getAttribute("data-key");
+      expect(key).toBeTruthy();
+      const before = await page.locator("main table tbody tr").count();
+      const sessionId = openTaskSession();
+      seeder(d.db.sqlite).decision({
+        sessionId,
+        at: Date.now(),
+        tool: "bash",
+        verdict: "allow",
+        source: "rule",
+        reason: "fresh decision for the refresh test",
+        args: { command: "ls fresh" },
+      });
+      d.emit(event(sessionId, { type: "agent.tool.end", toolCallId: "fr1", status: "ok" }));
+      await page.getByText("fresh decision for the refresh test").waitFor({ timeout: 10_000 });
+      expect(await page.locator("main table tbody tr").count()).toBeGreaterThanOrEqual(before);
+      expect(await page.evaluate(() => document.activeElement?.getAttribute("data-key"))).toBe(key);
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "a replaced chart stops observing its size",
+    async () => {
+      const page = await (browser as Browser).newPage({ viewport: { width: 1280, height: 900 } });
+      await page.addInitScript(() => {
+        const w = window as unknown as { liveObservers: number };
+        w.liveObservers = 0;
+        const Real = window.ResizeObserver;
+        window.ResizeObserver = class extends Real {
+          override observe(t: Element, o?: ResizeObserverOptions) {
+            w.liveObservers++;
+            super.observe(t, o);
+          }
+          override disconnect() {
+            w.liveObservers--;
+            super.disconnect();
+          }
+        };
+      });
+      await page.goto(link);
+      await loaded(page);
+      await page.locator(".chart svg").waitFor();
+      for (const name of ["Tokens", "Tasks", "Cost"]) {
+        await page
+          .getByRole("group", { name: "Chart metric" })
+          .getByRole("button", { name, exact: true })
+          .click();
+        await loaded(page);
+        await page.locator(".chart svg").waitFor();
+      }
+      expect(
+        await page.evaluate(() => (window as unknown as { liveObservers: number }).liveObservers),
+      ).toBe(1);
       await page.close();
     },
     BROWSER_TIMEOUT,

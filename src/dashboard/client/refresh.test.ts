@@ -50,7 +50,7 @@ function setup(hidden = false) {
 }
 
 describe("Refresher", () => {
-  test("events within the debounce window make one refresh, about 2 s after the first", () => {
+  test("a burst of events makes one refresh, 2 s after the last (a trailing debounce)", () => {
     const { c, state, r } = setup();
     r.start();
     r.poke();
@@ -58,11 +58,53 @@ describe("Refresher", () => {
     r.poke();
     c.tick(1000);
     r.poke();
+    c.tick(1999);
     expect(state.runs).toBe(0);
-    c.tick(500);
+    c.tick(1);
     expect(state.runs).toBe(1);
     c.tick(5000);
     expect(state.runs).toBe(1);
+  });
+
+  test("a stream of events that never goes quiet still refreshes every 15 s at most", () => {
+    const { c, state, r } = setup();
+    r.start();
+    for (let t = 0; t < 14_000; t += 1000) {
+      r.poke();
+      c.tick(1000);
+    }
+    expect(state.runs).toBe(0);
+    r.poke();
+    c.tick(1000);
+    expect(state.runs).toBe(1);
+    for (let t = 0; t < 13_000; t += 1000) {
+      r.poke();
+      c.tick(1000);
+    }
+    expect(state.runs).toBe(1);
+  });
+
+  test("a refresh the page skipped is tried again after the debounce", () => {
+    const c = clock();
+    let runs = 0;
+    let ok = false;
+    const r = new Refresher({
+      refresh: () => {
+        runs++;
+        return ok;
+      },
+      hidden: () => false,
+      timers: c.timers,
+    });
+    r.start();
+    r.poke();
+    c.tick(2000);
+    expect(runs).toBe(1);
+    ok = true;
+    c.tick(2000);
+    expect(runs).toBe(2);
+    c.tick(10_000);
+    expect(runs).toBe(2);
   });
 
   test("a slow poll refreshes while visible, and a refresh restarts its clock", () => {
@@ -130,7 +172,13 @@ describe("refreshesOn", () => {
     expect(refreshesOn(ev({ type: "task.evidence" }))).toBe(true);
     expect(refreshesOn(ev({ type: "safety.approval.request" }))).toBe(true);
     expect(refreshesOn(ev({ type: "safety.approval.resolved" }))).toBe(true);
-    expect(refreshesOn(ev({ type: "agent.tool.start" }))).toBe(true);
+  });
+  test("tool calls refresh only the Decisions view (each one is a decision)", () => {
+    for (const type of ["agent.tool.start", "agent.tool.end"]) {
+      expect(refreshesOn(ev({ type }), "decisions")).toBe(true);
+      expect(refreshesOn(ev({ type }), "overview")).toBe(false);
+      expect(refreshesOn(ev({ type }), "tasks")).toBe(false);
+    }
   });
   test("streaming text and a run starting do not", () => {
     expect(refreshesOn(ev({ type: "agent.status", busy: true }))).toBe(false);

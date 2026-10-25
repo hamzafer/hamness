@@ -1,13 +1,17 @@
 /**
- * Keeps the open view's numbers current without a reload: a quiet refresh about 2 s after the
- * events that change them (a run ends, a task changes, a decision is made), plus a slow poll
- * while the tab is visible. A hidden tab does nothing; it refreshes once on return if it missed
- * an event or a poll.
+ * Keeps the open view's numbers current without a reload: a quiet refresh once the events that
+ * change them (a run ends, a task changes, a decision is made) have been quiet for 2 s, at most
+ * 15 s after the first of a burst, plus a slow poll while the tab is visible. A hidden tab does
+ * nothing; it refreshes once on return if it missed an event or a poll. A refresh the page
+ * skips (the user is typing, say) is tried again after the debounce.
  */
 import type { HamnessEvent } from "../../events/types.ts";
 
-/** Events after which the stats, tasks or decisions may have changed. */
-export function refreshesOn(e: HamnessEvent): boolean {
+/**
+ * Events after which the view's data may have changed. Tool calls are each a safety decision,
+ * so they count on the Decisions view only: elsewhere a busy run would refresh all the time.
+ */
+export function refreshesOn(e: HamnessEvent, view?: string): boolean {
   switch (e.type) {
     case "agent.status":
       return !e.busy;
@@ -17,10 +21,10 @@ export function refreshesOn(e: HamnessEvent): boolean {
     case "task.evidence":
     case "safety.approval.request":
     case "safety.approval.resolved":
-    // A call the rules allowed starts at once; a denied one ends at once.
+      return true;
     case "agent.tool.start":
     case "agent.tool.end":
-      return true;
+      return view === "decisions";
     default:
       return false;
   }
@@ -33,9 +37,11 @@ export interface Timers {
 }
 
 export interface RefresherOptions {
-  refresh: () => void;
+  /** Refreshes the view. False (or a promise of false) means it skipped, to be tried again. */
+  refresh: () => boolean | undefined | Promise<boolean | undefined>;
   hidden: () => boolean;
   debounceMs?: number;
+  maxWaitMs?: number;
   pollMs?: number;
   timers?: Timers;
 }
@@ -49,14 +55,18 @@ const realTimers: Timers = {
 export class Refresher {
   private soon: unknown;
   private poll: unknown;
+  /** When the first event of the current burst came, for the max wait. */
+  private burstStart: number | undefined;
   private missed = false;
   private last: number;
   private readonly debounceMs: number;
+  private readonly maxWaitMs: number;
   private readonly pollMs: number;
   private readonly timers: Timers;
 
   constructor(private readonly opts: RefresherOptions) {
     this.debounceMs = opts.debounceMs ?? 2000;
+    this.maxWaitMs = opts.maxWaitMs ?? 15_000;
     this.pollMs = opts.pollMs ?? 60_000;
     this.timers = opts.timers ?? realTimers;
     this.last = this.timers.now();
@@ -67,17 +77,23 @@ export class Refresher {
     if (!this.opts.hidden()) this.armPoll(this.pollMs);
   }
 
-  /** Something changed: refresh once, `debounceMs` after the first of a burst. */
+  /** Something changed: refresh once things are quiet for `debounceMs`, within `maxWaitMs`. */
   poke(): void {
     if (this.opts.hidden()) {
       this.missed = true;
       return;
     }
-    if (this.soon !== undefined) return;
-    this.soon = this.timers.set(() => {
-      this.soon = undefined;
-      this.fire();
-    }, this.debounceMs);
+    const now = this.timers.now();
+    this.burstStart ??= now;
+    const wait = Math.min(this.debounceMs, this.burstStart + this.maxWaitMs - now);
+    if (this.soon !== undefined) this.timers.clear(this.soon);
+    this.soon = this.timers.set(
+      () => {
+        this.soon = undefined;
+        this.fire();
+      },
+      Math.max(0, wait),
+    );
   }
 
   visibilityChanged(): void {
@@ -96,6 +112,7 @@ export class Refresher {
     if (this.poll !== undefined) this.timers.clear(this.poll);
     this.soon = undefined;
     this.poll = undefined;
+    this.burstStart = undefined;
   }
 
   private fire(): void {
@@ -103,7 +120,22 @@ export class Refresher {
     this.missed = false;
     this.last = this.timers.now();
     this.armPoll(this.pollMs);
-    this.opts.refresh();
+    const done = this.opts.refresh();
+    if (done === false) this.skipped();
+    else if (done instanceof Promise)
+      void done.then((ok) => {
+        if (ok === false) this.skipped();
+      });
+  }
+
+  /** The page did not refresh: remember it, and try again after the debounce. */
+  private skipped(): void {
+    this.missed = true;
+    if (this.opts.hidden() || this.soon !== undefined) return;
+    this.soon = this.timers.set(() => {
+      this.soon = undefined;
+      this.fire();
+    }, this.debounceMs);
   }
 
   private armPoll(ms: number): void {
