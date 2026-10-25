@@ -54,6 +54,15 @@ describe("the default model (ADR 0024)", () => {
     expect(m.billing("openai-codex")).toBeUndefined();
   });
 
+  test("a logout with a skipped env key for that provider claims no API billing", async () => {
+    writePlanLogin(home.dir, { provider: "openai" });
+    const m = await loadModels({ dataDir: home.dir, env: { OPENAI_API_KEY: "sk-skipped" } });
+    expect(m.billing("openai")).toEqual({ kind: "plan" });
+    await m.runtime.logout("openai");
+    // `loadKeys` never loaded the key while the plan login existed, so nothing bills.
+    expect(m.billing("openai")).toBeUndefined();
+  });
+
   test("another subscription login (Copilot) is never picked, and bills as a subscription", async () => {
     writePlanLogin(home.dir, { provider: "github-copilot" });
     await expect(resolveModels({ dataDir: home.dir, env: {} })).rejects.toBeInstanceOf(

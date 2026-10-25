@@ -336,9 +336,12 @@ export async function loadModels(opts: { dataDir: string; env: Env }): Promise<{
   await runtime.getAvailable().catch(() => []);
   const fallback = (provider: string) =>
     billingOf(provider, { plans, env: opts.env, fileKeys, stored });
-  // Keys only, no plan logins: a plan Pi no longer sees (signed out) must not count as billed.
+  // Keys only, no plan logins: a plan Pi no longer sees (signed out) must not count as billed,
+  // and a provider that had a plan login never got its key loaded (`loadKeys`), so none bills.
   const keyed = (provider: string) =>
-    billingOf(provider, { plans: [], env: opts.env, fileKeys, stored });
+    plans.includes(provider)
+      ? undefined
+      : billingOf(provider, { plans: [], env: opts.env, fileKeys, stored });
   const billing = (provider: string) => liveBilling(runtime, provider, opts.env, fallback, keyed);
   return {
     runtime,
