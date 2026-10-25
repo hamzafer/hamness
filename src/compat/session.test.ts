@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { childPids } from "../../test/support/daemon-process.ts";
 import { type FakeModel, fakeModel } from "../../test/support/fake-model.ts";
 import { snapshotTree, writeTree } from "../../test/support/files.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
@@ -11,6 +12,7 @@ import {
   startAgentRunner,
   type ToolGuard,
 } from "../agent/runner.ts";
+import { isProcessAlive } from "../daemon/state.ts";
 import { approveProjectServers, loadCompat } from "./index.ts";
 
 /** A session built from fixture Claude Code folders: instructions, skills and MCP end to end. */
@@ -36,8 +38,8 @@ beforeEach(async () => {
   fake = await fakeModel(tmp.dir);
   events = [];
 });
-afterEach(() => {
-  runner?.dispose();
+afterEach(async () => {
+  await runner?.dispose();
   runner = undefined;
   tmp.cleanup();
 });
@@ -155,6 +157,21 @@ describe("a session with Claude Code's setup", () => {
     expect(r.mcpTools()).toEqual({ test: 1 });
   });
 
+  test("dispose closes the session's MCP servers: their processes exit", async () => {
+    writeTree(tmp.dir, { "home/.claude.json": json({ mcpServers: { test: echoServer() } }) });
+    fake.script([{ text: "Hi." }]);
+    const r = await start();
+    await r.prompt("hello");
+    for (let i = 0; i < 50 && !r.mcpTools().test; i++) await Bun.sleep(20);
+    const servers = childPids(process.pid, "mcp-server.ts");
+    expect(servers.length).toBeGreaterThan(0);
+
+    await r.dispose();
+    runner = undefined;
+    // Before: AgentSession.dispose() never told Pi's MCP extension, so the server lived on.
+    expect(servers.filter((pid) => isProcessAlive(pid))).toEqual([]);
+  });
+
   test("a denied MCP call never reaches the server", async () => {
     writeTree(tmp.dir, { "home/.claude.json": json({ mcpServers: { test: echoServer() } }) });
     fake.script([
@@ -175,7 +192,7 @@ describe("a session with Claude Code's setup", () => {
     await (await start()).prompt("echo");
     expect(ofType("tool.end")[0]?.isError).toBe(true);
     expect(calls()).toBe("");
-    runner?.dispose();
+    await runner?.dispose();
     events = [];
 
     approveProjectServers(
@@ -231,7 +248,7 @@ describe("a session with Claude Code's setup", () => {
       { text: "Done." },
     ]);
     await (await start()).prompt("go");
-    runner?.dispose();
+    await runner?.dispose();
     runner = undefined;
 
     expect(calls().split("\n").filter(Boolean).sort()).toEqual(["echo x", "echo y"]);
