@@ -77,8 +77,10 @@ export interface SafetyServiceOptions {
 
 export interface SafetyService {
   check: SafetyCheck;
-  /** The mode for sessions in `cwd`, for clients' banners. */
-  modeFor(cwd: string): SafetyMode | undefined;
+  /** The mode for a session in `cwd` (its own, else the config's), for clients' banners. */
+  modeFor(cwd: string, sessionId?: string): SafetyMode | undefined;
+  /** The user's mode for one session (`/mode`); undefined goes back to the config's. */
+  setSessionMode(sessionId: string, mode: SafetyMode | undefined): void;
 }
 
 /** The same call this many times in a row asks, whatever the rules say (opencode's doom_loop). */
@@ -220,6 +222,8 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
   const store = new DecisionStore(opts.db);
   const home = opts.home ?? homedir();
   const recent = new Map<string, { key: string; count: number }>();
+  /** Modes the user set for one session (`/mode`); they win over the config's mode. */
+  const sessionModes = new Map<string, SafetyMode>();
 
   function repeats(call: GuardedCall): number {
     // Same call however it is spelled: keys sorted, a command's spacing collapsed.
@@ -242,7 +246,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
     if (!cwd) throw new Error("the call has no working directory");
 
     const config = loadSafetyConfig(opts.dataDir, cwd);
-    const mode = config.mode;
+    const mode = sessionModes.get(call.sessionId) ?? config.mode;
     // A `prove` command re-run (ADR 0019): the bash decision to run, the proof list to count.
     const proving = call.tool === PROVE_COMMAND;
     const command = typeof call.args.command === "string" ? call.args.command : "";
@@ -459,7 +463,13 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
 
   return {
     check,
-    modeFor(cwd) {
+    setSessionMode(sessionId, mode) {
+      if (mode) sessionModes.set(sessionId, mode);
+      else sessionModes.delete(sessionId);
+    },
+    modeFor(cwd, sessionId) {
+      const own = sessionId === undefined ? undefined : sessionModes.get(sessionId);
+      if (own) return own;
       try {
         return loadSafetyConfig(opts.dataDir, cwd).mode;
       } catch {
