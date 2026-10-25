@@ -1,4 +1,4 @@
-import { billingLabel } from "../agent/billing.ts";
+import { billingLabel, isSubscriptionBilling } from "../agent/billing.ts";
 import type { ModelInfo } from "../agent/models.ts";
 import { Picker } from "./picker.tsx";
 
@@ -9,7 +9,7 @@ const money = (usd: number) => `$${Number(usd.toFixed(4))}`;
  * the pay-per-token key comes from (`API (pay per token, from OPENAI_API_KEY)`).
  */
 export const priceLabel = (m: ModelInfo) => {
-  if (m.billing?.kind === "plan") return "$0 (plan)";
+  if (isSubscriptionBilling(m.billing)) return `$0 (${billingLabel(m.billing)})`;
   const price = `${money(m.inputPerMTok)} in / ${money(m.outputPerMTok)} out${m.priced ? "" : " (Pi est.)"}`;
   return m.billing ? `${billingLabel(m.billing, true)} · ${price}` : price;
 };

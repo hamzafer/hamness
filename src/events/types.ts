@@ -32,8 +32,8 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type CompactionReason = "manual" | "threshold" | "overflow";
 
 /** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: deny rules, then allow. */
-/** `plan`: a ChatGPT plan login (subscription). `api`: a pay-per-token API key. */
-export type Billing = "plan" | "api";
+/** `plan`: the ChatGPT plan login. `subscription`: another subscription login. `api`: a pay-per-token API key. */
+export type Billing = "plan" | "subscription" | "api";
 
 export type SafetyMode = "ask" | "auto" | "yolo";
 

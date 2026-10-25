@@ -34,14 +34,14 @@ export interface ResolvedModels extends ModelChoice {
 
 /** Pi's ChatGPT-plan provider: the Codex backend, OAuth only, so no API key can reach it. */
 export const PLAN_PROVIDER = "openai-codex";
-/** The main agent's and subagents' default on the ChatGPT plan (ADR 0023). */
+/** The main agent's and subagents' default on the ChatGPT plan (ADR 0024). */
 export const PLAN_DEFAULT_MODEL = "openai-codex/gpt-5.6-terra";
-/** The judge's default on the ChatGPT plan: cheap and fast (ADR 0023). */
+/** The judge's default on the ChatGPT plan: cheap and fast (ADR 0024). */
 export const PLAN_JUDGE_MODEL = "openai-codex/gpt-5.6-luna";
 
 /**
  * Plan models to try, best first, per subscription provider. `openai` is Pi's newer
- * "Sign in with ChatGPT" login (also billed to the plan), kept for logins stored before ADR 0023.
+ * "Sign in with ChatGPT" login (also billed to the plan), kept for logins stored before ADR 0024.
  */
 const PLAN_PREFERENCE: Readonly<Record<string, { main: string[]; judge: string[] }>> = {
   "openai-codex": { main: ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5"], judge: ["gpt-5.6-luna"] },
@@ -51,7 +51,7 @@ const PLAN_PREFERENCE: Readonly<Record<string, { main: string[]; judge: string[]
 /**
  * The Codex models a ChatGPT tier may use, for the tiers known to be limited. Pi's catalog has
  * no flag for it, and the Codex backend refuses the rest ("not supported when using Codex with
- * a ChatGPT account"). Observed live, not documented (ADR 0023): on Go only gpt-5.6-terra
+ * a ChatGPT account"). Observed live, not documented (ADR 0024): on Go only gpt-5.6-terra
  * answered (gpt-5.6-sol and gpt-5.5 stayed silent, gpt-6.1-sol was refused). Tiers not listed
  * get the whole catalog.
  */
@@ -62,7 +62,7 @@ export const PLAN_TIER_SUPPORTED: Readonly<Record<string, readonly string[]>> = 
 
 /**
  * The main model per ChatGPT plan tier (the `chatgpt_plan_type` in the Codex login's token).
- * Best-effort (ADR 0023): Go and Team/Business were checked live (Team/Business: gpt-6.1-sol,
+ * Best-effort (ADR 0024): Go and Team/Business were checked live (Team/Business: gpt-6.1-sol,
  * gpt-6-sol, gpt-5.6-sol and gpt-5.6-terra all answer); Plus and Pro are assumed to match
  * Team. A tier not listed, or no tier in the token, gets `PLAN_DEFAULT_MODEL`.
  */
@@ -141,28 +141,44 @@ export function configuredModel(dataDir: string): string | undefined {
   return value.trim();
 }
 
-/** The plan model for `role`: the tier's (main only), else the first the catalog has from the preference list. */
-export function planModel(
-  runtime: Pick<ModelRuntime, "getModel" | "getModels">,
+/**
+ * The ChatGPT plan models to try for `role`, best first: the tier's (main only), then the
+ * preference list. Only ChatGPT plan providers (`PLAN_PREFERENCE`): another subscription
+ * (Copilot, xAI, ...) is never picked on its own.
+ */
+export function planCandidates(
+  runtime: Pick<ModelRuntime, "getModel">,
   plans: readonly string[],
   role: "main" | "judge",
   tier?: string,
-): string | undefined {
+): string[] {
+  const out: string[] = [];
   for (const provider of plans) {
+    const prefs = PLAN_PREFERENCE[provider];
+    if (!prefs) continue;
     const byTier =
       role === "main" && provider === PLAN_PROVIDER && tier ? PLAN_TIER_MODEL[tier] : undefined;
-    if (byTier && runtime.getModel(provider, byTier)) return `${provider}/${byTier}`;
-    for (const id of PLAN_PREFERENCE[provider]?.[role] ?? []) {
-      if (runtime.getModel(provider, id)) return `${provider}/${id}`;
+    for (const id of [...(byTier ? [byTier] : []), ...prefs[role]]) {
+      const spec = `${provider}/${id}`;
+      if (runtime.getModel(provider, id) && !out.includes(spec)) out.push(spec);
     }
-    const first = runtime.getModels(provider)[0];
-    if (first) return modelName(first);
   }
-  return undefined;
+  return out;
+}
+
+/** The first plan model for `role` that is not in `refused` (models the plan turned down). */
+export function planModel(
+  runtime: Pick<ModelRuntime, "getModel">,
+  plans: readonly string[],
+  role: "main" | "judge",
+  tier?: string,
+  refused?: ReadonlySet<string>,
+): string | undefined {
+  return planCandidates(runtime, plans, role, tier).find((m) => !refused?.has(m));
 }
 
 /**
- * The default model, in order (ADR 0023): `HAMNESS_MODEL`, the user config's `defaultModel`,
+ * The default model, in order (ADR 0024): `HAMNESS_MODEL`, the user config's `defaultModel`,
  * then the ChatGPT plan's best model. An API key alone never makes a model the default, so a
  * stray `OPENAI_API_KEY` can't start a bill.
  */
@@ -170,7 +186,7 @@ export function pickDefaultModel(opts: {
   env: Env;
   configModel: string | undefined;
   plans: readonly string[];
-  runtime: Pick<ModelRuntime, "getModel" | "getModels">;
+  runtime: Pick<ModelRuntime, "getModel">;
   /** The ChatGPT plan tier, when the login says. */
   tier?: string | undefined;
 }): { spec?: string; origin: ModelOrigin } {
@@ -181,17 +197,47 @@ export function pickDefaultModel(opts: {
   return plan ? { spec: plan, origin: "plan" } : { origin: "none" };
 }
 
-/** How `provider` is billed, given the plan logins, the env and the key file. */
+/** `plan` for a ChatGPT plan provider, `subscription` for any other subscription login. */
+const subscriptionKind = (provider: string): Billing =>
+  PLAN_PREFERENCE[provider] ? { kind: "plan" } : { kind: "subscription" };
+
+/** How `provider` is billed, given the subscription logins, the env and the key file. */
 export function billingOf(
   provider: string,
   ctx: { plans: readonly string[]; env: Env; fileKeys: Record<string, string>; stored?: string[] },
 ): Billing | undefined {
-  if (ctx.plans.includes(provider)) return { kind: "plan" };
+  if (ctx.plans.includes(provider)) return subscriptionKind(provider);
   const envName = envKeyName(provider, ctx.env);
   if (envName) return { kind: "api", source: envName };
   if (ctx.fileKeys[provider]) return { kind: "api", source: "key file" };
   if (ctx.stored?.includes(provider)) return { kind: "api", source: "stored key" };
   return undefined;
+}
+
+/**
+ * How `provider` is billed right now, from Pi's own auth state: a subscription login in use, or
+ * the API key it resolves (and from where). `fallback` answers before Pi has checked a provider.
+ * Undefined when the provider has no credential.
+ */
+export function liveBilling(
+  runtime: Pick<ModelRuntime, "isUsingSubscription" | "getProviderAuthStatus" | "isUsingOAuth">,
+  provider: string,
+  env: Env,
+  fallback: (provider: string) => Billing | undefined = () => undefined,
+): Billing | undefined {
+  if (runtime.isUsingSubscription(provider)) return subscriptionKind(provider);
+  const status = runtime.getProviderAuthStatus(provider);
+  if (!status.configured) return undefined;
+  if (runtime.isUsingOAuth(provider)) return fallback(provider);
+  if (status.source === "stored") return fallback(provider);
+  const source =
+    envKeyName(provider, env) ??
+    (status.source === "runtime"
+      ? "key file"
+      : status.source === "environment"
+        ? status.label
+        : undefined);
+  return { kind: "api", ...(source ? { source } : {}) };
 }
 
 /**
@@ -284,8 +330,11 @@ export async function loadModels(opts: { dataDir: string; env: Env }): Promise<{
   const keySource = await loadKeys(runtime, opts.dataDir, opts.env, plans);
   await refuseClaudeSubscription(runtime, opts.env, keySource);
   const fileKeys = readKeyFile(opts.dataDir);
-  const billing = (provider: string) =>
+  // Fills Pi's auth snapshot, which `liveBilling` reads; a provider that fails is just unavailable.
+  await runtime.getAvailable().catch(() => []);
+  const fallback = (provider: string) =>
     billingOf(provider, { plans, env: opts.env, fileKeys, stored });
+  const billing = (provider: string) => liveBilling(runtime, provider, opts.env, fallback);
   return {
     runtime,
     ...(model ? { model } : {}),
@@ -391,7 +440,7 @@ export interface ModelCredential {
   billing?: Billing;
   /** The env var a user would set for this provider's API key. */
   envHint?: string;
-  /** A stored `openai` ChatGPT login from before ADR 0023 (Pi's newer Sign in with ChatGPT). */
+  /** A stored `openai` ChatGPT login from before ADR 0024 (Pi's newer Sign in with ChatGPT). */
   legacyOpenaiLogin: boolean;
 }
 

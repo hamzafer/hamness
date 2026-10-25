@@ -34,7 +34,7 @@ describe("the judge's key", () => {
   });
 });
 
-describe("chooseJudge (ADR 0023)", () => {
+describe("chooseJudge (ADR 0024)", () => {
   test("a ChatGPT plan login: gpt-5.6-luna on the plan, even with API keys around", async () => {
     writePlanLogin(home.dir, { tier: "go" });
     const j = await chooseJudge({
@@ -44,6 +44,11 @@ describe("chooseJudge (ADR 0023)", () => {
     expect(j).toMatchObject({ model: "openai-codex/gpt-5.6-luna", billing: "plan" });
     expect(j.backend?.billing).toBe("plan");
     expect(j.backend?.model).toBe("openai-codex/gpt-5.6-luna");
+  });
+
+  test("another subscription login (Copilot) does not pick the judge", async () => {
+    writePlanLogin(home.dir, { provider: "github-copilot" });
+    expect((await chooseJudge({ dataDir: home.dir, env: {} })).backend).toBeUndefined();
   });
 
   test("an Anthropic key alone does not turn on a pay-per-token judge", async () => {

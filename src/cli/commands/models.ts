@@ -1,3 +1,4 @@
+import { isSubscriptionBilling } from "../../agent/billing.ts";
 import {
   billingLabel,
   listModels,
@@ -24,7 +25,7 @@ function contextLabel(tokens: number): string {
 
 /** A plan model's calls cost $0; an API model shows its per-token price and where the key is. */
 export function priceText(m: ModelInfo): string {
-  if (m.billing?.kind === "plan") return "$0 (plan)";
+  if (isSubscriptionBilling(m.billing)) return `$0 (${billingLabel(m.billing)})`;
   const price = `${money(m.inputPerMTok)} in / ${money(m.outputPerMTok)} out per MTok${m.priced ? "" : " (Pi catalog)"}`;
   return m.billing ? `${price} · ${billingLabel(m.billing, true)}` : price;
 }

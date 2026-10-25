@@ -25,7 +25,7 @@ const keyFile = () => join(home.dir, "keys.json");
 const config = (c: Record<string, unknown>) =>
   writeFileSync(join(home.dir, "config.json"), JSON.stringify(c));
 
-describe("the default model (ADR 0023)", () => {
+describe("the default model (ADR 0024)", () => {
   test("signed in with the ChatGPT plan: the plan's model, billed to the plan", async () => {
     writePlanLogin(home.dir);
     const m = await resolveModels({ dataDir: home.dir, env: {} });
@@ -44,6 +44,23 @@ describe("the default model (ADR 0023)", () => {
     expect(modelName((await resolveModels({ dataDir: home.dir, env: {} })).model)).toBe(
       "openai-codex/gpt-6.1-sol",
     );
+  });
+
+  test("billing follows Pi's auth state per call: a logout ends plan billing at once", async () => {
+    writePlanLogin(home.dir);
+    const m = await loadModels({ dataDir: home.dir, env: {} });
+    expect(m.billing("openai-codex")).toEqual({ kind: "plan" });
+    await m.runtime.logout("openai-codex");
+    expect(m.billing("openai-codex")).toBeUndefined();
+  });
+
+  test("another subscription login (Copilot) is never picked, and bills as a subscription", async () => {
+    writePlanLogin(home.dir, { provider: "github-copilot" });
+    await expect(resolveModels({ dataDir: home.dir, env: {} })).rejects.toBeInstanceOf(
+      NotSetUpError,
+    );
+    const m = await loadModels({ dataDir: home.dir, env: {} });
+    expect(m.billing("github-copilot")).toEqual({ kind: "subscription" });
   });
 
   test("signed out with no keys: not set up, with the sign-in to run", async () => {
