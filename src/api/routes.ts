@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import {
+  type Launch,
   ModelSwitchError,
   SESSION_NAME_MAX,
   SessionBusyError,
@@ -37,7 +38,9 @@ function isDirectory(path: string): boolean {
 
 /**
  * The session routes, behind the token check:
- * - `POST /v1/sessions {cwd}`: attach to the cwd's session (created if needed); returns a snapshot
+ * - `POST /v1/sessions {cwd, start?, sessionId?}`: a client's session in the cwd (ADR 0023):
+ *   `start: "new"` a fresh one, `"continue"` (the default) the cwd's latest, `sessionId` that
+ *   one, live or woken (404 unknown, 400 another folder's); returns a snapshot
  * - `GET /v1/sessions/:id`: the snapshot
  * - `POST /v1/sessions/:id/prompt {text}`: 202 `{messageId}`; the reply streams on `/v1/events`
  * - `POST /v1/sessions/:id/abort`: stops the run; pending approvals become denies
@@ -49,7 +52,8 @@ function isDirectory(path: string): boolean {
  * - `POST /v1/sessions/:id/abandon {reason?}`: the user drops the open task
  *   (all three: 409 when the task state doesn't allow it)
  * - `POST /v1/approvals/:id {decision}`: answers an approval (`allow-once`, `allow-always`, `deny`)
- * - `GET /v1/sessions?cwd=`: the cwd's sessions, for `/resume`
+ * - `GET /v1/sessions?cwd=&current=`: the cwd's sessions, for `/resume` (`current`: the asking
+ *   client's session)
  * - the slash-command routes in `COMMANDS` below: new, resume, fork, compact, status, thinking,
  *   name, export, last-reply, mode, compat (ADR 0021)
  */
@@ -71,7 +75,8 @@ export function sessionRoutes(hub: SessionHub) {
     if (!id && req.method === "GET") {
       const cwd = url.searchParams.get("cwd");
       if (!cwd || !isAbsolute(cwd)) return json({ error: "cwd must be an absolute path" }, 400);
-      return json({ sessions: await hub.listSessions(cwd) });
+      const current = url.searchParams.get("current") || undefined;
+      return json({ sessions: await hub.listSessions(cwd, current) });
     }
     if (!id && req.method === "POST") {
       const body = await readJson(req);
@@ -79,13 +84,20 @@ export function sessionRoutes(hub: SessionHub) {
       if (typeof cwd !== "string" || !isAbsolute(cwd) || !isDirectory(cwd)) {
         return json({ error: "cwd must be an absolute path to an existing directory" }, 400);
       }
+      const launch = launchOf(body);
+      if (!launch) {
+        return json({ error: 'start must be "new" or "continue", or sessionId a session id' }, 400);
+      }
       try {
-        return json(await hub.attach(cwd));
+        return json(await hub.attach(cwd, launch));
       } catch (err) {
+        if (err instanceof SessionCommandError) return json({ error: err.message }, err.status);
         return json({ error: `could not start the session: ${(err as Error).message}` }, 500);
       }
     }
     if (!id) return undefined;
+    // A session a fresh launch put to sleep (or one from before a restart) wakes for this.
+    await hub.ensureAwake(id);
 
     if (!action && req.method === "GET") {
       const snap = hub.snapshot(id);
@@ -167,6 +179,19 @@ export function sessionRoutes(hub: SessionHub) {
     }
     return undefined;
   };
+}
+
+/** `POST /v1/sessions`'s choice; undefined when the body asks for something else. */
+function launchOf(body: Record<string, unknown> | null): Launch | undefined {
+  const sessionId = body?.sessionId;
+  const start = body?.start;
+  if (sessionId !== undefined) {
+    if (typeof sessionId !== "string" || !sessionId.trim() || start !== undefined) return undefined;
+    return { kind: "session", id: sessionId.trim() };
+  }
+  if (start === undefined || start === "continue") return { kind: "continue" };
+  if (start === "new") return { kind: "new" };
+  return undefined;
 }
 
 type CommandRoute = (

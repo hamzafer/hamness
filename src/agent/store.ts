@@ -383,6 +383,34 @@ export class ChatStore {
     })();
   }
 
+  /**
+   * The cwd's most recent open explicit task held by another session than `except`, for the
+   * hint a fresh launch shows (ADR 0023).
+   */
+  openTaskIn(cwd: string, except: string): { sessionId: string; goal: string } | undefined {
+    const row = this.sql
+      .query<{ session_id: string; goal: string }, [string, string]>(
+        `SELECT t.session_id, t.goal FROM tasks t JOIN sessions s ON s.id = t.session_id
+         WHERE s.source = 'hamness' AND s.cwd = ? AND s.id != ? AND t.outcome = 'open'
+           AND t.implicit = 0
+         ORDER BY s.updated_at DESC, t.created_at DESC LIMIT 1`,
+      )
+      .get(cwd, except);
+    return row ? { sessionId: row.session_id, goal: row.goal } : undefined;
+  }
+
+  /**
+   * Whether `/new`, `/resume` or `/fork` left the session (`endSession`: its main agent is
+   * `done`). `sessions.ended_at` alone does not say: each run sets it too (`endRun`).
+   */
+  wasLeft(sessionId: string): boolean {
+    return !!this.sql
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM agents WHERE session_id = ? AND kind = 'main' AND status = 'done'",
+      )
+      .get(sessionId);
+  }
+
   hasOpenExplicitTask(sessionId: string): boolean {
     return !!this.sql
       .query<{ id: string }, [string]>(
