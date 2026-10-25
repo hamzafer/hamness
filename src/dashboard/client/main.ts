@@ -12,7 +12,7 @@ import type { TaskOutcome } from "../../tasks/types.ts";
 import { getJson, takeToken, Unauthorized } from "./api.ts";
 import { areaChart } from "./chart.ts";
 import { h } from "./dom.ts";
-import { connectLive, orbLabel, SessionRuns } from "./live.ts";
+import { announcement, connectLive, orbLabel, SessionRuns } from "./live.ts";
 import { type OrbHandle, orb } from "./orb.ts";
 
 // ---- State (kept in the query string so a reload keeps the view) ----
@@ -704,7 +704,7 @@ function fillLive(slot: HTMLElement, text: (label: string) => string, state = ru
   }
   const words = text(orbLabel(state));
   if (slot.textContent !== words || !handle.el.isConnected)
-    slot.replaceChildren(handle.el, h("span", {}, words));
+    slot.replaceChildren(handle.el, h("span", { "aria-live": "off" }, words));
   slot.hidden = false;
 }
 
@@ -721,6 +721,12 @@ function taskLive(sessionId: string): HTMLElement {
 }
 
 function syncLive(): void {
+  const said = announcement(runs.state());
+  for (const status of document.querySelectorAll<HTMLElement>(".top .live-status")) {
+    // Nothing to say until a run has been seen: no "idle" at page load.
+    if (status.textContent === "" && !runs.state()) continue;
+    if (status.textContent !== said) status.textContent = said;
+  }
   for (const slot of document.querySelectorAll<HTMLElement>(".top .live"))
     fillLive(slot, headerText);
   for (const slot of document.querySelectorAll<HTMLElement>(".live-note[data-session]"))
@@ -750,8 +756,15 @@ function header(): HTMLElement {
     toggle.textContent = themeText[theme];
     toggle.setAttribute("aria-label", `${themeText[theme]}. Change theme`);
   });
-  const liveSlot = h("span", { class: "live", role: "status", hidden: true });
+  const liveSlot = h("span", { class: "live", hidden: true });
   fillLive(liveSlot, headerText);
+  // Silent at load when nothing runs; after that it follows `announcement`.
+  const running = runs.state();
+  const status = h(
+    "span",
+    { class: "sr-only live-status", role: "status" },
+    running ? announcement(running) : "",
+  );
   const tabs: { value: View; text: string }[] = [
     { value: "overview", text: "Overview" },
     { value: "tasks", text: "Tasks" },
@@ -778,6 +791,7 @@ function header(): HTMLElement {
       ),
     ),
     liveSlot,
+    status,
     toggle,
   );
 }

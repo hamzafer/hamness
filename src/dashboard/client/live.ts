@@ -12,6 +12,15 @@ export function orbLabel(state: OrbState): string {
   return ORB_LABEL[state];
 }
 
+/**
+ * What the header's status region says: only the coarse changes (a run starts or ends, an
+ * agent waits on the user), so a screen reader isn't told about every tool switch.
+ */
+export function announcement(state: OrbState | undefined): string {
+  if (!state) return "Agents idle";
+  return state === "listening" ? ORB_LABEL.listening : "Agent working";
+}
+
 /** The daemon as a whole, plus one `LiveRuns` per session for the task rows. */
 export class SessionRuns {
   private all = new LiveRuns();

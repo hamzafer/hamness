@@ -296,6 +296,49 @@ suite("dashboard in a browser", () => {
   );
 
   test(
+    "the header's status region says only coarse changes, never each tool",
+    async () => {
+      const sessionId = openTaskSession();
+      const page = await open("light");
+      const status = page.locator(".top [role=status]");
+      expect(await status.count()).toBe(1);
+      await startRun(page, sessionId);
+      d.emit(event(sessionId, { type: "agent.tool.start", toolCallId: "s1", tool: "grep" }));
+      await page.locator(".top .live").getByText("Searching the code").waitFor();
+      expect(await status.textContent()).toBe("Agent working");
+      // The visible words sit outside the live region.
+      expect(await page.locator(".top .live span").getAttribute("aria-live")).toBe("off");
+      d.emit(event(sessionId, { type: "agent.tool.end", toolCallId: "s1", status: "ok" }));
+      d.emit(event(sessionId, { type: "agent.tool.start", toolCallId: "s2", tool: "edit" }));
+      await page.locator(".top .live").getByText("Editing files").waitFor();
+      expect(await status.textContent()).toBe("Agent working");
+      d.emit(
+        event(sessionId, {
+          type: "safety.approval.request",
+          approval: { id: "ap-s", toolCallId: "s3", tool: "bash", args: {} },
+        }),
+      );
+      await page.waitForFunction(
+        () => document.querySelector(".top [role=status]")?.textContent === "Waiting for you",
+      );
+      d.emit(
+        event(sessionId, {
+          type: "safety.approval.resolved",
+          approvalId: "ap-s",
+          decision: "deny",
+          by: "user",
+        }),
+      );
+      d.emit(event(sessionId, { type: "agent.status", busy: false }));
+      await page.waitForFunction(
+        () => document.querySelector(".top [role=status]")?.textContent === "Agents idle",
+      );
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
     "reduced motion draws one still orb that follows the theme toggle",
     async () => {
       const sessionId = openTaskSession();

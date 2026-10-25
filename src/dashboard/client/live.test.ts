@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { HamnessEvent } from "../../events/types.ts";
-import { eventsUrl, orbLabel, SessionRuns } from "./live.ts";
+import { announcement, eventsUrl, orbLabel, SessionRuns } from "./live.ts";
 
 let seq = 0;
 const ev = (sessionId: string, e: Record<string, unknown>) =>
@@ -57,5 +57,14 @@ describe("live sessions", () => {
     expect(eventsUrl({ protocol: "https:", host: "localhost" }, "a b")).toBe(
       "wss://localhost/v1/events?token=a+b",
     );
+  });
+});
+
+describe("what a screen reader hears", () => {
+  test("only coarse changes: working, waiting for you, idle; never the tool", () => {
+    for (const s of ["solving", "searching", "shaping", "working", "composing"] as const)
+      expect(announcement(s)).toBe("Agent working");
+    expect(announcement("listening")).toBe("Waiting for you");
+    expect(announcement(undefined)).toBe("Agents idle");
   });
 });
