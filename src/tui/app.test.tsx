@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { TextAttributes } from "@opentui/core";
 import { testRender } from "@opentui/solid";
-import type { DaemonClient } from "../client/client.ts";
+import { noCommands } from "../../test/support/tui-client.ts";
+import type { DaemonClient, SessionCommands } from "../client/client.ts";
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import type { TaskAction } from "../tasks/types.ts";
 import { App } from "./app.tsx";
@@ -38,7 +39,8 @@ function fakeClient() {
   const prompts: string[] = [];
   const resumed: string[] = [];
   const actions: TaskAction[] = [];
-  const client: DaemonClient = {
+  const client: DaemonClient & SessionCommands = {
+    ...noCommands(),
     ready: Promise.resolve(),
     attach: async () => snapshot,
     prompt: async (_id, text) => {
@@ -80,7 +82,7 @@ function fakeClient() {
 }
 
 async function render(
-  client: DaemonClient,
+  client: DaemonClient & SessionCommands,
   snap: SessionSnapshot = snapshot,
   opts: { kittyKeyboard?: boolean } = {},
 ) {
@@ -463,12 +465,14 @@ describe("TUI chat layout (headless)", () => {
     expect(frame).not.toContain("aborted");
   });
 
-  test("/task without a goal says how to use it", async () => {
+  test("/task without a goal: Enter in the menu completes it, Enter again says how to use it", async () => {
     const fake = fakeClient();
     const s = await render(fake.client);
     await s.mockInput.typeText("/task");
     s.mockInput.pressEnter();
-    await s.waitFor(() => s.captureCharFrame().includes("/task <goal>"));
+    await s.waitFor(() => /│\s*\/task \s*│/.test(s.captureCharFrame()));
+    s.mockInput.pressEnter();
+    await s.waitFor(() => s.captureCharFrame().includes("usage: /task <goal>"));
     expect(fake.actions).toEqual([]);
   });
 
@@ -504,7 +508,7 @@ describe("TUI chat layout (headless)", () => {
     const s = await render(fake.client);
     await s.mockInput.typeText("/frobnicate now");
     s.mockInput.pressEnter();
-    await s.waitForFrame((f) => f.includes("unknown command /frobnicate"));
+    await s.waitForFrame((f) => f.includes("Unknown command /frobnicate. Type / to see commands."));
     expect(fake.prompts).toEqual([]);
     // A path is a prompt, not a command.
     await s.mockInput.typeText("/work/demo/notes.txt what is in it?");

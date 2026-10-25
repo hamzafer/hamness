@@ -2,10 +2,12 @@ import { homedir } from "node:os";
 import type { KeyBinding, SyntaxStyle, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { createStore, produce } from "solid-js/store";
+import { createStore, produce, reconcile } from "solid-js/store";
 import type { ModelInfo } from "../agent/models.ts";
-import type { DaemonClient } from "../client/client.ts";
+import type { SessionStatus } from "../agent/session-hub.ts";
+import type { DaemonClient, SessionCommands } from "../client/client.ts";
 import type {
+  HamnessEvent,
   JudgeState,
   PendingApproval,
   SessionSnapshot,
@@ -22,14 +24,25 @@ import {
   type SystemLine,
   waitingForModel,
 } from "./chat-state.ts";
-import { COMMAND_WORDS, HelpPanel } from "./help.tsx";
+import { copyToClipboard } from "./clipboard.ts";
+import { CommandMenu } from "./command-menu.tsx";
+import {
+  type CommandContext,
+  type CommandMatch,
+  matchCommands,
+  menuQuery,
+  needsArgs,
+  parseSlash,
+} from "./commands.ts";
+import { HelpPanel } from "./help.tsx";
 import { promptHint, shortPath } from "./layout.ts";
 import { markdownStyle } from "./markdown.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { animationOff, ORB_FPS, ORB_ROWS, Orb } from "./orb.tsx";
+import { Picker, type PickerSpec } from "./picker.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
 import { applyRailEvent, initialRail, railOrbState } from "./rail-state.ts";
-import { parseTaskCommand, taskConfirmation } from "./task-commands.ts";
+import { StatusPanel } from "./status-panel.tsx";
 
 const COLORS = {
   user: "#7aa2f7",
@@ -50,10 +63,20 @@ const JUDGE_LABEL: Record<JudgeState, string> = {
   "no-key": "judge off: no key",
 };
 
+/** Events for sessions the chat doesn't show, kept for a switch to one of them. */
+const FOREIGN_KEPT = 500;
+
+/** The chat's line when another client (or the daemon) replaced this session. */
+const REPLACED_LINE = {
+  new: "A new session started from another window.",
+  resume: "Another window resumed a different session. Showing it now.",
+  fork: "Another window forked this session. Showing the fork now.",
+} as const;
+
 export interface AppProps {
-  client: DaemonClient;
+  client: DaemonClient & SessionCommands;
   snapshot: SessionSnapshot;
-  /** Ctrl+C: leave the TUI. The session keeps running in the daemon. */
+  /** Ctrl+C or `/exit`: leave the TUI. The session keeps running in the daemon. */
   onExit?: () => void;
   /** Clock for the rail's elapsed times; tests pass a fake one. */
   now?: () => number;
@@ -61,6 +84,8 @@ export interface AppProps {
   home?: string;
   /** Animate the thinking orbs. Default: on, unless `HAMNESS_NO_ANIMATION=1`. */
   animate?: boolean;
+  /** `/copy`'s clipboard. Default: pbcopy, wl-copy or xclip, then OSC 52. */
+  copy?: (text: string) => Promise<void>;
 }
 
 export function App(props: AppProps) {
@@ -70,12 +95,33 @@ export function App(props: AppProps) {
   const [clock, setClock] = createSignal(now());
   const tick = setInterval(() => setClock(now()), 1000);
   const [railFull, setRailFull] = createSignal(false);
+  /** Other sessions' events, newest last: a switch replays its new session's. */
+  const foreign: HamnessEvent[] = [];
+  /** How many of this client's own session switches are running (`switchTo`). */
+  let switching = 0;
   const off = props.client.subscribe((e) => {
+    if ("sessionId" in e && e.sessionId !== state.session.id) {
+      foreign.push(e);
+      if (foreign.length > FOREIGN_KEPT) foreign.splice(0, foreign.length - FOREIGN_KEPT);
+      return;
+    }
+    if (e.type === "session.replaced" && switching === 0) {
+      // Replaced from elsewhere: follow to the cwd's live session.
+      const from = state.session.id;
+      props.client
+        .attach(state.session.cwd)
+        .then((snap) => {
+          // Unless the chat moved on meanwhile (a switch of this client's own).
+          if (state.session.id === from) replaceSession(snap, REPLACED_LINE[e.reason]);
+        })
+        .catch((err: Error) => setState("notice", err.message));
+    }
     setState(produce((s) => applyEvent(s, e)));
     setRail(produce((r) => applyRailEvent(r, e, now())));
     setClock(now());
   });
-  const md = markdownStyle(useRenderer().nativeScene);
+  const renderer = useRenderer();
+  const md = markdownStyle(renderer.nativeScene);
   onCleanup(() => {
     off();
     clearInterval(tick);
@@ -89,18 +135,29 @@ export function App(props: AppProps) {
       (waiting) => setWaitingSince(waiting ? now() : undefined),
     ),
   );
+  /** When the current compaction began, for its elapsed seconds. */
+  const [compactingSince, setCompactingSince] = createSignal<number | undefined>();
+  createEffect(
+    on(
+      () => state.compacting === true,
+      (compacting) => setCompactingSince(compacting ? now() : undefined),
+    ),
+  );
 
   /**
    * The thinking orbs' clock. It ticks at `ORB_FPS` only while an orb shows (a wait for the
-   * model, or an agent on the rail running or waiting on the user); idle, no timer runs.
-   * `animate={false}` or `HAMNESS_NO_ANIMATION=1`: no timer at all, the orbs stand still.
+   * model, a compaction, or an agent on the rail running or waiting on the user); idle, no
+   * timer runs. `animate={false}` or `HAMNESS_NO_ANIMATION=1`: no timer at all, the orbs
+   * stand still.
    */
   const animate = props.animate ?? !animationOff();
   const [orbClock, setOrbClock] = createSignal(now());
   // A memo, so the timer only restarts when the answer flips, not on every rail change.
   const orbsShowing = createMemo(
     () =>
-      waitingSince() !== undefined || rail.agents.some((a) => railOrbState(rail, a) !== undefined),
+      waitingSince() !== undefined ||
+      compactingSince() !== undefined ||
+      rail.agents.some((a) => railOrbState(rail, a) !== undefined),
   );
   createEffect(
     on(orbsShowing, (showing) => {
@@ -111,6 +168,8 @@ export function App(props: AppProps) {
     }),
   );
   const orbSeconds = () => (animate ? orbClock() / 1000 : undefined);
+  const elapsed = (since: number | undefined) =>
+    Math.max(0, Math.floor((clock() - (since ?? 0)) / 1000));
 
   const dims = useTerminalDimensions();
   /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
@@ -121,6 +180,7 @@ export function App(props: AppProps) {
     const judge = state.session.mode === "auto" && state.session.judge;
     const rest =
       `hamness ·  · ${state.session.model}`.length +
+      (state.session.name ? `${state.session.name} · `.length : 0) +
       (judge ? ` · ${JUDGE_LABEL[judge]}`.length : 0) +
       (state.session.busy ? " · working…".length : 0);
     return shortPath(state.session.cwd, home, chatWidth() - rest);
@@ -136,6 +196,61 @@ export function App(props: AppProps) {
   const [picker, setPicker] = createSignal<ModelInfo[] | undefined>();
   /** The `/help` list while it is open. */
   const [help, setHelp] = createSignal(false);
+  /** A command's pick list (`/resume`, `/fork`, `/thinking`, `/mode`) while it is open. */
+  const [list, setList] = createSignal<PickerSpec | undefined>();
+  /** The `/status` panel while it is open. */
+  const [status, setStatus] = createSignal<SessionStatus | undefined>();
+
+  /** The input box's text, for the `/` menu. */
+  const [draft, setDraft] = createSignal("");
+  const [menuIndex, setMenuIndex] = createSignal(0);
+  /** Esc closed the menu; it stays closed until the text changes. */
+  const [menuClosed, setMenuClosed] = createSignal(false);
+  const matches = createMemo((): CommandMatch[] => {
+    const q = menuQuery(draft());
+    return q === undefined ? [] : matchCommands(q);
+  });
+  const menuOpen = () =>
+    matches().length > 0 && !menuClosed() && !picker() && !list() && state.approvals.length === 0;
+  const onDraft = () => {
+    fitPrompt();
+    const text = input?.plainText ?? "";
+    if (text === draft()) return;
+    setDraft(text);
+    setMenuIndex(0);
+    setMenuClosed(false);
+  };
+  const setInput = (text: string) => {
+    input?.setText(text);
+    input?.gotoBufferEnd();
+    setDraft(text);
+    setMenuIndex(0);
+    fitPrompt();
+  };
+
+  const say = (text: string, tone: SystemLine["tone"] = "muted") =>
+    setState(produce((s) => addSystemLine(s, text, tone)));
+  const closePanels = () => {
+    setHelp(false);
+    setStatus(undefined);
+  };
+
+  /** Shows another session in place of this one: its transcript, rail and mode, then `line`. */
+  const replaceSession = (snap: SessionSnapshot, line: string) => {
+    if (snap.session.id === state.session.id) return;
+    setState(reconcile(initialState(snap)));
+    setRail(reconcile(initialRail(snap, now())));
+    const missed = foreign.filter((e) => "sessionId" in e && e.sessionId === snap.session.id);
+    foreign.length = 0;
+    for (const e of missed) {
+      setState(produce((s) => applyEvent(s, e)));
+      setRail(produce((r) => applyRailEvent(r, e, now())));
+    }
+    setPicker(undefined);
+    setList(undefined);
+    closePanels();
+    say(line);
+  };
 
   const switchModel = (model: string) => {
     setPicker(undefined);
@@ -158,153 +273,225 @@ export function App(props: AppProps) {
       .catch((err: Error) => setState("notice", err.message));
   };
 
+  const ctx: CommandContext = {
+    client: props.client,
+    home,
+    session: () => state.session,
+    say,
+    patchSession: (patch) => setState("session", patch),
+    pick: (spec) => setList(spec),
+    showHelp: () => setHelp(true),
+    showStatus: (s) => setStatus(s),
+    model: modelCommand,
+    switchTo: async (call, line) => {
+      switching++;
+      try {
+        const snap = await call();
+        replaceSession(snap, line(snap));
+        return snap;
+      } catch (err) {
+        say((err as Error).message, "error");
+        return undefined;
+      } finally {
+        switching--;
+      }
+    },
+    setInput,
+    prompts: () =>
+      state.items.flatMap((i) =>
+        i.kind === "message" && i.role === "user" && i.text ? [{ id: i.id, text: i.text }] : [],
+      ),
+    copy: props.copy ?? ((text) => copyToClipboard(text, (t) => renderer.copyToClipboardOSC52(t))),
+    exit: () => props.onExit?.(),
+  };
+
   const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
     input?.clear();
+    setDraft("");
     setPromptRows(1);
     setState("notice", undefined);
-    setHelp(false);
-    if (text === "/help" || text === "/?") return setHelp(true);
-    const command = /^\/model(?:\s+(.*))?$/.exec(text);
-    if (command) return modelCommand((command[1] ?? "").trim());
-    if (/^\/judge\s+resume$/.test(text)) {
-      props.client
-        .resumeJudge(state.session.id)
-        .then((judge) => setState("session", "judge", judge))
-        .catch((err: Error) => setState("notice", err.message));
-      return;
+    closePanels();
+    const slash = parseSlash(text);
+    if (slash && "unknown" in slash) {
+      return say(`Unknown command ${slash.unknown}. Type / to see commands.`, "warn");
     }
-    const taskAction = parseTaskCommand(text);
-    if (taskAction) {
-      if ("error" in taskAction) return setState("notice", taskAction.error);
-      const say = (text: string, tone: SystemLine["tone"]) =>
-        setState(produce((s) => addSystemLine(s, text, tone)));
-      props.client
-        .task(state.session.id, taskAction)
-        .then((task) => say(taskConfirmation(taskAction, task), "ok"))
+    if (slash) {
+      Promise.resolve()
+        .then(() => slash.command.run(ctx, slash.arg))
         .catch((err: Error) => say(err.message, "error"));
       return;
-    }
-    // `/word ...` that isn't a command is a typo, not a prompt (a path like /src/x.ts is).
-    const word = /^(\/[a-z][\w-]*)(?:\s|$)/.exec(text)?.[1];
-    if (word && !COMMAND_WORDS.has(word)) {
-      return setState("notice", `unknown command ${word}: /help lists them`);
     }
     props.client
       .prompt(state.session.id, text)
       .catch((err: Error) => setState("notice", err.message));
   };
 
+  /** Tab, or Enter on a command that needs arguments: the name in the input box, ready for them. */
+  const complete = (m: CommandMatch) => setInput(m.command.args ? `${m.label} ` : m.label);
+
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") props.onExit?.();
     // Ctrl+R: the side rail full screen, and back.
     if (key.ctrl && key.name === "r") setRailFull((full) => !full);
-    if (key.name === "escape" && help()) return setHelp(false);
-    if (key.name === "escape" && state.session.busy && !picker() && !state.approvals.length) {
+    if (menuOpen()) {
+      const n = matches().length;
+      const enter = (key.name === "return" || key.name === "kpenter") && !key.shift;
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault();
+        setMenuIndex((i) => (i + (key.name === "up" ? n - 1 : 1)) % n);
+        return;
+      }
+      if (key.name === "tab" || enter) {
+        key.preventDefault();
+        const m = matches()[Math.min(menuIndex(), n - 1)];
+        if (!m) return;
+        if (key.name === "tab" || needsArgs(m.command)) return complete(m);
+        return submit(m.label);
+      }
+      if (key.name === "escape") {
+        key.preventDefault();
+        setMenuClosed(true);
+        return;
+      }
+    }
+    if (key.name === "escape" && (help() || status())) return closePanels();
+    if (
+      key.name === "escape" &&
+      state.session.busy &&
+      !picker() &&
+      !list() &&
+      !state.approvals.length
+    ) {
       props.client.abort(state.session.id).catch(() => {});
     }
   });
 
   return (
-    <box flexDirection="row" flexGrow={1} minHeight={0}>
-      <box
-        visible={!railFull()}
-        flexDirection="column"
-        flexGrow={1}
-        minHeight={0}
-        paddingLeft={1}
-        paddingRight={1}
-      >
-        <Show when={state.session.mode === "yolo"}>
-          <YoloBanner />
-        </Show>
-        <box flexDirection="row" height={1}>
-          <text fg={COLORS.muted}>
-            hamness · {headerPath()} · {state.session.model}
-          </text>
-          <Show when={state.session.mode === "auto" && state.session.judge}>
-            {(judge: () => JudgeState) => (
-              <text fg={judge() === "on" ? COLORS.muted : COLORS.warn}>
-                {` · ${JUDGE_LABEL[judge()]}`}
-              </text>
+    <box flexDirection="column" flexGrow={1} minHeight={0}>
+      <Show when={state.session.mode === "yolo"}>
+        <YoloBanner />
+      </Show>
+      <box flexDirection="row" flexGrow={1} minHeight={0}>
+        <box
+          visible={!railFull()}
+          flexDirection="column"
+          flexGrow={1}
+          minHeight={0}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <box flexDirection="row" height={1}>
+            <text fg={COLORS.muted}>hamness · </text>
+            <Show when={state.session.name}>
+              {(name: () => string) => <text fg={COLORS.assistant}>{`${name()} · `}</text>}
+            </Show>
+            <text fg={COLORS.muted}>
+              {headerPath()} · {state.session.model}
+            </text>
+            <Show when={state.session.mode === "auto" && state.session.judge}>
+              {(judge: () => JudgeState) => (
+                <text fg={judge() === "on" ? COLORS.muted : COLORS.warn}>
+                  {` · ${JUDGE_LABEL[judge()]}`}
+                </text>
+              )}
+            </Show>
+            <Show when={state.session.busy}>
+              <text fg={COLORS.warn}> · working…</text>
+            </Show>
+          </box>
+          <scrollbox stickyScroll stickyStart="bottom" flexGrow={1} minHeight={0}>
+            <For each={state.items}>
+              {(item) =>
+                item.kind === "message" ? (
+                  <MessageView message={item} markdown={md} />
+                ) : item.kind === "system" ? (
+                  <SystemLineView line={item} />
+                ) : (
+                  <ToolLine tool={item} />
+                )
+              }
+            </For>
+            <Show when={waitingSince() !== undefined}>
+              <box flexDirection="row" paddingLeft={2} height={ORB_ROWS}>
+                <Orb state="solving" seconds={orbSeconds()} />
+                <text fg={COLORS.muted}>
+                  {` ${ORB_LABEL.solving}… ${elapsed(waitingSince())}s`}
+                </text>
+              </box>
+            </Show>
+            <Show when={compactingSince() !== undefined}>
+              <box flexDirection="row" paddingLeft={2} height={ORB_ROWS}>
+                <Orb state="shaping" seconds={orbSeconds()} />
+                <text fg={COLORS.muted}>
+                  {` Compacting the context… ${elapsed(compactingSince())}s`}
+                </text>
+              </box>
+            </Show>
+          </scrollbox>
+          <Show when={state.notice}>
+            <text fg={COLORS.error}>{state.notice}</text>
+          </Show>
+          <Show when={help()}>
+            <HelpPanel />
+          </Show>
+          <Show when={status()}>
+            {(s: () => SessionStatus) => <StatusPanel status={s()} home={home} />}
+          </Show>
+          <Show when={list()}>
+            {(spec: () => PickerSpec) => (
+              <Picker spec={spec()} onClose={() => setList(undefined)} />
             )}
           </Show>
-          <Show when={state.session.busy}>
-            <text fg={COLORS.warn}> · working…</text>
+          <Show when={picker()}>
+            {(models: () => ModelInfo[]) => (
+              <ModelPicker
+                models={models()}
+                current={state.session.model}
+                onPick={switchModel}
+                onClose={() => setPicker(undefined)}
+              />
+            )}
           </Show>
-        </box>
-        <scrollbox stickyScroll stickyStart="bottom" flexGrow={1} minHeight={0}>
-          <For each={state.items}>
-            {(item) =>
-              item.kind === "message" ? (
-                <MessageView message={item} markdown={md} />
-              ) : item.kind === "system" ? (
-                <SystemLineView line={item} />
-              ) : (
-                <ToolLine tool={item} />
-              )
-            }
-          </For>
-          <Show when={waitingSince() !== undefined}>
-            <box flexDirection="row" paddingLeft={2} height={ORB_ROWS}>
-              <Orb state="solving" seconds={orbSeconds()} />
-              <text fg={COLORS.muted}>
-                {` ${ORB_LABEL.solving}… ${Math.max(0, Math.floor((clock() - (waitingSince() ?? 0)) / 1000))}s`}
-              </text>
-            </box>
+          <Show when={state.approvals[0]}>
+            {(first: () => PendingApproval) => (
+              <ApprovalPrompt
+                approval={first()}
+                queued={state.approvals.length}
+                onAnswer={(decision) =>
+                  props.client
+                    .answerApproval(first().id, decision)
+                    .catch((err: Error) => setState("notice", err.message))
+                }
+              />
+            )}
           </Show>
-        </scrollbox>
-        <Show when={state.notice}>
-          <text fg={COLORS.error}>{state.notice}</text>
-        </Show>
-        <Show when={help()}>
-          <HelpPanel />
-        </Show>
-        <Show when={picker()}>
-          {(models: () => ModelInfo[]) => (
-            <ModelPicker
-              models={models()}
-              current={state.session.model}
-              onPick={switchModel}
-              onClose={() => setPicker(undefined)}
+          <Show when={menuOpen()}>
+            <CommandMenu matches={matches()} selected={menuIndex()} width={chatWidth()} />
+          </Show>
+          <box border height={promptRows() + 2}>
+            <textarea
+              ref={(r: TextareaRenderable) => {
+                input = r;
+              }}
+              placeholder={promptHint(chatWidth() - 2)}
+              focused={!picker() && !list() && state.approvals.length === 0}
+              keyBindings={PROMPT_KEYS}
+              height={promptRows()}
+              onContentChange={onDraft}
+              onSubmit={() => submit(input?.plainText ?? "")}
             />
-          )}
-        </Show>
-        <Show when={state.approvals[0]}>
-          {(first: () => PendingApproval) => (
-            <ApprovalPrompt
-              approval={first()}
-              queued={state.approvals.length}
-              onAnswer={(decision) =>
-                props.client
-                  .answerApproval(first().id, decision)
-                  .catch((err: Error) => setState("notice", err.message))
-              }
-            />
-          )}
-        </Show>
-        <box border height={promptRows() + 2}>
-          <textarea
-            ref={(r: TextareaRenderable) => {
-              input = r;
-            }}
-            placeholder={promptHint(chatWidth() - 2)}
-            focused={!picker() && state.approvals.length === 0}
-            keyBindings={PROMPT_KEYS}
-            height={promptRows()}
-            onContentChange={fitPrompt}
-            onSubmit={() => submit(input?.plainText ?? "")}
-          />
+          </box>
         </box>
+        <Rail
+          state={rail}
+          now={clock()}
+          orbSeconds={orbSeconds()}
+          full={railFull()}
+          {...(railFull() ? { width: Math.max(20, dims().width - 4) } : {})}
+        />
       </box>
-      <Rail
-        state={rail}
-        now={clock()}
-        orbSeconds={orbSeconds()}
-        full={railFull()}
-        {...(railFull() ? { width: Math.max(20, dims().width - 4) } : {})}
-      />
     </box>
   );
 }
@@ -350,7 +537,7 @@ function MessageView(props: { message: MessageItem; markdown: SyntaxStyle }) {
   );
 }
 
-/** A line from hamness itself: a stop, or a task command's answer. */
+/** A line from hamness itself: a stop, a command's answer. */
 function SystemLineView(props: { line: SystemLine }) {
   return <text fg={COLORS[props.line.tone]}>{`  ${props.line.text}`}</text>;
 }

@@ -1,7 +1,12 @@
 import { createCliRenderer } from "@opentui/core";
 import { render } from "@opentui/solid";
 import type { CliIo } from "../cli/io.ts";
-import { connectToDaemon, type DaemonClient, ensureDaemon } from "../client/client.ts";
+import {
+  connectToDaemon,
+  type DaemonClient,
+  ensureDaemon,
+  type SessionCommands,
+} from "../client/client.ts";
 import type { Env } from "../config/paths.ts";
 import type { HamnessEvent } from "../events/types.ts";
 import { App } from "./app.tsx";
@@ -23,7 +28,7 @@ export async function runTui(opts: TuiOptions): Promise<number> {
     return 2;
   }
 
-  let client: DaemonClient;
+  let client: DaemonClient & SessionCommands;
   try {
     await ensureDaemon(opts.dataDir, { env: opts.env });
     client = await connectToDaemon(opts.dataDir);
@@ -48,7 +53,7 @@ export async function runTui(opts: TuiOptions): Promise<number> {
     return 1;
   }
 
-  const replaying: DaemonClient = {
+  const replaying: DaemonClient & SessionCommands = {
     ...client,
     subscribe(onEvent) {
       for (const e of early.splice(0)) onEvent(e);

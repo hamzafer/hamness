@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
+import { noCommands } from "../../test/support/tui-client.ts";
 import type { ModelInfo } from "../agent/models.ts";
-import type { DaemonClient } from "../client/client.ts";
+import type { DaemonClient, SessionCommands } from "../client/client.ts";
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import { App } from "./app.tsx";
 
@@ -40,7 +41,8 @@ function fakeClient(opts: { failSwitch?: string } = {}) {
   const switches: string[] = [];
   const prompts: string[] = [];
   let seq = snapshot.seq;
-  const client: DaemonClient = {
+  const client: DaemonClient & SessionCommands = {
+    ...noCommands(),
     ready: Promise.resolve(),
     attach: async () => snapshot,
     prompt: async (_id, text) => {
@@ -67,7 +69,7 @@ function fakeClient(opts: { failSwitch?: string } = {}) {
   return { client, switches, prompts };
 }
 
-async function render(client: DaemonClient) {
+async function render(client: DaemonClient & SessionCommands) {
   setup = await testRender(() => <App client={client} snapshot={snapshot} />, {
     width: 100,
     height: 24,
