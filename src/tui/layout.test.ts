@@ -1,6 +1,57 @@
 import { describe, expect, test } from "bun:test";
-import { PROMPT_HINTS, plural, promptHint, shortPath, welcomeLine, wrappedRows } from "./layout.ts";
+import {
+  headerParts,
+  PROMPT_HINTS,
+  plural,
+  promptHint,
+  shortPath,
+  welcomeLine,
+  wrappedRows,
+} from "./layout.ts";
 import { statusRows } from "./status-panel.tsx";
+
+describe("headerParts", () => {
+  const input = {
+    name: "e2e-calc",
+    cwd: "/home/user/developer/ai/playground/proj",
+    home: "/home/user",
+    model: "openai-codex/gpt-6.1-sol",
+    billing: "plan",
+    judge: { text: "judge on", warn: false },
+    busy: true,
+  };
+  const text = (width: number, over = {}) =>
+    headerParts({ ...input, ...over }, width)
+      .map((p) => p.text)
+      .join("");
+
+  test("everything shows when there is room", () => {
+    expect(text(120)).toBe(
+      "hamness · e2e-calc · ~/developer/ai/playground/proj · openai-codex/gpt-6.1-sol · plan · judge on · working…",
+    );
+  });
+
+  test("short of room the folder shrinks, then goes, then the judge, the billing, the provider", () => {
+    expect(text(90)).toBe(
+      "hamness · e2e-calc · ~/…/proj · openai-codex/gpt-6.1-sol · plan · judge on · working…",
+    );
+    expect(text(70)).toBe("hamness · e2e-calc · openai-codex/gpt-6.1-sol · plan · working…");
+    expect(text(56)).toBe("hamness · e2e-calc · openai-codex/gpt-6.1-sol · working…");
+    expect(text(46)).toBe("hamness · e2e-calc · gpt-6.1-sol · working…");
+    expect(text(35)).toBe("hamness · gpt-6.1-sol · working…");
+    expect(text(32)).toBe("hamness · gpt-6.1-sol · working…");
+    // Then `working…` (the rail shows the run), and last the model is cut.
+    expect(text(26)).toBe("hamness · gpt-6.1-sol");
+    expect(text(16)).toBe("hamness · gpt-6…");
+  });
+
+  test("it never runs past its width", () => {
+    for (let w = 1; w <= 130; w++) expect(text(w).length).toBeLessThanOrEqual(w);
+    for (let w = 1; w <= 130; w++) {
+      expect(text(w, { name: "a very long session name indeed" }).length).toBeLessThanOrEqual(w);
+    }
+  });
+});
 
 describe("plural", () => {
   test("one of a thing is singular, any other count plural", () => {

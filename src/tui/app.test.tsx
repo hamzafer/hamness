@@ -330,6 +330,43 @@ describe("TUI chat layout (headless)", () => {
     expect(hint).toMatch(/Ask hamness…[^│]*\)/);
   });
 
+  for (const width of [80, 60]) {
+    test(`at ${width} columns the header's parts never draw over each other`, async () => {
+      const busy = {
+        ...snapshot,
+        session: {
+          ...snapshot.session,
+          cwd: "/home/user/developer/ai/playground/scratchpad/e2e3/proj",
+          model: "openai-codex/gpt-6.1-sol",
+          billing: "plan" as const,
+          mode: "auto" as const,
+          judge: "on" as const,
+          name: "e2e-calc",
+          busy: true,
+        },
+      };
+      setup = await testRender(
+        () => (
+          <App client={fakeClient().client} snapshot={busy} home="/home/user" animate={false} />
+        ),
+        { width, height: 24 },
+      );
+      await setup.renderOnce();
+      // The chat pane's part of the header row, before the rail's border.
+      const row = (setup.captureCharFrame().split("\n")[0] ?? "").split("┌")[0] ?? "";
+      const header = row.trim();
+      expect(header.startsWith("hamness · ")).toBe(true);
+      // Whole parts joined by " · ", each one cleanly cut if at all: no letters run together.
+      const parts = header.split(" · ");
+      expect(parts[0]).toBe("hamness");
+      for (const p of parts) expect(p).toMatch(/^\S(.*\S)?$/);
+      if (width >= 80) expect(header).toContain("working…");
+      // The model, at least by its name, always shows.
+      expect(header).toContain("gpt-6.1-sol");
+      expect(row.length).toBeLessThanOrEqual(width);
+    });
+  }
+
   test("assistant replies render as Markdown, also while streaming; prompts stay plain", async () => {
     const fake = fakeClient();
     const md = {
