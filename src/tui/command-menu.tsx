@@ -38,13 +38,10 @@ export function CommandMenu(props: { matches: CommandMatch[]; selected: number; 
     <box
       border
       borderColor={PICKER_COLORS.dim}
-      // More than fit: where the highlight is, so the list reads as scrollable.
-      {...(props.matches.length > MENU_ROWS
-        ? {
-            bottomTitle: ` ${props.selected + 1} of ${props.matches.length} `,
-            bottomTitleAlignment: "right" as const,
-          }
-        : {})}
+      // Where the highlight is in what the filter left. Always set: a title dropped from the
+      // props would stay on the box as it was.
+      bottomTitle={` ${props.selected + 1} of ${props.matches.length} `}
+      bottomTitleAlignment="right"
       flexDirection="column"
       flexShrink={0}
       paddingLeft={1}

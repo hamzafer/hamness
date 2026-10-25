@@ -393,7 +393,8 @@ export function App(props: AppProps) {
         if (!m) return;
         if (key.name === "tab") return complete(m);
         const what = menuEnter(menuQuery(draft()) ?? "", matches(), menuIndex(), menuMoved());
-        if (what.kind === "hint") return submit("/");
+        // A bare `/`: the menu stays open to pick from.
+        if (what.kind === "hint") return;
         if (what.kind === "complete" || needsArgs(what.match.command)) return complete(what.match);
         return submit(what.match.label);
       }

@@ -7,6 +7,7 @@ import { type DaemonClient, DaemonError, type SessionCommands } from "../client/
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import type { TaskView } from "../tasks/types.ts";
 import { App } from "./app.tsx";
+import { COMMANDS, matchCommands } from "./commands.ts";
 
 type Setup = Awaited<ReturnType<typeof testRender>>;
 let setup: Setup | undefined;
@@ -289,6 +290,26 @@ describe("the / menu", () => {
     expect(inputRow).toBeGreaterThan(menuRow);
   });
 
+  test("its counter shows the highlighted row and the filtered total", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await s.mockInput.typeText("/");
+    const all = COMMANDS.length;
+    await frameWhere(s, (f) => f.includes(`1 of ${all}`));
+    s.mockInput.pressArrow("down");
+    s.mockInput.pressArrow("down");
+    await frameWhere(s, (f) => f.includes(`3 of ${all}`));
+    expect(s.captureCharFrame()).toContain(`3 of ${all}`);
+    await s.mockInput.typeText("co");
+    const n = matchCommands("co").length;
+    const frame = await frameWhere(s, (f) => f.includes(`1 of ${n} `));
+    expect(frame).toContain(`1 of ${n} `);
+    expect(frame).not.toContain(`of ${all}`);
+    s.mockInput.pressArrow("down");
+    await frameWhere(s, (f) => f.includes(`2 of ${n} `));
+    expect(s.captureCharFrame()).toContain(`2 of ${n} `);
+  });
+
   test("typing filters it, fuzzily", async () => {
     const fake = fakeClient();
     const s = await render(fake);
@@ -368,7 +389,7 @@ describe("the / menu", () => {
 });
 
 describe("Enter in the menu, and what never reaches the model", () => {
-  test("a fuzzy-only match completes instead of running; a bare / only hints", async () => {
+  test("a fuzzy-only match completes instead of running; a bare / keeps the menu open", async () => {
     const fake = fakeClient();
     const s = await render(fake);
     await s.mockInput.typeText("/opt");
@@ -381,7 +402,11 @@ describe("Enter in the menu, and what never reaches the model", () => {
     await s.mockInput.typeText("/");
     await frameWhere(s, (f) => f.includes("Start fresh"));
     s.mockInput.pressEnter();
-    await frameWhere(s, (f) => f.includes("Type / to see commands."));
+    await Bun.sleep(30);
+    const frame = await frameWhere(s, () => true);
+    expect(frame).toContain("Start fresh");
+    expect(frame).not.toContain("Type / to see commands.");
+    expect(frame).toMatch(/│\/\s/);
     expect(fake.calls).toEqual([]);
     expect(fake.prompts).toEqual([]);
   });
