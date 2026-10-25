@@ -7,6 +7,7 @@ import {
   RAIL_CHECKS_KEPT,
   type RailAgent,
   type RailState,
+  railCost,
   railOrbState,
   sessionCostMicros,
 } from "./rail-state.ts";
@@ -38,6 +39,32 @@ function feed(snapshot = snap(), start = 1000) {
 }
 
 const main = (s: ReturnType<typeof initialRail>) => s.agents[0];
+
+describe("rail cost wording", () => {
+  test("a switch from a plan model to an API model drops the (plan) wording", () => {
+    const f = feed(snap({ agents: [{ id: MAIN, kind: "main", tokens: 0, costMicros: 0 }] }));
+    f.send(2000, { type: "agent.model", agentId: MAIN, model: "openai-codex/x", billing: "plan" });
+    f.send(2100, {
+      type: "agent.usage",
+      agentId: MAIN,
+      modelCallId: "c1",
+      messageId: "m1",
+      provider: "openai-codex",
+      model: "x",
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costMicros: 0,
+      priced: true,
+      billing: "plan",
+    });
+    expect(railCost(f.state)).toBe("$0 (plan)");
+    f.send(2200, { type: "agent.model", agentId: MAIN, model: "anthropic/y", billing: "api" });
+    expect(railCost(f.state)).toBe("$0.00");
+    expect(railCost(f.state, main(f.state))).toBe("$0.00");
+  });
+});
 
 describe("rail state", () => {
   test("starts from the snapshot: one idle main agent with its stored totals and context", () => {

@@ -262,6 +262,8 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
     case "agent.model":
       if (e.billing) state.billing = e.billing;
       else delete state.billing;
+      // Off the plan, a zero cost reads $0.00 again, not "$0 (plan)".
+      if (e.billing !== "plan") for (const a of state.agents) delete a.plan;
       return;
     case "agent.context":
       if (agent.id === state.mainAgentId) {
