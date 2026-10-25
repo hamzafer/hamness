@@ -95,6 +95,8 @@ export class SessionTasks {
 
   constructor(private readonly opts: SessionTasksOptions) {
     this.store = new TaskStore(opts.db);
+    // One SessionTasks per live session: no call of this session is running yet.
+    this.store.closeStaleToolCalls(opts.sessionId);
     const open = this.store.openFor(opts.sessionId);
     if (open) {
       this.current = open.id;
@@ -128,7 +130,10 @@ export class SessionTasks {
   /** Whether the open (or last) task would be verified now, and why (`gate.ts`). */
   gate(taskId = this.current ?? this.store.latestFor(this.opts.sessionId)): GateResult {
     if (!taskId) return { verified: false, reason: "there is no task" };
-    return decideGate(this.store.gateEvidence(taskId), this.store.lastFileChange(taskId));
+    return decideGate(
+      this.store.gateEvidence(taskId),
+      this.store.lastFileChange(taskId, this.opts.cwd),
+    );
   }
 
   endTurn(): void {
@@ -137,7 +142,7 @@ export class SessionTasks {
       if (this.gate(open.id).verified) this.closeAs(open.id, "verified");
       else if (
         this.store.failedCount(open.id) > 0 ||
-        this.store.changedFiles(open.id) ||
+        this.store.changedFiles(open.id, this.opts.cwd) ||
         this.store.hasSubagents(open.id)
       )
         this.closeAs(open.id, "unverified");

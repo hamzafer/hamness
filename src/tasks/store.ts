@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
+import { bashWrites } from "./bash-writes.ts";
 import type { GateEvidence } from "./gate.ts";
 import type { EvidenceClaim, TaskOutcome, TaskView } from "./types.ts";
 
@@ -184,39 +185,70 @@ export class TaskStore {
   }
 
   /**
-   * When the task last changed a file through write / edit, by any of its agents. A call still
-   * running counts as now (Infinity); a denied one changed nothing. Undefined: no changes.
+   * The task's calls that changed files: write / edit, and bash that writes through `>`, `>>`,
+   * `tee` or a heredoc (`bash-writes.ts`, ADR 0019). `paths`: what each named, against `cwd`.
    */
-  lastFileChange(taskId: string): number | undefined {
-    const r = this.sql
-      .query<{ running: number; last: number | null }, [string]>(
-        `SELECT COALESCE(SUM(ended_at IS NULL), 0) AS running,
-           MAX(COALESCE(ended_at, started_at, created_at)) AS last
-         FROM tool_calls WHERE task_id = ? AND status != 'denied'
-           AND tool IN (${MUTATING_TOOLS.map((t) => `'${t}'`).join(", ")})`,
-      )
-      .get(taskId);
-    if (!r || r.last === null) return undefined;
-    return r.running > 0 ? Number.POSITIVE_INFINITY : r.last;
-  }
-
-  /** The real paths the task's write / edit calls named, resolved against `cwd`. */
-  writtenPaths(taskId: string, cwd: string): Set<string> {
+  private fileChanges(
+    taskId: string,
+    cwd: string,
+    withDenied = false,
+  ): { running: boolean; at: number; paths: string[] }[] {
     const rows = this.sql
-      .query<{ args_json: string | null }, [string]>(
-        `SELECT args_json FROM tool_calls WHERE task_id = ? AND status != 'denied'
-           AND tool IN (${MUTATING_TOOLS.map((t) => `'${t}'`).join(", ")})`,
+      .query<
+        {
+          tool: string;
+          args_json: string | null;
+          ended_at: number | null;
+          started_at: number | null;
+          created_at: number;
+        },
+        [string]
+      >(
+        `SELECT tool, args_json, ended_at, started_at, created_at FROM tool_calls
+         WHERE task_id = ? ${withDenied ? "" : "AND status != 'denied'"}
+           AND tool IN (${[...MUTATING_TOOLS, "bash"].map((t) => `'${t}'`).join(", ")})`,
       )
       .all(taskId);
-    const out = new Set<string>();
+    const out: { running: boolean; at: number; paths: string[] }[] = [];
     for (const r of rows) {
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(r.args_json ?? "{}");
       } catch {}
-      const p = args.path ?? args.file_path;
-      if (typeof p !== "string" || !p) continue;
-      const abs = resolve(cwd, p.startsWith("@") ? p.slice(1) : p);
+      let paths: string[];
+      if (r.tool === "bash") {
+        const w = bashWrites(typeof args.command === "string" ? args.command : "", cwd);
+        if (!w.writes) continue;
+        paths = w.paths;
+      } else {
+        const p = args.path ?? args.file_path;
+        paths =
+          typeof p === "string" && p ? [resolve(cwd, p.startsWith("@") ? p.slice(1) : p)] : [];
+      }
+      out.push({
+        running: r.ended_at === null,
+        at: r.ended_at ?? r.started_at ?? r.created_at,
+        paths,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * When the task last changed a file (`fileChanges`), by any of its agents. A call still
+   * running counts as now (Infinity); a denied one changed nothing. Undefined: no changes.
+   */
+  lastFileChange(taskId: string, cwd: string): number | undefined {
+    const changes = this.fileChanges(taskId, cwd);
+    if (changes.length === 0) return undefined;
+    if (changes.some((c) => c.running)) return Number.POSITIVE_INFINITY;
+    return Math.max(...changes.map((c) => c.at));
+  }
+
+  /** The real paths the task's file changes named, resolved against `cwd`. */
+  writtenPaths(taskId: string, cwd: string): Set<string> {
+    const out = new Set<string>();
+    for (const abs of this.fileChanges(taskId, cwd).flatMap((c) => c.paths)) {
       out.add(abs);
       try {
         out.add(realpathSync(abs));
@@ -235,14 +267,23 @@ export class TaskStore {
     return (r?.n ?? 0) > 0;
   }
 
-  changedFiles(taskId: string): boolean {
-    const r = this.sql
-      .query<{ n: number }, [string]>(
-        `SELECT count(*) AS n FROM tool_calls WHERE task_id = ?
-           AND tool IN (${MUTATING_TOOLS.map((t) => `'${t}'`).join(", ")})`,
+  /**
+   * Closes the session's tool calls that never ended (the daemon stopped mid-call), as errors:
+   * a call still running counts as a file change "now" and would block verification forever.
+   */
+  closeStaleToolCalls(sessionId: string, now = Date.now()): void {
+    this.sql
+      .query(
+        `UPDATE tool_calls SET status = 'error', result_summary = 'ended without a result',
+           ended_at = ?, updated_at = ?
+         WHERE session_id = ? AND ended_at IS NULL`,
       )
-      .get(taskId);
-    return (r?.n ?? 0) > 0;
+      .run(now, now, sessionId);
+  }
+
+  /** Whether the task tried to change files (denied tries included). */
+  changedFiles(taskId: string, cwd: string): boolean {
+    return this.fileChanges(taskId, cwd, true).length > 0;
   }
 
   view(id: string, now = Date.now()): TaskView | undefined {

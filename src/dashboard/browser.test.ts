@@ -214,7 +214,106 @@ suite("dashboard in a browser", () => {
       const text = (await page.locator("main table").textContent()) ?? "";
       expect(text).toMatch(/allow|ask|deny/);
       expect(text).toContain("read-only command in the project");
+      // The call, short as `hamness audit` prints it, with the full text in its title.
+      const call = page.locator("main table tbody td.call code").first();
+      expect((await call.textContent())?.length).toBeGreaterThan(0);
+      const long = page
+        .locator("main table tbody td.call code", { hasText: "rm -rf dist" })
+        .first();
+      expect(await long.textContent()).toEndWith("…");
+      expect(await long.getAttribute("title")).toContain("--target=bun");
+      await long.click();
+      expect(await long.textContent()).toEndWith("--target=bun");
       await page.screenshot({ path: join(shots, "decisions-dark.png"), fullPage: true });
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "the active time tile counts sessions the same way By source does",
+    async () => {
+      const page = await open("light");
+      await page.getByRole("button", { name: "30d", exact: true }).click();
+      await loaded(page);
+      await page.locator(".tile").first().waitFor();
+      const sub =
+        (await page
+          .locator(".tile", { has: page.locator(".tile-label", { hasText: /^Active time$/ }) })
+          .locator(".tile-sub")
+          .textContent()) ?? "";
+      const bySource = await page
+        .locator(".card", { has: page.locator(".card-title", { hasText: /^By source$/ }) })
+        .locator(".barlist-value")
+        .allTextContents();
+      const total = bySource.reduce((n, t) => n + Number(/(\d+) sessions/.exec(t)?.[1] ?? 0), 0);
+      // The seed has Codex sessions without active time: the tile says how many have it.
+      expect(sub).toMatch(new RegExp(`^\\d+ of ${total} sessions with time recorded;`));
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "switching views shows a quiet loading state for the new view, never the old one's rows",
+    async () => {
+      const page = await open("dark");
+      const nav = page.getByRole("navigation");
+      await nav.getByRole("button", { name: "Tasks", exact: true }).click();
+      await page.locator("table.tasks").waitFor();
+      let release = () => {};
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      await page.route("**/v1/decisions**", async (route) => {
+        await held;
+        await route.continue();
+      });
+      await nav.getByRole("button", { name: "Decisions", exact: true }).click();
+      const main = page.locator("#main");
+      expect(await main.getAttribute("aria-busy")).toBe("true");
+      expect(await page.locator("table.tasks").count()).toBe(0);
+      expect(await main.locator(".card-title").textContent()).toBe("Safety decisions");
+      expect(await main.locator(".loading").textContent()).toContain("Loading");
+      // The header and range controls stay put while the view loads.
+      expect(await page.locator(".controls").count()).toBe(1);
+      release();
+      await loaded(page);
+      await page.locator("main table tbody td.call").first().waitFor();
+      expect(await main.locator(".loading").count()).toBe(0);
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "an older view finishing late keeps the newer view marked as loading",
+    async () => {
+      const page = await open("light");
+      await page.locator("main .card").first().waitFor();
+      const nav = page.getByRole("navigation");
+      const hold = async (pattern: string) => {
+        let release = () => {};
+        const held = new Promise<void>((r) => {
+          release = r;
+        });
+        await page.route(pattern, async (route) => {
+          await held;
+          await route.continue();
+        });
+        return () => release();
+      };
+      const releaseTasks = await hold("**/v1/tasks**");
+      const releaseDecisions = await hold("**/v1/decisions**");
+      await nav.getByRole("button", { name: "Tasks", exact: true }).click();
+      await nav.getByRole("button", { name: "Decisions", exact: true }).click();
+      const main = page.locator("#main");
+      releaseTasks();
+      await page.waitForTimeout(200);
+      expect(await main.getAttribute("aria-busy")).toBe("true");
+      releaseDecisions();
+      await page.locator("main table tbody td.call").first().waitFor();
+      expect(await main.getAttribute("aria-busy")).toBeNull();
       await page.close();
     },
     BROWSER_TIMEOUT,
@@ -232,6 +331,14 @@ suite("dashboard in a browser", () => {
           () => document.documentElement.scrollWidth - window.innerWidth,
         );
         expect(overflow).toBeLessThanOrEqual(0);
+        // Every y-axis label sits inside the chart's card, none cut at its left edge.
+        const cut = await phone.evaluate(() => {
+          const card = document.querySelector(".hero")?.getBoundingClientRect();
+          return [...document.querySelectorAll(".chart .grid text")].filter(
+            (t) => card && t.getBoundingClientRect().left < card.left,
+          ).length;
+        });
+        expect(cut).toBe(0);
         await phone.screenshot({
           path: join(shots, `overview-${scheme}-phone.png`),
           fullPage: true,

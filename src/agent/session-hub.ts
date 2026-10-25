@@ -1621,6 +1621,15 @@ export class SessionHub {
       }
       case "run.settled":
         agent.currentReplyRow = undefined;
+        // A call Pi never ended (a tool threw past it) must not stay running: the proof gate
+        // reads a running call as a file change happening now.
+        for (const [piId, id] of agent.tools) {
+          const end = { status: "error" as const, summary: "ended without a result" };
+          this.store.finishToolCall(id, end);
+          agent.tools.delete(piId);
+          agent.denied.delete(piId);
+          emit({ type: "agent.tool.end", toolCallId: id, ...end });
+        }
         // A subagent's last status waits for its result (`finishSubagent`); no Stop hooks.
         if (agent !== live) return;
         if (e.aborted) emit({ type: "agent.stopped" });

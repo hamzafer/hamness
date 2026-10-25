@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { callText } from "../safety/decisions.ts";
 import type { EvidenceKind, EvidenceStatus, TaskOutcome } from "../tasks/types.ts";
 import type { DecisionSource } from "./queries.ts";
 import { type Source, type StatsQuery, windowFor } from "./window.ts";
@@ -264,6 +265,10 @@ export interface DecisionListRow {
   /** The source of the decision's session; null for a decision outside any session. */
   sessionSource: Source | null;
   tool: string;
+  /** The call (redacted), cut short as `hamness audit` prints it. */
+  call: string;
+  /** The same call on one line, up to `CALL_FULL_MAX` characters. */
+  callFull: string;
   verdict: Verdict;
   decidedBy: DecisionSource;
   reason: string | null;
@@ -273,9 +278,13 @@ export interface DecisionListRow {
   createdAt: number;
 }
 
+/** The longest call text a decision row carries; longer ones end in an ellipsis. */
+export const CALL_FULL_MAX = 2000;
+
 /**
- * Safety decisions in the range, newest first. No tool arguments: the audit log has them
- * (`hamness audit`). Decisions without a session show only when no source filter is set.
+ * Safety decisions in the range, newest first, each with its call as `hamness audit` prints it
+ * (arguments are redacted when stored). Decisions without a session show only when no source
+ * filter is set.
  */
 export function listDecisions(sqlite: Database, q: DecisionListQuery): Page<DecisionListRow> {
   const w = windowFor(q);
@@ -283,7 +292,7 @@ export function listDecisions(sqlite: Database, q: DecisionListQuery): Page<Deci
   const after = decodeCursor(q.cursor);
   const rows = sqlite
     .query<
-      DecisionListRow,
+      Omit<DecisionListRow, "call" | "callFull"> & { argsJson: string | null },
       [
         number,
         number,
@@ -295,7 +304,8 @@ export function listDecisions(sqlite: Database, q: DecisionListQuery): Page<Deci
         number,
       ]
     >(
-      `SELECT d.id, d.session_id AS sessionId, s.source AS sessionSource, d.tool, d.verdict,
+      `SELECT d.id, d.session_id AS sessionId, s.source AS sessionSource, d.tool,
+         d.args_json AS argsJson, d.verdict,
          d.source AS decidedBy, d.reason, d.rule, d.latency_ms AS latencyMs,
          d.cost_micros AS costMicros, d.created_at AS createdAt
        FROM decisions d LEFT JOIN sessions s ON s.id = d.session_id
@@ -315,5 +325,12 @@ export function listDecisions(sqlite: Database, q: DecisionListQuery): Page<Deci
       after?.[1] ?? null,
       limit + 1,
     );
-  return paged(rows, limit, (r) => r.createdAt);
+  const withCalls = rows.map(({ argsJson, ...r }): DecisionListRow => {
+    let args: Record<string, unknown> = {};
+    try {
+      args = argsJson ? JSON.parse(argsJson) : {};
+    } catch {}
+    return { ...r, call: callText(args), callFull: callText(args, CALL_FULL_MAX) };
+  });
+  return paged(withCalls, limit, (r) => r.createdAt);
 }

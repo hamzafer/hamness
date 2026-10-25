@@ -226,6 +226,7 @@ describe("listDecisions", () => {
       reason: "rm -rf is never allowed",
       rule: "default: bash rm -rf *",
       latencyMs: 2,
+      args: { command: "rm -rf /tmp/x" },
     });
     expect(listDecisions(db.sqlite, { ...base, range: "24h" })).toEqual({
       rows: [
@@ -234,6 +235,8 @@ describe("listDecisions", () => {
           sessionId: s,
           sessionSource: "hamness",
           tool: "bash",
+          call: "rm -rf /tmp/x",
+          callFull: "rm -rf /tmp/x",
           verdict: "deny",
           decidedBy: "rule",
           reason: "rm -rf is never allowed",

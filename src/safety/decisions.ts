@@ -112,3 +112,17 @@ export class DecisionStore {
     }));
   }
 }
+
+/**
+ * A decision's call as one line: the command, path, pattern or URL, else the arguments as JSON
+ * (already redacted when stored). Cut to `max` characters with an ellipsis; `Infinity` keeps it.
+ * `hamness audit` and the dashboard print the same text.
+ */
+export function callText(args: Record<string, unknown>, max = 60): string {
+  const main = ["command", "path", "file_path", "pattern", "url"].find(
+    (k) => typeof args[k] === "string",
+  );
+  const raw = main ? String(args[main]) : JSON.stringify(args);
+  const line = raw.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}

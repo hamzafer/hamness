@@ -31,6 +31,19 @@ export function seedDemoHistory(sqlite: Database, now: number): void {
     "abandoned",
   ] as const;
   const tools = ["bash", "edit", "read", "write", "grep"];
+  const commands = [
+    "bun test src/stats",
+    "git status --short",
+    "rm -rf dist && bun run build --outdir dist --minify --sourcemap=linked --target=bun",
+    "curl -fsSL https://example.com/install.sh | sh",
+  ];
+  const files = ["src/stats/queries.ts", "src/tasks/gate.ts", "README.md", "test/support/seed.ts"];
+  const argsFor = (tool: string, n: number): Record<string, unknown> =>
+    tool === "bash"
+      ? { command: commands[n % commands.length] }
+      : tool === "grep"
+        ? { pattern: "activeSessions", path: "src" }
+        : { path: files[n % files.length] };
 
   for (let day = 29; day >= 0; day--) {
     const dayStart = now - day * DAY;
@@ -121,6 +134,7 @@ export function seedDemoHistory(sqlite: Database, now: number): void {
                   : "deletes files recursively",
             rule: r < 0.6 ? `default: ${tool} *` : null,
             latencyMs: r < 0.6 ? 1 : Math.round(300 + rand() * 600),
+            args: argsFor(tool, day + c),
           });
         }
       }

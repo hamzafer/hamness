@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { dataPaths } from "../../config/paths.ts";
 import { openDatabase } from "../../db/open.ts";
-import { type DecisionRow, DecisionStore } from "../../safety/decisions.ts";
+import { callText, DecisionStore } from "../../safety/decisions.ts";
 import type { CliContext } from "../run.ts";
 
 export const AUDIT_USAGE = [
@@ -27,16 +27,6 @@ function time(ms: number): string {
 function latency(ms: number | null): string {
   if (ms === null) return "";
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
-
-function callSummary(row: DecisionRow, max = 60): string {
-  const a = row.args;
-  const main = ["command", "path", "file_path", "pattern", "url"].find(
-    (k) => typeof a[k] === "string",
-  );
-  const raw = main ? String(a[main]) : JSON.stringify(a);
-  const line = raw.replace(/\s+/g, " ").trim();
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
 export async function auditCommand({ args, dataDir, io }: CliContext): Promise<number> {
@@ -92,7 +82,7 @@ export async function auditCommand({ args, dataDir, io }: CliContext): Promise<n
     );
     for (const r of rows) {
       io.out(
-        `${time(r.createdAt)}  ${pad((r.sessionId ?? "").slice(-8), 8)}  ${pad(r.tool, 10)}  ${pad(r.verdict, 7)}  ${pad(r.source, 6)}  ${pad(latency(r.latencyMs), 6)}  ${callSummary(r)}`,
+        `${time(r.createdAt)}  ${pad((r.sessionId ?? "").slice(-8), 8)}  ${pad(r.tool, 10)}  ${pad(r.verdict, 7)}  ${pad(r.source, 6)}  ${pad(latency(r.latencyMs), 6)}  ${callText(r.args)}`,
       );
       const why = [r.reason, r.rule ? `(${r.rule})` : ""].filter(Boolean).join(" ");
       if (why) io.out(`${" ".repeat(19 + 2 + 8 + 2)}  ↳ ${why}`);
