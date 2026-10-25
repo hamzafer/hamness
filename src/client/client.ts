@@ -67,6 +67,17 @@ export interface SessionCommands {
   compat(sessionId: string): Promise<SessionCompat>;
 }
 
+/** A request the daemon refused: its reason as the message, and the HTTP status. */
+export class DaemonError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "DaemonError";
+  }
+}
+
 const MAIN = join(import.meta.dir, "..", "cli", "main.ts");
 
 /**
@@ -138,7 +149,9 @@ export function httpClient(url: string, token: string): DaemonClient & SessionCo
   }
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const { res, parsed } = await send(method, path, body);
-    if (!res.ok) throw new Error(parsed.error ?? `${method} ${path}: HTTP ${res.status}`);
+    if (!res.ok) {
+      throw new DaemonError(parsed.error ?? `${method} ${path}: HTTP ${res.status}`, res.status);
+    }
     return parsed as T;
   }
   const s = (id: string, action: string) => `/v1/sessions/${encodeURIComponent(id)}/${action}`;
@@ -202,7 +215,8 @@ export function httpClient(url: string, token: string): DaemonClient & SessionCo
     lastReply: async (id) => {
       const { res, parsed } = await send("GET", s(id, "last-reply"));
       if (res.status === 404 && parsed.error === "no reply yet") return undefined;
-      if (!res.ok) throw new Error(parsed.error ?? `last-reply: HTTP ${res.status}`);
+      if (!res.ok)
+        throw new DaemonError(parsed.error ?? `last-reply: HTTP ${res.status}`, res.status);
       return (parsed as { text: string }).text;
     },
     mode: (id) => call("GET", s(id, "mode")),

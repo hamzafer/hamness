@@ -6,7 +6,7 @@ import { tempHome } from "../../test/support/temp-home.ts";
 import { type RunningDaemon, startDaemon } from "../daemon/daemon.ts";
 import { getStatus } from "../daemon/status.ts";
 import type { HamnessEvent } from "../events/types.ts";
-import { connectToDaemon, ensureDaemon } from "./client.ts";
+import { connectToDaemon, DaemonError, ensureDaemon } from "./client.ts";
 
 let home: ReturnType<typeof tempHome>;
 const cleanups: Array<() => unknown> = [];
@@ -138,5 +138,8 @@ describe("daemon client", () => {
   test("a failed request rejects with the daemon's error", async () => {
     const client = await connectToDaemon(join(home.dir, "data"));
     await expect(client.attach("relative")).rejects.toThrow(/absolute/);
+    const err = await client.attach("relative").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DaemonError);
+    expect((err as DaemonError).status).toBe(400);
   });
 });
