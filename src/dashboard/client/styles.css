@@ -550,6 +550,25 @@ td.goal {
 td.reason {
   min-width: 200px;
 }
+td.call {
+  min-width: 180px;
+  max-width: 420px;
+}
+td.call code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.callbtn {
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+.callbtn:hover code {
+  text-decoration: underline;
+}
 .rowbtn {
   background: none;
   border: 0;

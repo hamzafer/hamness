@@ -43,7 +43,14 @@ beforeEach(async () => {
   const c = seed.session({ source: "claude-code", at: now - 3 * DAY });
   const cc = seed.task({ sessionId: c, at: now - 3 * DAY, outcome: "abandoned" });
   seed.modelCall({ sessionId: c, at: now - 3 * DAY, model: "m", costMicros: 500_000 });
-  seed.decision({ sessionId: h, at: now - HOUR, verdict: "deny", source: "rule", reason: "no" });
+  seed.decision({
+    sessionId: h,
+    at: now - HOUR,
+    verdict: "deny",
+    source: "rule",
+    reason: "no",
+    args: { command: `rm -rf build  &&\n  echo ${"x".repeat(80)}` },
+  });
   seed.decision({ sessionId: c, at: now - 3 * DAY, verdict: "allow", source: "hook" });
   ids = { verified, unverified, old, cc };
 });
@@ -151,6 +158,14 @@ describe("GET /v1/decisions", () => {
     expect(allow.rows.map((r) => r.decidedBy)).toEqual(["hook"]);
     const hook = await getJson<Page<DecisionListRow>>("/v1/decisions?range=7d&decidedBy=rule");
     expect(hook.rows.map((r) => r.verdict)).toEqual(["deny"]);
+  });
+
+  test("each row carries the call, short as `hamness audit` prints it and in full", async () => {
+    const [deny, allow] = (await getJson<Page<DecisionListRow>>("/v1/decisions?range=7d")).rows;
+    const full = `rm -rf build && echo ${"x".repeat(80)}`;
+    expect(deny?.callFull).toBe(full);
+    expect(deny?.call).toBe(`${full.slice(0, 59)}…`);
+    expect(allow?.call).toBe("{}");
   });
 
   test("bad parameters are 400", async () => {

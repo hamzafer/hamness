@@ -182,6 +182,16 @@ suite("dashboard in a browser", () => {
       const text = (await page.locator("main table").textContent()) ?? "";
       expect(text).toMatch(/allow|ask|deny/);
       expect(text).toContain("read-only command in the project");
+      // The call, short as `hamness audit` prints it, with the full text in its title.
+      const call = page.locator("main table tbody td.call code").first();
+      expect((await call.textContent())?.length).toBeGreaterThan(0);
+      const long = page
+        .locator("main table tbody td.call code", { hasText: "rm -rf dist" })
+        .first();
+      expect(await long.textContent()).toEndWith("…");
+      expect(await long.getAttribute("title")).toContain("--target=bun");
+      await long.click();
+      expect(await long.textContent()).toEndWith("--target=bun");
       await page.screenshot({ path: join(shots, "decisions-dark.png"), fullPage: true });
       await page.close();
     },

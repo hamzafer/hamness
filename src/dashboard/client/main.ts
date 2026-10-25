@@ -600,6 +600,32 @@ async function tasksView(): Promise<Node[]> {
 
 const VERDICT_KIND = { allow: "good", ask: "warning", deny: "critical" } as const;
 
+/**
+ * The call as `hamness audit` prints it (redacted, cut short), the full text in its title.
+ * A cut call opens to its full text on click.
+ */
+function callCell(d: DecisionListRow): HTMLElement {
+  const code = h("code", { title: d.callFull }, d.call);
+  if (d.call === d.callFull) return h("td", { class: "call" }, code);
+  const toggle = h(
+    "button",
+    {
+      type: "button",
+      class: "callbtn",
+      "aria-expanded": "false",
+      "aria-label": "Show the full call",
+    },
+    code,
+  );
+  toggle.addEventListener("click", () => {
+    const open = toggle.getAttribute("aria-expanded") !== "true";
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.setAttribute("aria-label", open ? "Show the short call" : "Show the full call");
+    code.textContent = open ? d.callFull : d.call;
+  });
+  return h("td", { class: "call" }, toggle);
+}
+
 async function decisionsView(): Promise<Node[]> {
   const filters = h(
     "div",
@@ -634,6 +660,7 @@ async function decisionsView(): Promise<Node[]> {
           {},
           h("td", {}, when(d.createdAt)),
           h("td", {}, h("code", {}, d.tool)),
+          callCell(d),
           h("td", {}, pill(VERDICT_KIND[d.verdict], d.verdict)),
           h("td", {}, d.decidedBy),
           h("td", { class: "hide-sm" }, d.sessionSource ? SOURCE_LABEL[d.sessionSource] : "none"),
@@ -666,6 +693,7 @@ async function decisionsView(): Promise<Node[]> {
               {},
               h("th", { scope: "col" }, "Time"),
               h("th", { scope: "col" }, "Tool"),
+              h("th", { scope: "col" }, "Call"),
               h("th", { scope: "col" }, "Verdict"),
               h("th", { scope: "col" }, "Decided by"),
               h("th", { scope: "col", class: "hide-sm" }, "Source"),
