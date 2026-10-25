@@ -107,3 +107,47 @@ describe("agent runner", () => {
     expect(end?.error).toBeTruthy();
   });
 });
+
+describe("the model line in the system prompt", () => {
+  /** Every system message Pi sent on call `i` (the prompt and its later patches), as JSON. */
+  const systemText = (i: number) =>
+    JSON.stringify(
+      (fake.contexts[i]?.messages as Array<{ role: string }> | undefined)?.filter(
+        (m) => m.role === "system",
+      ) ?? [],
+    );
+
+  test("names the model, its display name and how it is billed", async () => {
+    runner = await startAgentRunner({
+      cwd: home.dir,
+      agentDir: join(home.dir, "pi"),
+      models: { ...fake, billing: () => ({ kind: "plan" as const }) },
+      onEvent: (e) => events.push(e),
+      contextFiles: false,
+    });
+    fake.script([{ text: "ok" }]);
+    await runner.prompt("which model are you?");
+    const sp = systemText(0);
+    expect(sp).toContain("## Model (hamness)");
+    expect(sp).toContain("fake/claude-opus-5-5");
+    expect(sp).toContain(fake.model.name);
+    expect(sp).toContain("ChatGPT plan");
+  });
+
+  test("follows a model switch on the next turn", async () => {
+    fake = await fakeModel(home.dir, "claude-opus-5-5", { otherModels: ["claude-haiku-5-5"] });
+    const r = await start();
+    fake.script([{ text: "one" }, { text: "two" }]);
+    await r.prompt("first");
+    expect(systemText(0)).toContain("fake/claude-opus-5-5");
+    const next = fake.runtime.getModel("fake", "claude-haiku-5-5");
+    if (!next) throw new Error("no second model");
+    await r.setModel(next);
+    await r.prompt("second");
+    const later = systemText(1);
+    // The newest model line is the switched one.
+    expect(later.lastIndexOf("fake/claude-haiku-5-5")).toBeGreaterThan(
+      later.lastIndexOf("fake/claude-opus-5-5"),
+    );
+  });
+});

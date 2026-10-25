@@ -17,6 +17,7 @@ import {
 } from "../compat/index.ts";
 import type { CompactionReason, ContextFill, ThinkingLevel } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
+import { type Billing, billingLabel } from "./billing.ts";
 import type { ModelChoice } from "./models.ts";
 
 /**
@@ -275,11 +276,30 @@ function piUsage(u: AssistantMessage["usage"] | undefined): TokenUsage | undefin
   return { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite };
 }
 
+/**
+ * The system prompt's model line: what the agent runs on and how it is paid for, so it never
+ * has to look in the environment. Rebuilt on every prompt, so it follows a model switch.
+ */
+export function modelPrompt(model: Model<Api>, billing: Billing | undefined): string {
+  const name =
+    model.name && model.name !== model.id
+      ? `${model.name} (${model.provider}/${model.id})`
+      : `${model.provider}/${model.id}`;
+  const paid = billing ? ` Billing: ${billingLabel(billing, true)}.` : "";
+  return `## Model (hamness)\nYou are running on ${name}.${paid} When asked which model you are, answer from this line; don't inspect the environment for it. hamness updates this line when the model changes.`;
+}
+
 export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner> {
   const guard = opts.guard ?? allowAllTools;
   const emit = opts.onEvent;
+  let model = opts.models.model;
 
   const safety: ExtensionFactory = (pi) => {
+    // Each prompt carries the current model line; Pi sends the changed section as a patch.
+    pi.on("before_agent_start", async (event) => {
+      event.systemPromptOptions.appendSystemPrompt = promptAppend().join("\n\n");
+      return undefined;
+    });
     pi.on("tool_call", async (event) => {
       const verdict = await guard({
         toolCallId: event.toolCallId,
@@ -306,10 +326,12 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
   };
 
   const compat = opts.compat;
-  const appendSystemPrompt = [
+  const promptAppend = () => [
     ...(opts.systemPromptAppend ?? []),
     ...(compat ? compatPrompt(compat) : []),
+    modelPrompt(model, opts.models.billing?.(model.provider)),
   ];
+  const appendSystemPrompt = promptAppend();
   let sessionId: string | undefined;
   const mcpTools = new McpToolCounts();
   const compatFactories = compat
@@ -375,7 +397,6 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
   };
 
   let busy = false;
-  let model = opts.models.model;
   let seq = 0;
   let currentKey: string | undefined;
   const unsubscribe = session.subscribe((ev) => translate(ev));
