@@ -39,6 +39,7 @@ import {
   type ApprovalRequest,
   allowAll,
   redactArgs,
+  redactSecrets,
   redactText,
   type SafetyCheck,
 } from "../safety/index.ts";
@@ -50,6 +51,7 @@ import { PROOF_GATE_PROMPT, taskTools } from "../tasks/tools.ts";
 import type { TaskAction, TaskView } from "../tasks/types.ts";
 import { explainModelError } from "./errors.ts";
 import { listModels, type ModelChoice, type ModelInfo, parseModelSpec } from "./models.ts";
+import { ReplyRedactor } from "./reply-redact.ts";
 import {
   type AgentRunner,
   type BranchFrom,
@@ -137,7 +139,8 @@ interface AgentState {
   runner: AgentRunner;
   busy: boolean;
   /** Assistant message rows by the runner's key, with their text so far. */
-  replies: Map<string, { rowId: string; text: string; done: boolean }>;
+  /** `redact` sends the reply's deltas with secrets out (`ReplyRedactor`); `text` is raw. */
+  replies: Map<string, { rowId: string; text: string; done: boolean; redact: ReplyRedactor }>;
   /** The latest assistant message row; tool calls after it belong to it. */
   currentReplyRow: string | undefined;
   /** `tool_calls` row ids by Pi's tool call id. */
@@ -818,7 +821,8 @@ export class SessionHub {
 
   /** `/copy`: the last assistant message's text. Undefined before the first reply. */
   lastReply(sessionId: string): string | undefined {
-    return this.live(sessionId).runner.lastAssistantText();
+    const text = this.live(sessionId).runner.lastAssistantText();
+    return text === undefined ? undefined : redactSecrets(text);
   }
 
   mode(sessionId: string): { mode: SafetyMode; source: "session" | "config" } {
@@ -1327,7 +1331,9 @@ export class SessionHub {
     const items = this.store.transcript(live.id, live.agentId).map((item): TranscriptItem => {
       if (item.kind !== "message") return item;
       const partial = streaming.get(item.id);
-      return partial === undefined ? item : { ...item, text: redactText(partial), streaming: true };
+      return partial === undefined
+        ? item
+        : { ...item, text: redactSecrets(partial), streaming: true };
     });
     const context = live.runner.contextUsage();
     const task = live.tasks.view();
@@ -1486,7 +1492,7 @@ export class SessionHub {
     switch (e.type) {
       case "assistant.start": {
         const rowId = this.store.addMessage(this.ids(live, agent), "assistant", null);
-        agent.replies.set(e.key, { rowId, text: "", done: false });
+        agent.replies.set(e.key, { rowId, text: "", done: false, redact: new ReplyRedactor() });
         agent.currentReplyRow = rowId;
         emit({ type: "agent.message.start", messageId: rowId, role: "assistant" });
         return;
@@ -1495,7 +1501,9 @@ export class SessionHub {
         const reply = agent.replies.get(e.key);
         if (!reply) return;
         reply.text += e.text;
-        emit({ type: "agent.message.delta", messageId: reply.rowId, text: e.text });
+        // Redacted as it streams, a short tail held back so a split secret is still caught.
+        const safe = reply.redact.push(e.text);
+        if (safe) emit({ type: "agent.message.delta", messageId: reply.rowId, text: safe });
         return;
       }
       case "assistant.end": {
@@ -1514,7 +1522,10 @@ export class SessionHub {
         else delete agent.lastError;
         if (agent === live) live.lastReply = e.text;
         // Stored and sent redacted alike: a reopened session shows what the live one ended on.
-        const shown = redactText(e.text);
+        // Only unmistakable secrets: a reply that explains `API_KEY=…` reads as written.
+        const shown = redactSecrets(e.text);
+        const tail = reply.redact.flush();
+        if (tail) emit({ type: "agent.message.delta", messageId: reply.rowId, text: tail });
         this.store.setMessageContent(reply.rowId, shown);
         const priced = costMicros(e.model, e.usage);
         const cost = priced ?? Math.round(e.piCostUsd * 1_000_000);
