@@ -18,6 +18,16 @@ export interface Activity {
   checking: boolean;
 }
 
+/** What the user reads beside an orb: their words for what is going on, not state names. */
+export const ORB_LABEL: Record<OrbState, string> = {
+  solving: "Thinking",
+  searching: "Searching the code",
+  shaping: "Editing files",
+  working: "Running commands",
+  composing: "Writing the reply",
+  listening: "Waiting for you",
+};
+
 const SEARCH_TOOLS = new Set(["read", "grep", "find", "glob", "ls"]);
 const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "multi_edit", "notebookedit"]);
 
