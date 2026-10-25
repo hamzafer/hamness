@@ -18,6 +18,20 @@ export interface Ticking {
   readonly connected: boolean;
 }
 
+/**
+ * What an IntersectionObserver entry means for an orb. A canvas that has left the page is
+ * dropped and unobserved whether or not it reached the clock, so nothing keeps it alive.
+ */
+export function onScreenChange(e: {
+  intersecting: boolean;
+  connected: boolean;
+  inClock: boolean;
+}): "drop" | "add" | "show" | "hide" {
+  if (!e.connected) return "drop";
+  if (e.intersecting) return e.inClock ? "show" : "add";
+  return "hide";
+}
+
 export class OrbClock {
   private orbs = new Map<Ticking, { visible: boolean }>();
   private id: number | undefined;

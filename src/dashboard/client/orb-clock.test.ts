@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type ClockEnv, OrbClock } from "./orb-clock.ts";
+import { type ClockEnv, OrbClock, onScreenChange } from "./orb-clock.ts";
 
 function env(over: Partial<ClockEnv> = {}) {
   let pending: ((t: number) => void) | undefined;
@@ -95,5 +95,15 @@ describe("orb clock", () => {
     expect(a.draws).toEqual([]);
     expect(clock.size).toBe(0);
     expect(e.scheduled()).toBe(false);
+  });
+});
+
+describe("what an on-screen change does to an orb", () => {
+  test("a canvas that left the page is dropped and unobserved, in the clock or not", () => {
+    expect(onScreenChange({ intersecting: false, connected: false, inClock: true })).toBe("drop");
+    expect(onScreenChange({ intersecting: false, connected: false, inClock: false })).toBe("drop");
+    expect(onScreenChange({ intersecting: true, connected: true, inClock: false })).toBe("add");
+    expect(onScreenChange({ intersecting: true, connected: true, inClock: true })).toBe("show");
+    expect(onScreenChange({ intersecting: false, connected: true, inClock: true })).toBe("hide");
   });
 });

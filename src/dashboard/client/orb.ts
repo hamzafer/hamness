@@ -4,7 +4,7 @@
  */
 import { type OrbSize, type OrbState, orbFrame, staticOrbFrame } from "../../orbs/index.ts";
 import { h } from "./dom.ts";
-import { OrbClock } from "./orb-clock.ts";
+import { OrbClock, onScreenChange } from "./orb-clock.ts";
 import { backing, type Ink, paintOrb, parseColor } from "./orb-paint.ts";
 
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
@@ -43,13 +43,17 @@ const onScreen =
         for (const e of entries) {
           const orb = seen.get(e.target);
           if (!orb) continue;
-          if (e.isIntersecting) {
-            if (clock.has(orb)) clock.setVisible(orb, true);
-            else clock.add(orb);
-          } else if (!e.target.isConnected && clock.has(orb)) {
+          const change = onScreenChange({
+            intersecting: e.isIntersecting,
+            connected: e.target.isConnected,
+            inClock: clock.has(orb),
+          });
+          if (change === "drop") {
             clock.remove(orb);
+            seen.delete(e.target);
             onScreen?.unobserve(e.target);
-          } else clock.setVisible(orb, false);
+          } else if (change === "add") clock.add(orb);
+          else clock.setVisible(orb, change === "show");
         }
       })
     : undefined;
