@@ -270,12 +270,86 @@ describe("approval prompt (headless)", () => {
     });
     const frame = s.captureCharFrame();
     expect(frame).toContain("YOLO");
-    expect(frame).toContain("Type /mode auto to leave.");
+    // No warning came with the snapshot: the same words the daemon sends.
+    expect(frame).toContain("Deny rules still block");
+    expect(frame).toContain("/mode auto");
+    expect(frame).not.toContain("Every tool call runs without a check");
     expect(frame).not.toContain("/mode ask");
     expect(frame).toContain("judge paused");
     await setup?.dispose();
     setup = undefined;
     const calm = await render(fakeClient().client, snapshotWith({}, "auto"));
     expect(calm.captureCharFrame()).not.toContain("YOLO");
+  });
+  test("the yolo banner shows the daemon's warning when the mode event carries one", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client, snapshotWith({}, "auto"));
+    fake.send({
+      type: "safety.mode",
+      mode: "yolo",
+      warning: "yolo mode: synthetic warning; deny rules still apply. Switch back with /mode auto.",
+    });
+    const frame = await s.waitForFrame((f) => f.includes("YOLO MODE"));
+    expect(frame).toContain("Synthetic warning; deny rules still apply.");
+    expect(frame).not.toContain("Every tool call runs without a check");
+  });
+
+  test("at 80x24 a 14-path command scrolls with the arrows; y/a/n still answer", async () => {
+    const fake = fakeClient();
+    setup = await testRender(
+      () => <App client={fake.client} snapshot={snapshotWith()} approvalArmMs={0} />,
+      { width: 80, height: 24 },
+    );
+    await setup.renderOnce();
+    const paths = Array.from({ length: 14 }, (_, i) => `./generated-build-output-dir-${i + 1}`);
+    const command = `rm -rf ${paths.join(" ")}`;
+    fake.send({
+      type: "safety.approval.request",
+      approval: pending({
+        args: { command },
+        reason: `asked by default rule bash "rm -*r*" for \`${command}\``,
+      }),
+    });
+    const first = await setup.waitForFrame((f) => f.includes("[n] deny"));
+    const more = /\(\+(\d+) more lines?, ↑↓ to scroll\)/.exec(first);
+    expect(more).not.toBeNull();
+    // The reason names the rule, not the whole command again.
+    expect(first).toContain('asked by default rule bash "rm -*r*"');
+    expect(first.match(/generated-build-output-dir-1\b/g)?.length ?? 0).toBe(1);
+    expect(first).not.toContain("dir-14");
+    // Down to the end: every path was on screen at some point, the last one included.
+    const seen = new Set<string>();
+    const note = (f: string) => {
+      const lines = f.split("\n");
+      const title = lines.findIndex((l) => l.includes("approve this tool call"));
+      const rows: string[] = [];
+      for (const l of lines.slice(title + 1)) {
+        const inner = l.split("│")[1]?.trim() ?? "";
+        if (inner.startsWith("(") || inner.startsWith("asked by") || inner.startsWith("[y]")) break;
+        rows.push(inner);
+      }
+      const flat = `${rows.join("").replace(/\s/g, "")}|`;
+      for (const p of paths) if (flat.includes(`${p}.`) || flat.includes(`${p}|`)) seen.add(p);
+    };
+    note(first);
+    for (let i = 0; i < 30; i++) {
+      setup.mockInput.pressArrow("down");
+      await setup.renderOnce();
+      note(setup.captureCharFrame());
+    }
+    const bottom = setup.captureCharFrame();
+    note(bottom);
+    expect(bottom).toContain("dir-14");
+    expect(bottom).not.toContain("more line");
+    expect([...seen].sort()).toEqual([...paths].sort());
+    // Back to the top: PgUp, then the arrows.
+    setup.mockInput.pressKey("\x1b[5~");
+    for (let i = 0; i < 30; i++) setup.mockInput.pressArrow("up");
+    const top = await setup.waitForFrame((f) => f.includes("bash rm -rf"));
+    expect(top).toContain("bash rm -rf");
+    expect(fake.answers).toEqual([]);
+    setup.mockInput.pressKey("n");
+    await setup.waitFor(() => fake.answers.length === 1);
+    expect(fake.answers).toEqual([["ap-1", "deny"]]);
   });
 });

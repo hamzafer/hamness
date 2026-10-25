@@ -481,7 +481,7 @@ export function App(props: AppProps) {
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0}>
       <Show when={state.session.mode === "yolo"}>
-        <YoloBanner />
+        <YoloBanner warning={state.yoloWarning} />
       </Show>
       <box flexDirection="row" flexGrow={1} minHeight={0}>
         <box

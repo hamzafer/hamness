@@ -36,6 +36,8 @@ export interface ChatState {
   approvals: PendingApproval[];
   /** True while Pi compacts the context (`/compact`, or on its own). */
   compacting?: boolean;
+  /** The daemon's words for the yolo banner (`safety.mode`'s `warning`), once one came. */
+  yoloWarning?: string;
 }
 
 export function initialState(snapshot: SessionSnapshot): ChatState {
@@ -156,6 +158,7 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       return;
     case "safety.mode":
       state.session.mode = e.mode;
+      if (e.warning) state.yoloWarning = e.warning;
       return;
     case "agent.compaction.start":
       state.compacting = true;

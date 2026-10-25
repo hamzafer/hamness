@@ -152,7 +152,7 @@ const JUDGE_NOT_ON: Record<Exclude<JudgeState, "on">, string> = {
 const MODES: ReadonlyArray<readonly [SafetyMode, string]> = [
   ["ask", "Rules decide, then you"],
   ["auto", "Rules, then the judge, then you"],
-  ["yolo", "Every tool call runs without a check"],
+  ["yolo", "No questions; deny rules still apply"],
 ];
 
 function setMode(ctx: CommandContext, mode: SafetyMode) {
