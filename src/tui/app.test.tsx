@@ -416,13 +416,28 @@ describe("TUI chat layout (headless)", () => {
     };
     const s = await render(fake.client, auto);
     expect(s.captureCharFrame()).toContain("judge on");
-    fake.send({ type: "safety.judge", state: "paused", reason: "asked 3 times" });
+    fake.send({
+      type: "safety.judge",
+      state: "paused",
+      reason: "the judge asked 3 times in a row, so it is paused for this session (/judge resume)",
+    });
     await s.waitForFrame((f) => f.includes("judge paused"));
+    await s.waitForFrame((f) =>
+      f.includes("The judge paused after 3 asks; /judge resume turns it back on"),
+    );
     await s.mockInput.typeText("/judge resume");
     s.mockInput.pressEnter();
     await s.waitForFrame((f) => f.includes("judge on"));
+    await s.waitForFrame((f) => f.includes("The judge is back on."));
     expect(fake.resumed).toEqual([SID]);
     expect(fake.prompts).toEqual([]);
+    // Its own event comes after: no second line.
+    fake.send({ type: "safety.judge", state: "on", reason: "the judge is on" });
+    // Resuming a judge that is on says so.
+    await s.mockInput.typeText("/judge resume");
+    s.mockInput.pressEnter();
+    const frame = await s.waitForFrame((f) => f.includes("The judge is already on."));
+    expect(frame.match(/The judge is back on\./g)?.length).toBe(1);
     fake.send({ type: "safety.judge", state: "over-budget", reason: "judge budget reached" });
     await s.waitForFrame((f) => f.includes("judge over budget"));
     fake.send({ type: "safety.judge", state: "no-key", reason: "no key" });

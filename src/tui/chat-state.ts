@@ -135,9 +135,16 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
     case "agent.model":
       state.session.model = e.model;
       return;
-    case "safety.judge":
+    case "safety.judge": {
+      const was = state.session.judge;
       state.session.judge = e.state;
+      if (e.state === "paused" && was !== "paused") {
+        addSystemLine(state, judgePausedLine(e.reason), "warn");
+      } else if (e.state === "on" && was === "paused") {
+        addSystemLine(state, JUDGE_BACK_ON, "muted");
+      }
       return;
+    }
     case "agent.thinking":
       state.session.thinkingLevel = e.level;
       return;
@@ -187,6 +194,14 @@ export function addCompactionFailure(state: ChatState, raw: string): void {
   const recent = state.items.slice(-3);
   if (recent.some((i) => i.kind === "system" && i.text === text)) return;
   addSystemLine(state, text, "error");
+}
+
+export const JUDGE_BACK_ON = "The judge is back on.";
+
+/** The chat's line when the judge backs off; the daemon's reason says after how many asks. */
+export function judgePausedLine(reason: string): string {
+  const n = /asked (\d+) times/.exec(reason)?.[1];
+  return `The judge paused${n ? ` after ${n} asks` : ""}; /judge resume turns it back on`;
 }
 
 /** `Compacted: 142k → 18k tokens`, said differently when Pi did it on its own. */

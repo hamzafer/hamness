@@ -1,7 +1,13 @@
 import type { SessionStatus } from "../agent/session-hub.ts";
 import { type DaemonClient, DaemonError, type SessionCommands } from "../client/client.ts";
-import type { SafetyMode, SessionInfo, SessionSnapshot, ThinkingLevel } from "../events/types.ts";
-import type { SystemLine } from "./chat-state.ts";
+import type {
+  JudgeState,
+  SafetyMode,
+  SessionInfo,
+  SessionSnapshot,
+  ThinkingLevel,
+} from "../events/types.ts";
+import { JUDGE_BACK_ON, type SystemLine } from "./chat-state.ts";
 import { shortPath } from "./layout.ts";
 import type { PickerSpec } from "./picker.tsx";
 import { formatCost } from "./rail-state.ts";
@@ -126,6 +132,13 @@ function exportExistsLine(
   const name = path ?? target.split("/").at(-1) ?? target;
   return `${name} exists. Use /export ${format} ${target} --force to replace it.`;
 }
+
+/** `/judge resume` when the judge is off for another reason than a pause. */
+const JUDGE_NOT_PAUSED: Record<Exclude<JudgeState, "on">, string> = {
+  paused: "it is still paused",
+  "over-budget": "it is over today's budget",
+  "no-key": "it is off without an Anthropic API key",
+};
 
 const MODES: ReadonlyArray<readonly [SafetyMode, string]> = [
   ["ask", "Rules decide, then you"],
@@ -401,9 +414,16 @@ export const COMMANDS: readonly SlashCommand[] = [
     description: "Turn a paused judge back on",
     run: (ctx, arg) => {
       if (arg !== "resume") return ctx.say("Usage: /judge resume", "warn");
+      const before = ctx.session().judge;
       ctx.client
         .resumeJudge(ctx.session().id)
-        .then((judge) => ctx.patchSession({ judge }))
+        .then((judge) => {
+          // The judge's own event (`safety.judge`) says "back on" when it gets here first.
+          if (judge === "on" && ctx.session().judge === "paused") ctx.say(JUDGE_BACK_ON);
+          else if (judge === "on" && before !== "paused") ctx.say("The judge is already on.");
+          else if (judge !== "on") ctx.say(`The judge isn't paused: ${JUDGE_NOT_PAUSED[judge]}.`);
+          ctx.patchSession({ judge });
+        })
         .catch(fail(ctx));
     },
   },
