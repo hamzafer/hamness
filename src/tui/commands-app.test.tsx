@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { testRender } from "@opentui/solid";
 import type { SessionListItem, SessionStatus } from "../agent/session-hub.ts";
-import type { DaemonClient, SessionCommands } from "../client/client.ts";
+import { type DaemonClient, DaemonError, type SessionCommands } from "../client/client.ts";
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import type { TaskView } from "../tasks/types.ts";
 import { App } from "./app.tsx";
@@ -549,12 +549,31 @@ describe("session commands", () => {
 
   test("a daemon error shows inline", async () => {
     const fake = fakeClient();
-    fake.client.setMode = async () => {
-      throw new Error("the session is being replaced; try again");
+    fake.client.exportSession = async () => {
+      throw new DaemonError("/work/demo/s.html exists; send overwrite: true to replace it", 409);
     };
     const s = await render(fake);
-    await run(s, "/mode auto");
-    await frameWhere(s, (f) => f.includes("the session is being replaced; try again"));
+    await run(s, "/export s.html");
+    await frameWhere(s, (f) => f.includes("s.html exists"));
+  });
+
+  test("a setting refused while the session switches or compacts (409) says to try again", async () => {
+    const fake = fakeClient();
+    const busy = async (): Promise<never> => {
+      throw new DaemonError("the session is already running a prompt", 409);
+    };
+    fake.client.setMode = busy;
+    fake.client.setThinking = busy;
+    fake.client.rename = busy;
+    const s = await render(fake);
+    for (const line of ["/mode auto", "/thinking high", "/name x"]) await run(s, line);
+    const frame = await frameWhere(
+      s,
+      (f) => (f.match(/Busy with a reply, compaction or switch/g) ?? []).length === 3,
+    );
+    expect((frame.match(/Busy with a reply, compaction or switch/g) ?? []).length).toBe(3);
+    expect(frame).toContain("Try again in a moment.");
+    expect(frame).not.toContain("already running a prompt");
   });
 });
 

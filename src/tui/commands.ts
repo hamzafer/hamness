@@ -1,5 +1,5 @@
 import type { SessionStatus } from "../agent/session-hub.ts";
-import type { DaemonClient, SessionCommands } from "../client/client.ts";
+import { type DaemonClient, DaemonError, type SessionCommands } from "../client/client.ts";
 import type { SafetyMode, SessionInfo, SessionSnapshot, ThinkingLevel } from "../events/types.ts";
 import type { SystemLine } from "./chat-state.ts";
 import { shortPath } from "./layout.ts";
@@ -55,8 +55,21 @@ export interface SlashCommand {
   run(ctx: CommandContext, arg: string): void | Promise<void>;
 }
 
-const fail = (ctx: CommandContext) => (err: unknown) =>
-  ctx.say(err instanceof Error ? err.message : String(err), "error");
+/**
+ * The daemon's 409 for a session busy with a reply, a compaction or a switch (`/mode`,
+ * `/thinking` and `/name` meanwhile, ADR 0021). Its own message talks about prompts only.
+ */
+export const BUSY_LINE = "Busy with a reply, compaction or switch. Try again in a moment.";
+
+/** The chat line for a failed command call. */
+export function errorLine(err: unknown): [string, Tone] {
+  if (err instanceof DaemonError && err.status === 409 && /already running/.test(err.message)) {
+    return [BUSY_LINE, "warn"];
+  }
+  return [err instanceof Error ? err.message : String(err), "error"];
+}
+
+const fail = (ctx: CommandContext) => (err: unknown) => ctx.say(...errorLine(err));
 
 /** A prompt or a session label on one line, cut to `max` columns. */
 export function oneLine(text: string, max = 60): string {

@@ -29,6 +29,7 @@ import { CommandMenu } from "./command-menu.tsx";
 import {
   type CommandContext,
   type CommandMatch,
+  errorLine,
   matchCommands,
   menuQuery,
   needsArgs,
@@ -290,7 +291,7 @@ export function App(props: AppProps) {
         replaceSession(snap, line(snap));
         return snap;
       } catch (err) {
-        say((err as Error).message, "error");
+        say(...errorLine(err));
         return undefined;
       } finally {
         switching--;
@@ -320,7 +321,7 @@ export function App(props: AppProps) {
     if (slash) {
       Promise.resolve()
         .then(() => slash.command.run(ctx, slash.arg))
-        .catch((err: Error) => say(err.message, "error"));
+        .catch((err: unknown) => say(...errorLine(err)));
       return;
     }
     props.client
