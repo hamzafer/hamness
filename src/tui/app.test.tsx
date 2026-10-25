@@ -330,6 +330,63 @@ describe("TUI chat layout (headless)", () => {
     expect(hint).toMatch(/Ask hamness…[^│]*\)/);
   });
 
+  for (const width of [80, 60]) {
+    test(`at ${width} columns the header's parts never draw over each other`, async () => {
+      const busy = {
+        ...snapshot,
+        session: {
+          ...snapshot.session,
+          cwd: "/home/user/developer/ai/playground/scratchpad/e2e3/proj",
+          model: "openai-codex/gpt-6.1-sol",
+          billing: "plan" as const,
+          mode: "auto" as const,
+          judge: "on" as const,
+          name: "e2e-calc",
+          busy: true,
+        },
+      };
+      setup = await testRender(
+        () => (
+          <App client={fakeClient().client} snapshot={busy} home="/home/user" animate={false} />
+        ),
+        { width, height: 24 },
+      );
+      await setup.renderOnce();
+      // The chat pane's part of the header row, before the rail's border.
+      const row = (setup.captureCharFrame().split("\n")[0] ?? "").split("┌")[0] ?? "";
+      const header = row.trim();
+      expect(header.startsWith("hamness · ")).toBe(true);
+      // Whole parts joined by " · ", each one cleanly cut if at all: no letters run together.
+      const parts = header.split(" · ");
+      expect(parts[0]).toBe("hamness");
+      for (const p of parts) expect(p).toMatch(/^\S(.*\S)?$/);
+      if (width >= 80) expect(header).toContain("working…");
+      // The model, at least by its name, always shows.
+      expect(header).toContain("gpt-6.1-sol");
+      expect(row.length).toBeLessThanOrEqual(width);
+    });
+  }
+
+  test("the echo of a prompt goes through the same live redaction as replies", async () => {
+    const fake = fakeClient();
+    setup = await testRender(() => <App client={fake.client} snapshot={snapshot} />, {
+      width: 100,
+      height: 24,
+    });
+    await setup.renderOnce();
+    const key = `sk-proj-${"AbCdEf1234567890".repeat(3)}`;
+    fake.send({ type: "agent.message.start", messageId: "u9", role: "user" });
+    fake.send({
+      type: "agent.message.end",
+      messageId: "u9",
+      role: "user",
+      text: `use const key = "${key}"; please`,
+    });
+    const frame = await setup.waitForFrame((f) => f.includes("please"));
+    expect(frame).toContain("‹redacted›");
+    expect(frame).not.toContain(key);
+  });
+
   test("assistant replies render as Markdown, also while streaming; prompts stay plain", async () => {
     const fake = fakeClient();
     const md = {
@@ -533,7 +590,7 @@ describe("TUI chat layout (headless)", () => {
     const s = await render(fake.client);
     await s.mockInput.typeText("/abandon wrong approach");
     s.mockInput.pressEnter();
-    await s.waitFor(() => s.captureCharFrame().includes("Task dropped: wrong approach"));
+    await s.waitFor(() => s.captureCharFrame().includes("Task abandoned: wrong approach"));
   });
 
   test("stopping a run with Esc shows a quiet Stopped. line, not an error", async () => {

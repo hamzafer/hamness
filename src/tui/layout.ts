@@ -56,6 +56,84 @@ export function wrappedRows(text: string, width: number): number {
   return Math.max(1, rows);
 }
 
+/** What the chat's header row says, before it is fit to the pane. */
+export interface HeaderInput {
+  name?: string | undefined;
+  cwd: string;
+  home: string;
+  /** `provider/id`. */
+  model: string;
+  /** `plan`, `API`, ...: shown after the model. */
+  billing?: string | undefined;
+  judge?: { text: string; warn: boolean } | undefined;
+  busy: boolean;
+}
+
+/** One part of the header row, with the separator before it included. */
+export interface HeaderPart {
+  text: string;
+  tone: "muted" | "name" | "warn";
+}
+
+const HEADER_SEP = " · ";
+/** Shorter than this, the folder isn't worth showing. */
+const HEADER_PATH_MIN = 8;
+/** A long session name is cut to this before the model gives anything up. */
+const HEADER_NAME_SHORT = 16;
+
+const cut = (text: string, max: number) =>
+  text.length <= max ? text : max <= 1 ? "…" : `${text.slice(0, max - 1)}…`;
+
+/**
+ * The header row (`hamness · name · folder · model · plan · judge on · working…`) fit to
+ * `width` columns, each part whole or cleanly cut, so none ever draws over another. Short of
+ * room the parts give way in order: the folder shrinks then goes, then the judge, the name is
+ * cut, the billing word goes, then the model's provider, then the name, then `working…` (the
+ * rail shows the run too); last the model is cut. `hamness` always stays.
+ */
+export function headerParts(h: HeaderInput, width: number): HeaderPart[] {
+  const bare = h.model.includes("/") ? h.model.slice(h.model.indexOf("/") + 1) : h.model;
+  type Shape = { name?: string; path: boolean; judge: boolean; model: string; busy?: false };
+  const full = h.billing ? `${h.model}${HEADER_SEP}${h.billing}` : h.model;
+  const name = h.name;
+  const short = name ? cut(name, HEADER_NAME_SHORT) : undefined;
+  const shapes: Shape[] = [
+    { ...(name ? { name } : {}), path: true, judge: true, model: full },
+    { ...(name ? { name } : {}), path: false, judge: true, model: full },
+    { ...(name ? { name } : {}), path: false, judge: false, model: full },
+    { ...(short ? { name: short } : {}), path: false, judge: false, model: full },
+    { ...(short ? { name: short } : {}), path: false, judge: false, model: h.model },
+    { ...(short ? { name: short } : {}), path: false, judge: false, model: bare },
+    { path: false, judge: false, model: bare },
+    { path: false, judge: false, model: bare, busy: false },
+  ];
+  const build = (s: Shape, model: string, path?: string): HeaderPart[] => {
+    const parts: HeaderPart[] = [{ text: "hamness", tone: "muted" }];
+    if (s.name) parts.push({ text: `${HEADER_SEP}${s.name}`, tone: "name" });
+    if (path) parts.push({ text: `${HEADER_SEP}${path}`, tone: "muted" });
+    parts.push({ text: `${HEADER_SEP}${model}`, tone: "muted" });
+    if (s.judge && h.judge) {
+      parts.push({ text: `${HEADER_SEP}${h.judge.text}`, tone: h.judge.warn ? "warn" : "muted" });
+    }
+    if (h.busy && s.busy !== false) parts.push({ text: `${HEADER_SEP}working…`, tone: "warn" });
+    return parts;
+  };
+  const length = (parts: HeaderPart[]) => parts.reduce((n, p) => n + p.text.length, 0);
+  for (const s of shapes) {
+    const without = build(s, s.model);
+    const used = length(without);
+    if (used > width) continue;
+    if (!s.path) return without;
+    const room = width - used - HEADER_SEP.length;
+    const path = room >= HEADER_PATH_MIN ? shortPath(h.cwd, h.home, room) : "";
+    if (path && path.length <= room) return build(s, s.model, path);
+  }
+  // Even `hamness · <model>` doesn't fit: the model is cut, else `hamness` alone.
+  const room = width - `hamness${HEADER_SEP}`.length;
+  if (room >= 2) return [{ text: `hamness${HEADER_SEP}${cut(bare, room)}`, tone: "muted" }];
+  return [{ text: cut("hamness", Math.max(1, width)), tone: "muted" }];
+}
+
 const WELCOME_HINT = "Type / for commands";
 
 /**

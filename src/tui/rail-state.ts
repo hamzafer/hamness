@@ -1,4 +1,4 @@
-import type { ContextFill, HamnessEvent, SessionSnapshot } from "../events/types.ts";
+import type { Billing, ContextFill, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import { activityOrbState } from "../orbs/activity.ts";
 import type { OrbState } from "../orbs/index.ts";
 import type { EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
@@ -29,6 +29,8 @@ export interface RailAgent {
   /** Input, output, cache read and cache write tokens added up. */
   tokens: number;
   costMicros: number;
+  /** One of its model calls was billed to the ChatGPT plan. */
+  plan?: boolean;
   error?: string;
   /** The user stopped the current run (`agent.stopped`); it ends `stopped`, not `done`. */
   stopped?: boolean;
@@ -90,6 +92,8 @@ export interface RailState {
   task?: RailTask;
   /** This session's tasks seen so far, oldest first; dropped turn tasks leave. */
   tasks: RailTask[];
+  /** How the session's model is billed now (`agent.model` changes it). */
+  billing?: Billing;
 }
 
 const MAIN_FALLBACK_ID = "main";
@@ -152,6 +156,7 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
     })),
     tasks: [],
   };
+  if (snapshot.session.billing) state.billing = snapshot.session.billing;
   if (snapshot.context) state.context = { ...snapshot.context };
   if (snapshot.task) showTask(state, railTask(snapshot.task));
 
@@ -252,6 +257,13 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
     case "agent.usage":
       agent.tokens += e.inputTokens + e.outputTokens + e.cacheReadTokens + e.cacheWriteTokens;
       agent.costMicros += e.costMicros;
+      if (e.billing === "plan") agent.plan = true;
+      return;
+    case "agent.model":
+      if (e.billing) state.billing = e.billing;
+      else delete state.billing;
+      // Off the plan, a zero cost reads $0.00 again, not "$0 (plan)".
+      if (e.billing !== "plan") for (const a of state.agents) delete a.plan;
       return;
     case "agent.context":
       if (agent.id === state.mainAgentId) {
@@ -360,6 +372,13 @@ export function sessionCostMicros(state: RailState): number {
   return state.agents.reduce((sum, a) => sum + a.costMicros, 0);
 }
 
+/** The session's or one agent's cost as `formatCost` words it: `$0 (plan)` on the plan. */
+export function railCost(state: RailState, agent?: RailAgent): string {
+  const onPlan = state.billing === "plan";
+  if (agent) return formatCost(agent.costMicros, onPlan || agent.plan === true);
+  return formatCost(sessionCostMicros(state), onPlan || state.agents.some((a) => a.plan));
+}
+
 /** How long the current run has taken, or the last run took. Undefined before any run. */
 export function elapsedMs(agent: RailAgent, now: number): number | undefined {
   if (agent.startedAt === undefined) return undefined;
@@ -384,8 +403,13 @@ function trim(x: number): string {
   return x >= 100 ? String(Math.round(x)) : x.toFixed(1).replace(/\.0$/, "");
 }
 
-/** Micro-dollars as dollars: cents above $1, otherwise enough digits to see small costs. */
-export function formatCost(micros: number): string {
+/**
+ * Micro-dollars as dollars: cents above $1, otherwise enough digits to see small costs.
+ * Nothing spent on the ChatGPT plan (`plan`) is `$0 (plan)`, the wording `/status`, the
+ * `/model` picker and `hamness stats` use (ADR 0024).
+ */
+export function formatCost(micros: number, plan = false): string {
+  if (micros === 0) return plan ? "$0 (plan)" : "$0.00";
   const usd = micros / 1_000_000;
   if (usd >= 1) return `$${usd.toFixed(2)}`;
   if (usd >= 0.01) return `$${usd.toFixed(3)}`;

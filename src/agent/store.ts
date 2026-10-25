@@ -72,6 +72,10 @@ export interface SessionListRow {
   costMicros: number;
   /** The main agent's first user message, for a session with no name. */
   firstPrompt?: string;
+  /** When it was last picked as the cwd's latest (what `--continue` orders by). */
+  pickedAt: number;
+  /** Its model calls billed to the ChatGPT plan. */
+  planCalls: number;
 }
 
 export interface SessionUsage {
@@ -159,6 +163,8 @@ export class ChatStore {
           messages: number;
           cost: number;
           first: string | null;
+          picked: number | null;
+          plan_calls: number;
         },
         [string]
       >(
@@ -173,7 +179,10 @@ export class ChatStore {
            (SELECT m.content FROM messages m WHERE m.session_id = s.id AND m.role = 'user'
               AND m.agent_id = (SELECT a.id FROM agents a WHERE a.session_id = s.id
                                 AND a.kind = 'main')
-              ORDER BY m.created_at, m.rowid LIMIT 1) AS first
+              ORDER BY m.created_at, m.rowid LIMIT 1) AS first,
+           coalesce(s.picked_at, s.updated_at) AS picked,
+           (SELECT count(*) FROM model_calls mc
+              WHERE mc.session_id = s.id AND mc.billing = 'plan') AS plan_calls
          FROM sessions s
          WHERE s.source = 'hamness' AND s.cwd = ?
            AND (s.title IS NOT NULL OR ${OPEN_TASK}
@@ -192,6 +201,8 @@ export class ChatStore {
           messageCount: r.messages,
           costMicros: r.cost,
           ...(r.first ? { firstPrompt: r.first } : {}),
+          pickedAt: r.picked ?? startedAt,
+          planCalls: r.plan_calls,
         };
       });
   }

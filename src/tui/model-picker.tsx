@@ -23,6 +23,8 @@ export interface ModelPickerProps {
   /** The filter, kept by the parent (see `Picker`). */
   query?: string;
   onQuery?: (query: string) => void;
+  /** A `/` typed before any filter (see `Picker`). */
+  onSlash?: (text: string) => void;
 }
 
 /**
@@ -52,6 +54,7 @@ export function ModelPicker(props: ModelPickerProps) {
         },
       }}
       onClose={props.onClose}
+      {...(props.onSlash ? { onSlash: props.onSlash } : {})}
       {...(props.onQuery ? { query: props.query ?? "", onQuery: props.onQuery } : {})}
     />
   );

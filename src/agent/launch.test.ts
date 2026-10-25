@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { type FakeModel, fakeModel } from "../../test/support/fake-model.ts";
+import { writePlanLogin } from "../../test/support/plan-login.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { openDatabase } from "../db/open.ts";
 import type { HamnessEvent, SafetyMode } from "../events/types.ts";
@@ -222,5 +223,34 @@ describe("review fixes", () => {
     startError = new Error("disk on fire");
     await expect(h.ensureAwake(old)).rejects.toThrow("disk on fire");
     await h.ensureAwake("nope");
+  });
+});
+
+describe("what the TUI's /resume and /status read", () => {
+  test("listed sessions carry when they were picked (the -c order) and their plan calls", async () => {
+    fake.script([{ text: "a" }, { text: "b" }]);
+    const h = startHub();
+    const one = await h.attach(work, { kind: "new" });
+    h.prompt(one.session.id, "first");
+    await until(() => idle(one.session.id));
+    const two = await h.attach(work, { kind: "new" });
+    h.prompt(two.session.id, "second");
+    await until(() => idle(two.session.id));
+    // Back to the first: it is the folder's latest again, though the second was active last.
+    await h.resume(two.session.id, one.session.id);
+    const list = await h.listSessions(work, one.session.id);
+    const at = (id: string) => list.find((s) => s.id === id);
+    expect(at(one.session.id)?.pickedAt).toBeGreaterThan(at(two.session.id)?.pickedAt ?? 0);
+    expect(at(one.session.id)?.planCalls).toBe(0);
+  });
+
+  test("/status names the ChatGPT plan tier only for a session on the plan", async () => {
+    writePlanLogin(join(home.dir, "data"), { tier: "team" });
+    const h = startHub();
+    const api = await h.attach(work, { kind: "new" });
+    expect(h.status(api.session.id).planTier).toBeUndefined();
+    fake.billing = () => ({ kind: "plan" });
+    const plan = await h.attach(work, { kind: "new" });
+    expect(h.status(plan.session.id).planTier).toBe("team");
   });
 });
