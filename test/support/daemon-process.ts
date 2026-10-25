@@ -96,6 +96,40 @@ export async function spawnDaemon(
   };
 }
 
+/**
+ * A stand-in for a daemon that stopped serving but never exited: a process whose command line
+ * is `bun <dir>/main.ts daemon` with HAMNESS_HOME set to `dataDir`, which serves nothing and,
+ * with `ignoreSigterm`, survives SIGTERM (as the stray daemons did). It is not a hamness daemon,
+ * so the test controls exactly how it dies.
+ */
+export async function spawnStray(
+  dataDir: string,
+  opts: { ignoreSigterm?: boolean } = {},
+): Promise<Subprocess<"ignore", "pipe", "pipe">> {
+  const dir = join(dataDir, "..", `stray-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
+  const script = join(dir, "main.ts");
+  writeFileSync(
+    script,
+    [
+      opts.ignoreSigterm ? `process.on("SIGTERM", () => {});` : "",
+      "setInterval(() => {}, 1000);",
+      `console.log("ready");`,
+    ].join("\n"),
+  );
+  const proc = Bun.spawn([process.execPath, "--config=/dev/null", script, "daemon"], {
+    env: { PATH: process.env.PATH ?? "", HOME: dir, HAMNESS_HOME: dataDir },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  // Wait for its handlers, so a SIGTERM never lands before it ignores them.
+  const reader = proc.stdout.getReader();
+  await reader.read();
+  reader.releaseLock();
+  return proc;
+}
+
 /** The pids of `pid`'s direct children, or only those whose command line matches `pattern`. */
 export function childPids(pid: number, pattern?: string): number[] {
   const args = ["pgrep", "-P", String(pid), ...(pattern ? ["-f", pattern] : [])];
