@@ -4,6 +4,7 @@ import {
   billingLabel,
   defaultModelCredential,
   PLAN_DEFAULT_MODEL,
+  PLAN_PROVIDER,
   PLAN_TIER_MODEL,
 } from "../../agent/models.ts";
 import { readPlanLogin, tierLabel } from "../../agent/plan.ts";
@@ -108,8 +109,17 @@ export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<n
 
   try {
     const cred = await defaultModelCredential({ dataDir, env });
+    const plan = readPlanLogin(dataDir);
+    // Pi's Codex calls need the account id in the token; without it every plan call fails.
+    const badPlanLogin = plan !== undefined && !plan.hasAccount;
     if (!cred.model) {
       checks.push({ level: "fail", text: "Model: not set up", fix: setupSteps(cred, dataDir) });
+    } else if (badPlanLogin && cred.provider === PLAN_PROVIDER) {
+      checks.push({
+        level: "fail",
+        text: `Model ${cred.model}: the ChatGPT plan login has no account id, so its calls fail`,
+        fix: ["  Sign in again: hamness login openai"],
+      });
     } else if (!cred.billing) {
       checks.push({
         level: "fail",
@@ -128,14 +138,13 @@ export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<n
         text: `Model ${cred.model}${why}: ${billingLabel(cred.billing, true)}`,
       });
     }
-    const plan = readPlanLogin(dataDir);
-    if (plan && !plan.hasAccount) {
+    if (badPlanLogin && cred.provider !== PLAN_PROVIDER) {
       checks.push({
         level: "warn",
         text: "ChatGPT plan login has no account id, so the plan's models can't be reached",
         fix: ["  Sign in again: hamness login openai"],
       });
-    } else if (plan) {
+    } else if (plan && !badPlanLogin) {
       checks.push({
         level: "info",
         text: `ChatGPT plan: ${tierLabel(plan.tier)} · default ${planDefaultId(plan.tier)}`,

@@ -45,7 +45,7 @@ export async function logoutCommand({ args, dataDir, io }: CliContext): Promise<
   const runtime = await createRuntime(dataDir);
   const target = loginProvider(provider);
   await runtime.logout(target);
-  // A ChatGPT login stored before ADR 0023 sits under `openai`; signing out of the plan removes it.
+  // A ChatGPT login stored before ADR 0024 sits under `openai`; signing out of the plan removes it.
   if (target !== provider) await runtime.logout(provider);
   io.out(`Signed out of ${provider}.`);
   return 0;

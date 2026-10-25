@@ -91,7 +91,7 @@ export function envKeyHint(provider: string): string {
 /** Deletes one provider's key from the key file. False when it had none. */
 export function removeKey(dataDir: string, provider: string): boolean {
   const keys = readKeyFile(dataDir);
-  if (!(provider in keys)) return false;
+  if (!PROVIDER_ID.test(provider) || !Object.hasOwn(keys, provider)) return false;
   delete keys[provider];
   writeJsonAtomic(keyFilePath(dataDir), keys, 0o600);
   return true;

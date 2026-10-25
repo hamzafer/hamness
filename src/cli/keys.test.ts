@@ -130,4 +130,12 @@ describe("hamness keys remove", () => {
     expect(await runCli(["keys", "remove", "openai"], env(), t.cli)).toBe(1);
     expect(t.all()).toContain("no openai key");
   });
+
+  test("prototype names are not keys", async () => {
+    writeFileSync(keyFile(), JSON.stringify({ openai: SECRET }), { mode: 0o600 });
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      expect(await runCli(["keys", "remove", name], env(), io().cli)).toBe(1);
+    }
+    expect(JSON.parse(readFileSync(keyFile(), "utf8"))).toEqual({ openai: SECRET });
+  });
 });

@@ -70,7 +70,8 @@ describe("hamness doctor", () => {
   test("a plan login without the account claim: sign in again", async () => {
     writePlanLogin(home.dir, { account: false });
     const t = io();
-    await runCli(["doctor"], env(), t.cli);
+    expect(await runCli(["doctor"], env(), t.cli)).toBe(1);
+    expect(line(t.text(), "Model")).toMatch(/^fail +Model openai-codex\/.*no account id/);
     expect(t.text()).toContain("Sign in again: hamness login openai");
   });
 
