@@ -29,7 +29,7 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 /** Why Pi compacted: the user asked (`/compact`), the context crossed the threshold, or overflowed. */
 export type CompactionReason = "manual" | "threshold" | "overflow";
 
-/** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: allow all. */
+/** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: deny rules, then allow. */
 export type SafetyMode = "ask" | "auto" | "yolo";
 
 /**

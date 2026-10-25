@@ -45,6 +45,16 @@ export function yAxis(
   return { labels, left: Math.max(opts.narrow ? 40 : 48, Math.ceil(longest * CHAR_PX) + 12) };
 }
 
+const disposers = new WeakMap<Element, () => void>();
+
+/** Stops the charts under `scope` watching their size: call before replacing them. */
+export function disposeCharts(scope: Element): void {
+  for (const el of scope.querySelectorAll(".chart")) {
+    disposers.get(el)?.();
+    disposers.delete(el);
+  }
+}
+
 /**
  * One series over time as a soft area with a 2px line, recessive grid, a crosshair and
  * tooltip on hover, and arrow-key stepping when focused. Redraws on resize.
@@ -200,13 +210,15 @@ export function areaChart(opts: AreaChartOptions): HTMLElement {
   };
 
   let lastWidth = 0;
-  new ResizeObserver(() => {
+  const observer = new ResizeObserver(() => {
     const w = Math.round(root.clientWidth);
     if (w && w !== lastWidth) {
       lastWidth = w;
       draw();
     }
-  }).observe(root);
+  });
+  observer.observe(root);
+  disposers.set(root, () => observer.disconnect());
   queueMicrotask(draw);
   return root;
 }

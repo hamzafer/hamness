@@ -46,6 +46,39 @@ export interface CompatSessionContext {
   /** hamness's Pi config dir: the MCP log and OAuth tokens live there, never in Claude's. */
   agentDir: string;
   sessionId: () => string | undefined;
+  /** Told about each MCP tool Pi registers, to count them per server. */
+  mcpTools?: McpToolCounts;
+}
+
+/**
+ * The tools each MCP server has registered in this session, seen as Pi registers them. Pi's MCP
+ * client keeps its connections private, so this is the cheap live signal: a server with tools
+ * has connected. A tool the server dropped is re-registered hidden and stops counting.
+ */
+export class McpToolCounts {
+  private byServer = new Map<string, Set<string>>();
+
+  saw(def: { name: string; label?: string; exposure?: unknown; namespace?: unknown }): void {
+    if (!def.name.startsWith("mcp__")) return;
+    const aliases = (def.namespace as { aliases?: unknown } | undefined)?.aliases;
+    const server =
+      Array.isArray(aliases) && typeof aliases[0] === "string"
+        ? aliases[0]
+        : def.label?.split("/")[0];
+    if (!server) return;
+    let tools = this.byServer.get(server);
+    if (!tools) {
+      tools = new Set();
+      this.byServer.set(server, tools);
+    }
+    if (def.exposure === "hidden") tools.delete(def.name);
+    else tools.add(def.name);
+  }
+
+  /** Server name to its tool count, for the servers that registered any. */
+  counts(): Record<string, number> {
+    return Object.fromEntries([...this.byServer].map(([server, tools]) => [server, tools.size]));
+  }
 }
 
 /** Pi extensions for a session: the `skill` tool and the MCP client for the servers that start. */
@@ -96,31 +129,48 @@ export function compatExtensions(
 
   const servers = setup.mcp.servers.filter((s) => s.status === "start" && s.config);
   if (servers.length > 0) {
-    out.push(
-      createMcpExtension({
-        loadConfig: () => ({
-          servers: servers.flatMap((s) =>
-            s.config
-              ? [
-                  {
-                    name: s.name,
-                    config: s.config,
-                    source: s.source,
-                    scope: s.scope === "user" ? ("global" as const) : ("project" as const),
-                  },
-                ]
-              : [],
-          ),
-          autoEnableCodemode: false,
-          errors: [],
-        }),
-        logPath: join(ctx.agentDir, "mcp.log"),
-        // Pi would save `/mcp` changes to the file that defined the server: Claude Code's.
-        updateConfig: () => {
-          throw new Error("hamness does not change Claude Code's MCP config");
-        },
-        openUrl: () => {},
+    const mcp = createMcpExtension({
+      loadConfig: () => ({
+        servers: servers.flatMap((s) =>
+          s.config
+            ? [
+                {
+                  name: s.name,
+                  config: s.config,
+                  source: s.source,
+                  scope: s.scope === "user" ? ("global" as const) : ("project" as const),
+                },
+              ]
+            : [],
+        ),
+        autoEnableCodemode: false,
+        errors: [],
       }),
+      logPath: join(ctx.agentDir, "mcp.log"),
+      // Pi would save `/mcp` changes to the file that defined the server: Claude Code's.
+      updateConfig: () => {
+        throw new Error("hamness does not change Claude Code's MCP config");
+      },
+      openUrl: () => {},
+    });
+    const counts = ctx.mcpTools;
+    out.push(
+      counts
+        ? (pi) =>
+            mcp(
+              new Proxy(pi, {
+                get(target, key) {
+                  if (key === "registerTool")
+                    return (def: Parameters<typeof target.registerTool>[0]) => {
+                      counts.saw(def as Parameters<McpToolCounts["saw"]>[0]);
+                      return target.registerTool(def);
+                    };
+                  const v = Reflect.get(target, key);
+                  return typeof v === "function" ? v.bind(target) : v;
+                },
+              }),
+            )
+        : mcp,
     );
   }
   return out;

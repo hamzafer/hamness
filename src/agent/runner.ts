@@ -9,7 +9,12 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { type CompatSetup, compatExtensions, compatPrompt } from "../compat/index.ts";
+import {
+  type CompatSetup,
+  compatExtensions,
+  compatPrompt,
+  McpToolCounts,
+} from "../compat/index.ts";
 import type { CompactionReason, ContextFill, ThinkingLevel } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
 import type { ModelChoice } from "./models.ts";
@@ -208,6 +213,8 @@ export interface AgentRunner {
    * Undefined when the entry is not a user message of this session.
    */
   forkPoint(entryId: string): BranchFrom | undefined;
+  /** Tools each started MCP server has registered so far (0 or absent: connecting or failed). */
+  mcpTools(): Record<string, number>;
   dispose(): void;
 }
 
@@ -299,11 +306,13 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     ...(compat ? compatPrompt(compat) : []),
   ];
   let sessionId: string | undefined;
+  const mcpTools = new McpToolCounts();
   const compatFactories = compat
     ? compatExtensions(compat, {
         cwd: opts.cwd,
         agentDir: opts.agentDir,
         sessionId: () => sessionId,
+        mcpTools,
       })
     : [];
   if (compat?.mcp.servers.some((s) => s.status === "start")) {
@@ -535,6 +544,7 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     exportHtml: (path) => session.exportToHtml(path),
     exportJsonl: (path) => session.exportToJsonl(path),
     lastAssistantText: () => session.getLastAssistantText(),
+    mcpTools: () => mcpTools.counts(),
     forkPoint(entryId) {
       const entry = session.sessionManager.getEntry(entryId);
       const file = session.sessionFile;

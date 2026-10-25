@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { ChatStore } from "../agent/store.ts";
 import { openDatabase } from "../db/open.ts";
+import { DecisionStore } from "./decisions.ts";
 import { caseInsensitiveAt, createSafetyService, listFiles } from "./service.ts";
 
 let tmp: ReturnType<typeof tempHome>;
@@ -242,5 +243,81 @@ describe("writes to a script a project hook or MCP server runs ask (V-L6)", () =
     expect(await call("edit", { path: "scripts/server", oldText: "a", newText: "b" })).toBe(false);
     expect(await check("echo x > scripts/stop.sh")).toBe(false);
     expect(await call("write", { path: "scripts/other.sh", content: "x" })).toBe(true);
+  });
+});
+
+describe("yolo still asks for what the rules can't see past (the floor)", () => {
+  async function yolo(tool: string, args: Record<string, unknown>) {
+    const dataDir = join(home, "data");
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ safety: { mode: "yolo" } }));
+    const db = openDatabase(join(dataDir, "yolo.sqlite"));
+    const store = new ChatStore(db);
+    const { sessionId, agentId } = store.createSession(cwd, "anthropic/x");
+    const safety = createSafetyService({ db, dataDir, home });
+    const asked: string[] = [];
+    const toolCallId = store.addToolCall(
+      { sessionId, agentId, taskId: undefined },
+      { messageId: undefined, tool, argsJson: "{}" },
+    );
+    const v = await safety.check(
+      { sessionId, toolCallId, tool, args, cwd },
+      {
+        cwd,
+        askUser: async (req) => {
+          asked.push(req.reason);
+          return { decision: "deny", by: "user" };
+        },
+      },
+    );
+    const reasons = new DecisionStore(db).list().map((d) => d.reason);
+    db.close();
+    return { allow: v.allow, asked, reasons };
+  }
+  const bash = (command: string) => yolo("bash", { command });
+
+  const floors: Array<[string, () => ReturnType<typeof yolo>]> = [
+    ["a heredoc", () => bash("bash <<'EOF'\ncat .env\nEOF")],
+    ["grep -r over a folder with .env", () => bash("grep -r S .")],
+    ["rg --hidden", () => bash("rg --hidden S")],
+    ["rg -uu", () => bash("rg -uu S")],
+    ["grep -rl over home", () => bash(`grep -rl S ${home}`)],
+    ["Pi's grep tool on the project", () => yolo("grep", { pattern: "S", path: "." })],
+    ["Pi's find tool over home", () => yolo("find", { pattern: "*", path: home })],
+    ["a path in a variable", () => bash("F=.env; cat $F")],
+    ["a substitution as a path", () => bash("cat $(cat name.txt)")],
+  ];
+  for (const [name, run] of floors) {
+    test(`${name} asks, with a yolo reason`, async () => {
+      const r = await run();
+      expect(r.allow).toBe(false);
+      expect(r.asked).toHaveLength(1);
+      expect(r.asked[0]).toStartWith("yolo still asks: ");
+      expect(r.reasons.some((x) => x?.startsWith("yolo still asks: "))).toBe(true);
+    });
+  }
+
+  test("a glob with more matches than can be checked asks", async () => {
+    mkdirSync(join(cwd, "many"));
+    for (let i = 0; i < 520; i++) writeFileSync(join(cwd, "many", `f${i}.txt`), "");
+    const r = await bash("cat many/*");
+    expect(r.allow).toBe(false);
+    expect(r.asked[0]).toStartWith("yolo still asks: ");
+  });
+
+  test("ordinary calls, ask rules and variables that read nothing still run unasked", async () => {
+    for (const command of ["mkdir made", "rm -rf made", "cat a.ts", "rg S", "echo $HOME"]) {
+      const r = await bash(command);
+      expect({ command, allow: r.allow, asked: r.asked }).toEqual({
+        command,
+        allow: true,
+        asked: [],
+      });
+    }
+    expect((await yolo("grep", { pattern: "S", path: "a.ts" })).allow).toBe(true);
+  });
+
+  test("a direct secret read is still denied, not asked", async () => {
+    const r = await bash("cat .env");
+    expect(r).toMatchObject({ allow: false, asked: [] });
   });
 });

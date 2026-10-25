@@ -50,7 +50,7 @@ describe("kpis", () => {
     expect(kpis(db.sqlite, q("90d", { source: "codex" })).sessions).toBe(2);
   });
 
-  test("counts tasks by outcome; verified rate is verified over closed tasks", () => {
+  test("counts tasks by outcome; verified rate is verified over verified + unverified", () => {
     const s = seed.session({ source: "hamness", at: NOW - DAY });
     for (const outcome of ["verified", "verified", "verified", "unverified", "abandoned"] as const)
       seed.task({ sessionId: s, at: NOW - HOUR, outcome });
@@ -67,10 +67,18 @@ describe("kpis", () => {
       overridden: 1,
       abandoned: 1,
     });
-    expect(k.verifiedRate).toBeCloseTo(3 / 6);
+    // Overridden and abandoned tasks are not in the denominator (ADR 0012).
+    expect(k.verifiedRate).toBeCloseTo(3 / 4);
   });
 
   test("verified rate is null with no closed tasks", () => {
+    expect(kpis(db.sqlite, q("7d")).verifiedRate).toBeNull();
+  });
+
+  test("verified rate is null when every closed task was overridden or abandoned", () => {
+    const s = seed.session({ source: "hamness", at: NOW - DAY });
+    seed.task({ sessionId: s, at: NOW - HOUR, outcome: "overridden" });
+    seed.task({ sessionId: s, at: NOW - HOUR, outcome: "abandoned" });
     expect(kpis(db.sqlite, q("7d")).verifiedRate).toBeNull();
   });
 
@@ -151,6 +159,15 @@ describe("kpis", () => {
     expect(k.wallMs).toBe(3 * HOUR);
     expect(k.activeMs).toBe(30 * 60_000);
     expect(k.activeSessions).toBe(1);
+  });
+
+  test("a session's active time never counts for more than its wall time", () => {
+    // Imported agents that ran side by side can sum to more than the session lasted.
+    seed.session({ source: "codex", at: NOW - 2 * HOUR, endAt: NOW - HOUR, activeMs: 2 * HOUR });
+    seed.session({ source: "hamness", at: NOW - 3 * HOUR, endAt: null, activeMs: 10 * 60_000 });
+    const k = kpis(db.sqlite, q("24h"));
+    expect(k.wallMs).toBe(HOUR);
+    expect(k.activeMs).toBe(HOUR + 10 * 60_000);
   });
 });
 
@@ -234,7 +251,7 @@ describe("timeSeries", () => {
 });
 
 describe("topModels", () => {
-  test("ranks models by calls across sources, with cost, tokens and price status", () => {
+  test("ranks models by cost across sources, with calls, tokens and price status", () => {
     const c = seed.session({ source: "claude-code", at: NOW - DAY });
     const x = seed.session({ source: "codex", at: NOW - DAY });
     for (let i = 0; i < 3; i++)
@@ -260,18 +277,18 @@ describe("topModels", () => {
 
     const models = topModels(db.sqlite, q("7d"));
     expect(models.map((m) => [m.model, m.calls, m.costMicros])).toEqual([
-      ["claude-opus-5-5", 4, 31],
       ["gpt-5.6-luna", 2, 100],
+      ["claude-opus-5-5", 4, 31],
       ["llama-local", 1, 0],
     ]);
-    expect(models[0]?.tokens).toEqual({
+    expect(models[1]?.tokens).toEqual({
       input: 3,
       output: 6,
       cacheRead: 4,
       cacheWrite: 0,
       prompt: 7,
     });
-    expect(models[0]?.sources).toEqual(["claude-code", "codex"]);
+    expect(models[1]?.sources).toEqual(["claude-code", "codex"]);
     expect(models.map((m) => m.priced)).toEqual([true, true, false]);
 
     expect(topModels(db.sqlite, q("7d"), 1)).toHaveLength(1);

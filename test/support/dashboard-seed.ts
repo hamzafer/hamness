@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { DAY, HOUR, seeder } from "./stats-seed.ts";
 
+/** The made-up folder the demo's hamness sessions ran in. */
+export const DEMO_CWD = "/work/acme/app";
+
 /**
  * A made-up month of work for the dashboard's browser test and README screenshot.
  * Deterministic (a fixed-seed generator), relative to `now`. Nothing here is real history.
@@ -59,6 +62,7 @@ export function seedDemoHistory(sqlite: Database, now: number): void {
         at,
         endAt: at + len,
         activeMs: Math.round(len * 0.6),
+        cwd: DEMO_CWD,
       });
       const tasks = 1 + Math.floor(rand() * 2);
       for (let t = 0; t < tasks; t++) {
@@ -127,11 +131,15 @@ export function seedDemoHistory(sqlite: Database, now: number): void {
             verdict: r < 0.75 ? "allow" : r < 0.9 ? "ask" : "deny",
             source: r < 0.6 ? "rule" : r < 0.85 ? "judge" : "user",
             reason:
-              r < 0.75
-                ? "read-only command in the project"
-                : r < 0.9
-                  ? "writes outside the project directory"
-                  : "deletes files recursively",
+              r < 0.6
+                ? tool === "bash"
+                  ? `allowed by default rule bash "*" in ${DEMO_CWD}`
+                  : `allowed by default rule ${tool} "*" for ${DEMO_CWD}/${files[(day + c) % files.length]}`
+                : r < 0.75
+                  ? "read-only command in the project"
+                  : r < 0.9
+                    ? "writes outside the project directory"
+                    : "deletes files recursively",
             rule: r < 0.6 ? `default: ${tool} *` : null,
             latencyMs: r < 0.6 ? 1 : Math.round(300 + rand() * 600),
             args: argsFor(tool, day + c),

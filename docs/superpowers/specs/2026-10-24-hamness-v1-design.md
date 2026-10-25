@@ -75,7 +75,7 @@ See `GLOSSARY.md` for the terms. The main ones:
 - **Judge:** a call the rules don't decide goes to a small model (default Claude Haiku) that answers with a strict JSON verdict (`allow` / `ask` with a reason and category). Any error, timeout or doubt means `ask`. A daily budget (default $1) applies; over budget, everything undecided asks.
 - **Back-off:** after 3 judge `ask`s in a row in a session, the judge pauses for that session and everything undecided asks.
 - **Audit log:** every decision is stored with tool, arguments (secrets redacted), source, reason, latency and cost. `hamness audit` and the dashboard show why each action ran.
-- **Modes:** `ask` (rules only, everything undecided asks), `auto` (rules + judge, the default), `yolo` (allow all, loud banner). OS sandboxing is **out of scope for v1**.
+- **Modes:** `ask` (rules only, everything undecided asks), `auto` (rules + judge, the default), `yolo` (no questions and no judge, loud banner; deny rules, default and user, still apply, ADR 0022). OS sandboxing is **out of scope for v1**.
 
 ### 5. Models and auth
 - Multi-provider through Pi. Claude is the default model.

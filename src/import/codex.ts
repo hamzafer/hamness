@@ -53,7 +53,9 @@ export function codexHandler({ store, state }: HandlerContext): LineHandler {
           break;
         case "event_msg":
           if (p?.type === "token_count") tokens(p.info, at);
-          else if (p?.type === "task_complete") span.activeMs += num(p.duration_ms);
+          // A subagent thread runs alongside its parent: only the main thread adds active time.
+          else if (p?.type === "task_complete" && !state.subagent)
+            span.activeMs += num(p.duration_ms);
           break;
         case "response_item":
           item(p, at);

@@ -35,7 +35,10 @@ export interface Pricing {
 export interface Kpis {
   sessions: number;
   tasks: TaskCounts;
-  /** verified / closed tasks (every outcome but `open`). Null with no closed tasks. */
+  /**
+   * verified / (verified + unverified): the tasks the proof gate decided (ADR 0012). Overridden
+   * and abandoned tasks are counted on their own. Null when the gate decided none.
+   */
   verifiedRate: number | null;
   modelCalls: number;
   costMicros: number;
@@ -139,6 +142,13 @@ function addTokens(t: Tokens, r: Omit<Tokens, "prompt">): void {
 /** A model with no price and no recorded cost: its calls count as $0. */
 const unpriced = (model: string, cost: number) => cost === 0 && priceFor(model) === undefined;
 
+/**
+ * A session's active time, never more than its wall time when both ends are known: imported
+ * agents that ran side by side (a Codex subagent thread) can sum to more than the session lasted.
+ */
+const ACTIVE = `CASE WHEN active_ms IS NOT NULL AND ended_at IS NOT NULL AND started_at IS NOT NULL
+  THEN min(active_ms, max(0, ended_at - started_at)) ELSE active_ms END`;
+
 export function kpis(sqlite: Database, q: StatsQuery): Kpis {
   return kpisOf(context(sqlite, q));
 }
@@ -150,7 +160,7 @@ function kpisOf(c: Ctx): Kpis {
       `SELECT count(*) AS n,
          sum(CASE WHEN ended_at IS NOT NULL AND started_at IS NOT NULL
              THEN max(0, ended_at - started_at) END) AS wall,
-         sum(active_ms) AS active, count(active_ms) AS activeN
+         sum(${ACTIVE}) AS active, count(active_ms) AS activeN
        FROM sessions
        WHERE coalesce(started_at, created_at) BETWEEN ?1 AND ?2
          AND (?3 IS NULL OR source = ?3)`,
@@ -177,7 +187,8 @@ function kpisOf(c: Ctx): Kpis {
     tasks[r.outcome] = r.n;
     tasks.total += r.n;
   }
-  const closed = tasks.total - tasks.open;
+  // The gate's own verdicts only: overridden and abandoned tasks are the user's call (ADR 0012).
+  const decided = tasks.verified + tasks.unverified;
 
   let modelCalls = 0;
   let costMicros = 0;
@@ -201,7 +212,7 @@ function kpisOf(c: Ctx): Kpis {
   return {
     sessions: s?.n ?? 0,
     tasks,
-    verifiedRate: closed > 0 ? tasks.verified / closed : null,
+    verifiedRate: decided > 0 ? tasks.verified / decided : null,
     modelCalls,
     costMicros,
     costPerVerifiedTaskMicros: tasks.verified > 0 ? Math.round(hamnessCost / tasks.verified) : null,
@@ -299,7 +310,7 @@ export interface ModelRow {
   priced: boolean;
 }
 
-/** Models by number of calls (then cost), grouped by the model id as stored. */
+/** Models by cost (then number of calls), grouped by the model id as stored. */
 export function topModels(sqlite: Database, q: StatsQuery, limit = 5): ModelRow[] {
   return topModelsOf(context(sqlite, q), limit);
 }
@@ -331,7 +342,7 @@ function topModelsOf(c: Ctx, limit: number): ModelRow[] {
   }
   return rows
     .sort(
-      (a, b) => b.calls - a.calls || b.costMicros - a.costMicros || a.model.localeCompare(b.model),
+      (a, b) => b.costMicros - a.costMicros || b.calls - a.calls || a.model.localeCompare(b.model),
     )
     .slice(0, limit);
 }
@@ -464,7 +475,7 @@ function sourceSplitOf(c: Ctx): SourceRow[] {
       `SELECT source, count(*) AS n,
          sum(CASE WHEN ended_at IS NOT NULL AND started_at IS NOT NULL
              THEN max(0, ended_at - started_at) END) AS wall,
-         sum(active_ms) AS active
+         sum(${ACTIVE}) AS active
        FROM sessions
        WHERE coalesce(started_at, created_at) BETWEEN ?1 AND ?2 AND (?3 IS NULL OR source = ?3)
        GROUP BY source`,

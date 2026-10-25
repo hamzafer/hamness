@@ -70,7 +70,11 @@ export function eventsUrl(loc: { protocol: string; host: string }, token: string
  * Keeps a WebSocket to the event stream open, reconnecting with backoff, and calls `onChange`
  * after each event. A dropped connection forgets every run (the daemon may have restarted).
  */
-export function connectLive(token: () => string | null, runs: SessionRuns, onChange: () => void) {
+export function connectLive(
+  token: () => string | null,
+  runs: SessionRuns,
+  onChange: (e?: HamnessEvent) => void,
+) {
   let delay = 1000;
   const open = () => {
     const t = token();
@@ -80,12 +84,14 @@ export function connectLive(token: () => string | null, runs: SessionRuns, onCha
       delay = 1000;
     };
     ws.onmessage = (m) => {
+      let e: HamnessEvent;
       try {
-        runs.apply(JSON.parse(String(m.data)) as HamnessEvent);
+        e = JSON.parse(String(m.data)) as HamnessEvent;
+        runs.apply(e);
       } catch {
         return;
       }
-      onChange();
+      onChange(e);
     };
     ws.onclose = () => {
       runs.apply({ type: "daemon.stopping" });

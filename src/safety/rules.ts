@@ -68,6 +68,8 @@ export interface Evaluation {
   reason: string;
   /** What "allow always" would add to the project config. Empty when it is not offered. */
   suggestions: Rule[];
+  /** Why the check could not see past part of the call (see `Part.floor`); yolo asks then. */
+  floor?: string;
 }
 
 const RANK = { allow: 0, undecided: 1, ask: 2, deny: 3 } as const;
@@ -154,6 +156,12 @@ type Part = {
   rule?: Rule;
   reason: string;
   suggestion?: Rule | null;
+  /**
+   * The check could not see past this part: a recursive read over denied paths, a command it
+   * could not parse, a path only known at run time, a glob or walk too big to check. Yolo mode
+   * asks for these instead of allowing them (ADR 0022).
+   */
+  floor?: true;
 };
 
 const escapeGlob = (s: string) => s.replace(/[*?{},\\]/g, "\\$&");
@@ -390,11 +398,23 @@ function checkBash(command: string, rules: Rule[], ctx: EvalContext, depth = 0):
   const parsed = parseCommand(command);
   if (!parsed.ok) {
     return [
-      { verdict: "ask", reason: `could not check the command (${parsed.error})`, suggestion: null },
+      {
+        verdict: "ask",
+        reason: `could not check the command (${parsed.error})`,
+        suggestion: null,
+        floor: true,
+      },
     ];
   }
   if (depth > 3)
-    return [{ verdict: "ask", reason: "commands nested too deep to check", suggestion: null }];
+    return [
+      {
+        verdict: "ask",
+        reason: "commands nested too deep to check",
+        suggestion: null,
+        floor: true,
+      },
+    ];
 
   const bashRules = rules.filter((r) => !r.pattern.includes(" | "));
   const pipeRules = rules.filter((r) => r.pattern.includes(" | "));
@@ -503,6 +523,19 @@ function checkSegment(
       if (isGlob(word)) parts.push(...checkGlob(word, rules, ctx));
     }
 
+    // A file reader given a path only known at run time (`cat $F`, `cat $(…)`): no rule can
+    // see which file it reads.
+    if (FILE_READERS.has(head)) {
+      const computed = words.slice(1).find((w) => w.includes("$"));
+      if (computed !== undefined)
+        parts.push({
+          verdict: "undecided",
+          reason: `\`${shown}\` reads a path only known at run time (\`${computed}\`)`,
+          suggestion: null,
+          floor: true,
+        });
+    }
+
     // A recursive read (`grep -r`, `rg`, `find`) over a folder that holds denied paths asks.
     for (const root of recursiveRoots(words, ctx)) {
       const denied = deniedInside("read", root, rules, ctx);
@@ -516,11 +549,12 @@ function checkSegment(
   }
 
   for (const r of seg.redirects) {
-    if (r.target.includes("$(…)") || r.target.startsWith("$")) {
+    if (r.target.includes("$")) {
       parts.push({
         verdict: "undecided",
         reason: `redirects to a computed path \`${r.target}\``,
         suggestion: null,
+        ...(r.op === "<" ? { floor: true as const } : {}),
       });
       continue;
     }
@@ -546,6 +580,7 @@ function checkGlob(word: string, rules: Rule[], ctx: EvalContext): Part[] {
         verdict: "undecided",
         reason: `\`${word}\` is a glob ${ctx.glob ? "with too many matches to check" : "hamness can't expand here"}, so no rule can allow it`,
         suggestion: null,
+        floor: true,
       },
     ];
   }
@@ -553,6 +588,55 @@ function checkGlob(word: string, rules: Rule[], ctx: EvalContext): Part[] {
     .map((m) => checkResolved("read", m, rules, ctx))
     .filter((p) => p.verdict === "deny");
 }
+
+/** Commands that read the files named in their words (for computed paths, see `checkSegment`). */
+const FILE_READERS = new Set([
+  "cat",
+  "tac",
+  "nl",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "ag",
+  "sed",
+  "awk",
+  "cut",
+  "sort",
+  "uniq",
+  "wc",
+  "diff",
+  "cmp",
+  "base64",
+  "xxd",
+  "od",
+  "hexdump",
+  "strings",
+  "jq",
+  "yq",
+  "cp",
+  "mv",
+  "scp",
+  "rsync",
+  "tar",
+  "zip",
+  "gzip",
+  "source",
+  ".",
+  "curl",
+  "wget",
+  "openssl",
+  "gpg",
+  "file",
+  "find",
+  "ls",
+  "tree",
+  "du",
+]);
 
 const ALWAYS_RECURSIVE = new Set(["rg", "find", "fd", "tree", "ag", "du"]);
 /** Commands whose first word after the flags is a pattern, not a path. */
@@ -629,6 +713,7 @@ function deniedFilePart(
       verdict: "undecided",
       reason: `\`${what}\` reads more files than hamness can check, so no rule can allow it`,
       suggestion: null,
+      floor: true,
     };
   }
   // Each file against the read rules, without resolving links (the walk does not follow them).
@@ -685,6 +770,7 @@ const recursivePart = (what: string, denied: string): Part => ({
   verdict: "ask",
   reason: `\`${what}\` searches a folder that holds ${denied}, which is denied`,
   suggestion: null,
+  floor: true,
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -801,10 +887,12 @@ export function evaluate(
         suggestions.push(s);
     }
   }
+  const floor = parts.find((p) => p.floor);
   return {
     verdict: worst.verdict,
     ...(worst.rule ? { rule: worst.rule } : {}),
     reason: worst.reason,
     suggestions,
+    ...(floor ? { floor: floor.reason } : {}),
   };
 }

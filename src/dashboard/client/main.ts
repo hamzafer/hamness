@@ -1,3 +1,4 @@
+import type { HamnessEvent } from "../../events/types.ts";
 import { count, duration, money, moneyCompact } from "../../stats/format.ts";
 import type {
   DecisionListRow,
@@ -10,10 +11,12 @@ import type {
 } from "../../stats/index.ts";
 import type { TaskOutcome } from "../../tasks/types.ts";
 import { getJson, takeToken, Unauthorized } from "./api.ts";
-import { areaChart } from "./chart.ts";
+import { areaChart, disposeCharts } from "./chart.ts";
 import { h } from "./dom.ts";
+import { relativeToCwd, shortWhen } from "./format.ts";
 import { announcement, connectLive, orbLabel, SessionRuns } from "./live.ts";
 import { type OrbHandle, orb } from "./orb.ts";
+import { Refresher, refreshesOn } from "./refresh.ts";
 
 // ---- State (kept in the query string so a reload keeps the view) ----
 
@@ -115,10 +118,9 @@ const pad2 = (n: number) => String(n).padStart(2, "0");
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const hourLabel = (t: number) => `${pad2(new Date(t).getHours())}:00`;
 const dayLabel = (t: number) => `${MONTHS[new Date(t).getMonth()]} ${new Date(t).getDate()}`;
-const when = (t: number) => {
-  const d = new Date(t);
-  return `${dayLabel(t)}, ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-};
+/** A table row's time on one line, the full date and time in its tooltip. */
+const whenCell = (t: number, cls = "when") =>
+  h("td", { class: cls, title: new Date(t).toLocaleString() }, shortWhen(t));
 const percent = (x: number) => `${Math.round(x * 100)}%`;
 
 // ---- Building blocks ----
@@ -139,6 +141,7 @@ function segmented<T extends string>(
         {
           type: "button",
           "aria-pressed": o.value === current ? "true" : "false",
+          "data-key": `${label}:${o.value}`,
           onclick: () => onPick(o.value),
         },
         o.text,
@@ -172,22 +175,25 @@ function card(title: string, ...children: (Node | null)[]) {
 
 const empty = (text: string) => h("p", { class: "empty" }, text);
 
-/** Ranked rows with a proportional bar behind each. */
+/**
+ * Ranked rows: the label and its value on one line, a proportional bar under them, so no text
+ * ever sits on (or spills off) a short bar.
+ */
 function barList(rows: { label: string; value: number; text: string; color?: string }[]) {
   const max = Math.max(0, ...rows.map((r) => r.value));
   return h(
     "ul",
     { class: "barlist" },
     ...rows.map((r) => {
-      const bar = h("span", { class: "barlist-bar", "aria-hidden": "true" });
+      const bar = h("span", { class: "barlist-bar" });
       bar.style.width = `${max > 0 ? Math.max(1, (r.value / max) * 100) : 0}%`;
       if (r.color) bar.dataset.color = r.color;
       return h(
         "li",
         {},
-        bar,
         h("span", { class: "barlist-label" }, r.label),
         h("span", { class: "barlist-value" }, r.text),
+        h("span", { class: "barlist-track", "aria-hidden": "true" }, bar),
       );
     }),
   );
@@ -219,7 +225,14 @@ function overview(r: StatsReport): Node[] {
   const k = r.kpis;
   const imported = r.source !== null && r.source !== "hamness";
   const est = k.pricing.estimated ? "~" : "";
-  const closed = k.tasks.total - k.tasks.open;
+  // The rate's denominator: the tasks the proof gate decided (ADR 0012).
+  const decided = k.tasks.verified + k.tasks.unverified;
+  const aside = [
+    k.tasks.overridden ? `${count(k.tasks.overridden)} overridden` : "",
+    k.tasks.abandoned ? `${count(k.tasks.abandoned)} abandoned` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   const tiles = h(
     "div",
@@ -240,12 +253,16 @@ function overview(r: StatsReport): Node[] {
       ? tile(
           "Verified rate",
           "n/a",
-          imported ? "n/a for imported history" : "no closed tasks yet",
+          imported ? "n/a for imported history" : "no verified or unverified tasks yet",
           {
             muted: true,
           },
         )
-      : tile("Verified rate", percent(k.verifiedRate), `of ${count(closed)} closed tasks`),
+      : tile(
+          "Verified rate",
+          percent(k.verifiedRate),
+          `of ${count(decided)} verified + unverified${aside ? `, excludes ${aside}` : ""}`,
+        ),
     k.costPerVerifiedTaskMicros === null
       ? tile(
           "Cost per verified task",
@@ -385,8 +402,8 @@ function overview(r: StatsReport): Node[] {
       ? barList(
           r.models.map((x) => ({
             label: x.priced ? x.model : `${x.model} *`,
-            value: x.calls,
-            text: `${count(x.calls)} calls · ${x.sources.some((src) => src !== "hamness") ? "~" : ""}${money(x.costMicros)}`,
+            value: x.costMicros,
+            text: `${x.sources.some((src) => src !== "hamness") ? "~" : ""}${money(x.costMicros)} · ${count(x.calls)} ${x.calls === 1 ? "call" : "calls"}`,
           })),
         )
       : empty("No model calls in this range."),
@@ -529,7 +546,7 @@ function taskRows(t: TaskListRow): HTMLTableRowElement[] {
       t.outcome === "open" ? taskLive(t.sessionId) : null,
       t.source !== "hamness" ? h("span", { class: "tag" }, SOURCE_LABEL[t.source]) : null,
     ),
-    h("td", { class: "hide-sm" }, when(t.startedAt)),
+    whenCell(t.startedAt, "when hide-sm"),
     h("td", { class: "num" }, money(t.costMicros)),
     h("td", { class: "num hide-sm" }, duration(t.durationMs)),
     h("td", {}, pill(OUTCOME_KIND[t.outcome], t.outcome)),
@@ -572,7 +589,7 @@ async function tasksView(): Promise<Node[]> {
     const page = await getJson<Page<TaskListRow>>("/v1/tasks", { ...params, cursor });
     for (const t of page.rows) tbody.append(...taskRows(t));
     more.hidden = !page.nextCursor;
-    more.onclick = page.nextCursor ? () => void load(page.nextCursor ?? undefined) : null;
+    more.onclick = page.nextCursor ? () => void loadMore(load, page.nextCursor) : null;
     return page;
   };
   const first = await load();
@@ -629,6 +646,7 @@ function callCell(d: DecisionListRow): HTMLElement {
     {
       type: "button",
       class: "callbtn",
+      "data-key": `call:${d.id}`,
       "aria-expanded": "false",
       "aria-label": "Show the full call",
     },
@@ -641,6 +659,54 @@ function callCell(d: DecisionListRow): HTMLElement {
     code.textContent = open ? d.callFull : d.call;
   });
   return h("td", { class: "call" }, toggle);
+}
+
+/**
+ * The reason with paths inside the session's folder written relative to it; when that shortened
+ * it, a click shows the full text.
+ */
+function reasonCell(d: DecisionListRow): HTMLElement {
+  const full = d.reason ?? "";
+  const short = relativeToCwd(full, d.sessionCwd);
+  const rule = d.rule ? h("div", { class: "muted" }, h("code", {}, d.rule)) : null;
+  if (short === full) return h("td", { class: "reason" }, full, rule);
+  const text = h("span", {}, short);
+  const toggle = h(
+    "button",
+    {
+      type: "button",
+      class: "reasonbtn",
+      "data-key": `reason:${d.id}`,
+      "aria-expanded": "false",
+      title: `Paths relative to ${d.sessionCwd}. Click for the full text.`,
+    },
+    text,
+  );
+  toggle.addEventListener("click", () => {
+    const open = toggle.getAttribute("aria-expanded") !== "true";
+    toggle.setAttribute("aria-expanded", String(open));
+    text.textContent = open ? full : short;
+  });
+  return h("td", { class: "reason" }, toggle, rule);
+}
+
+const TABLE_ROLES: Record<string, string> = {
+  THEAD: "rowgroup",
+  TBODY: "rowgroup",
+  TR: "row",
+  TH: "columnheader",
+  TD: "cell",
+};
+
+/**
+ * Explicit table roles for `el` and what is under it: at phone width the decisions table is laid
+ * out as cards (`display: block` and grid), which makes browsers drop the implicit ones.
+ */
+function tableRoles(el: HTMLElement): void {
+  for (const node of [el, ...el.querySelectorAll("*")]) {
+    const role = TABLE_ROLES[node.tagName];
+    if (role) node.setAttribute("role", role);
+  }
 }
 
 async function decisionsView(): Promise<Node[]> {
@@ -675,22 +741,18 @@ async function decisionsView(): Promise<Node[]> {
         h(
           "tr",
           {},
-          h("td", {}, when(d.createdAt)),
-          h("td", {}, h("code", {}, d.tool)),
+          whenCell(d.createdAt),
+          h("td", { class: "tool" }, h("code", {}, d.tool)),
           callCell(d),
-          h("td", {}, pill(VERDICT_KIND[d.verdict], d.verdict)),
-          h("td", {}, d.decidedBy),
+          h("td", { class: "verdict" }, pill(VERDICT_KIND[d.verdict], d.verdict)),
+          h("td", { class: "by" }, d.decidedBy),
           h("td", { class: "hide-sm" }, d.sessionSource ? SOURCE_LABEL[d.sessionSource] : "none"),
-          h(
-            "td",
-            { class: "reason" },
-            d.reason ?? "",
-            d.rule ? h("div", { class: "muted" }, h("code", {}, d.rule)) : null,
-          ),
+          reasonCell(d),
         ),
       );
     more.hidden = !page.nextCursor;
-    more.onclick = page.nextCursor ? () => void load(page.nextCursor ?? undefined) : null;
+    more.onclick = page.nextCursor ? () => void loadMore(load, page.nextCursor) : null;
+    tableRoles(tbody);
     return page;
   };
   const first = await load();
@@ -700,7 +762,7 @@ async function decisionsView(): Promise<Node[]> {
         { class: "table-wrap" },
         h(
           "table",
-          {},
+          { class: "decisions", role: "table" },
           h("caption", { class: "sr-only" }, "Safety decisions, newest first"),
           h(
             "thead",
@@ -721,6 +783,8 @@ async function decisionsView(): Promise<Node[]> {
         ),
       )
     : empty(`No safety decisions ${inRange(state.range)}.`);
+  const decisions = table.querySelector<HTMLElement>("table.decisions");
+  if (decisions) tableRoles(decisions);
   return [card("Safety decisions", filters, table, more)];
 }
 
@@ -883,6 +947,106 @@ function signedOut(): HTMLElement {
   );
 }
 
+/** The current view's content, its data fetched; detached until the caller puts it in. */
+async function viewContent(): Promise<Node[]> {
+  let content: Node[];
+  if (state.view === "overview") {
+    const report = await getJson<StatsReport>("/v1/stats", {
+      range: state.range,
+      source: state.source,
+      tz,
+    });
+    content = overview(report);
+  } else if (state.view === "tasks") content = await tasksView();
+  else content = await decisionsView();
+  const title = h(
+    "h1",
+    { class: "sr-only" },
+    `${state.view[0]?.toUpperCase()}${state.view.slice(1)}, ${RANGE_LABEL[state.range]}`,
+  );
+  return [title, ...content];
+}
+
+/** "Load more" was used: a background refresh would drop the extra pages, so it waits. */
+function loadMore(load: (cursor?: string) => Promise<unknown>, cursor: string | null) {
+  document.getElementById("main")?.setAttribute("data-paged", "");
+  return load(cursor ?? undefined);
+}
+
+/**
+ * Refreshes the open view in the background: the old content stays until the new data is in,
+ * with no loading state. Skipped while a view loads, while the user has a row open, more pages
+ * loaded, the chart's tooltip up or focus inside the view (the next event or poll tries again).
+ */
+/**
+ * Why a background refresh must not replace the view now. `wait`: the user is typing or reading
+ * the chart's tooltip, so try again soon. `keep`: a full load is under way, or the user opened a
+ * row or loaded more pages, which a refresh would undo; the next event or poll looks again.
+ */
+function refreshBlocked(main: HTMLElement | null): "wait" | "keep" | undefined {
+  if (!main?.isConnected) return "keep";
+  if (main.hasAttribute("aria-busy") || main.hasAttribute("data-paged")) return "keep";
+  if (main.querySelector('[aria-expanded="true"]')) return "keep";
+  if (main.querySelector(".chart-tip:not([hidden])")) return "wait";
+  const active = document.activeElement;
+  if (active && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)) return "wait";
+  return undefined;
+}
+
+/** A focused element's identity that survives a re-render: its id, data-key or aria-controls. */
+function focusKey(el: Element | null): string | undefined {
+  if (!el || el === document.body) return undefined;
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const key = el.getAttribute("data-key");
+  if (key !== null) return `[data-key="${CSS.escape(key)}"]`;
+  const controls = el.getAttribute("aria-controls");
+  if (controls !== null) return `[aria-controls="${CSS.escape(controls)}"]`;
+  return undefined;
+}
+
+let refreshSeq = 0;
+
+/**
+ * Refreshes the open view in the background: the old content stays until the new data is in,
+ * with no loading state, and focus comes back to the same control. False when it held off and
+ * should be tried again (see `refreshBlocked`); an older refresh that answers late is dropped.
+ */
+async function quietRefresh(): Promise<boolean> {
+  const main = document.getElementById("main");
+  const before = refreshBlocked(main);
+  if (before) return before === "keep";
+  const mine = generation;
+  const seq = ++refreshSeq;
+  try {
+    const content = await viewContent();
+    if (mine !== generation || seq !== refreshSeq) return true;
+    const after = refreshBlocked(main);
+    if (after || !main) return after === "keep";
+    const focus = focusKey(document.activeElement);
+    const y = window.scrollY;
+    disposeCharts(main);
+    main.replaceChildren(...content);
+    window.scrollTo(0, y);
+    if (focus) main.querySelector<HTMLElement>(focus)?.focus({ preventScroll: true });
+    return true;
+  } catch (err) {
+    // Keep what is on screen; a rejected token still signs out.
+    if (err instanceof Unauthorized && mine === generation) app.replaceChildren(signedOut());
+    return true;
+  }
+}
+
+const refresher = new Refresher({
+  refresh: () => quietRefresh(),
+  hidden: () => document.visibilityState === "hidden",
+});
+document.addEventListener("visibilitychange", () => refresher.visibilityChanged());
+
+function onLiveEvent(e: HamnessEvent | undefined): void {
+  syncLive();
+  if (e && refreshesOn(e, state.view)) refresher.poke();
+}
+
 async function render(): Promise<void> {
   const mine = ++generation;
   if (!takeToken()) {
@@ -891,7 +1055,8 @@ async function render(): Promise<void> {
   }
   if (!live) {
     live = true;
-    connectLive(takeToken, runs, syncLive);
+    connectLive(takeToken, runs, onLiveEvent);
+    refresher.start();
   }
   // The new view's own heading and a quiet line until its data is in: the old view's content
   // is gone the moment the view changes, and a stale answer never lands (`generation`).
@@ -907,26 +1072,12 @@ async function render(): Promise<void> {
       ),
     ),
   );
+  disposeCharts(app);
   app.replaceChildren(header(), controls(), main);
   try {
-    let content: Node[];
-    if (state.view === "overview") {
-      const report = await getJson<StatsReport>("/v1/stats", {
-        range: state.range,
-        source: state.source,
-        tz,
-      });
-      if (mine !== generation) return;
-      content = overview(report);
-    } else if (state.view === "tasks") content = await tasksView();
-    else content = await decisionsView();
+    const content = await viewContent();
     if (mine !== generation) return;
-    const title = h(
-      "h1",
-      { class: "sr-only" },
-      `${state.view[0]?.toUpperCase()}${state.view.slice(1)}, ${RANGE_LABEL[state.range]}`,
-    );
-    main.replaceChildren(title, ...content);
+    main.replaceChildren(...content);
   } catch (err) {
     if (mine !== generation) return;
     if (err instanceof Unauthorized) app.replaceChildren(signedOut());
