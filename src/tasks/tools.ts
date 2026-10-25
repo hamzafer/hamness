@@ -15,11 +15,14 @@ export interface TaskToolHandle {
   ): Promise<{ result: CheckResult; task: TaskView }>;
 }
 
-/** Added to the system prompt: the proof gate in a few lines. */
+/** Added to the system prompt: the proof gate in a few lines, and how to change files. */
 export const PROOF_GATE_PROMPT = `## Tasks and proof (hamness)
 Work happens in tasks. Call task_start(goal) when you begin a piece of work, and task_done(summary) when it is finished.
 Before task_done, attach evidence with prove: a command hamness re-runs itself (tests, build, lint), a file you produced, a URL to fetch, or a PR/commit whose CI hamness reads. hamness checks the evidence; you cannot mark it passed.
-A task is verified only if its latest check passed after your last file change. Commands that prove nothing (echo, true, cat, ls, \`|| true\`) are refused; tests, builds, linters and typecheckers count. A file you wrote yourself, or a check after you edited its package.json, Makefile or test config, is weak evidence and does not verify alone. Otherwise the task closes as unverified, shown in red to the user. Only the user can override that. If a check fails, fix the problem and prove again.`;
+A task is verified only if its latest check passed after your last file change. Commands that prove nothing (echo, true, cat, ls, \`|| true\`) are refused; tests, builds, linters and typecheckers count. A file you wrote yourself, or a check after you edited its package.json, Makefile or test config, is weak evidence and does not verify alone. Otherwise the task closes as unverified, shown in red to the user. Only the user can override that. If a check fails, fix the problem and prove again.
+
+## Changing files (hamness)
+Create and change files with the edit and write tools. Use bash only to run things (tests, builds, git, scripts), never to write files: no heredocs, \`cat >\`, \`echo >\`, \`tee\` or \`sed -i\`. hamness cannot check a command that writes files, so it asks the user every time, and a write through bash after a check counts as a file change that needs a new proof.`;
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 

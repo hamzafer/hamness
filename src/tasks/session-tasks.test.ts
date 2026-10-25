@@ -537,6 +537,61 @@ describe("a check whose config the agent edited is weak (V-H1)", () => {
   });
 });
 
+/** A bash tool call on the current task, finished with `status`. */
+function bashTool(t: SessionTasks, command: string, status: "ok" | "denied" = "ok") {
+  const id = chat.addToolCall(
+    { ...ids, taskId: t.attributionId() },
+    { messageId: undefined, tool: "bash", argsJson: JSON.stringify({ command }) },
+  );
+  chat.finishToolCall(id, { status, summary: status });
+  return id;
+}
+
+describe("bash that writes files counts as an edit (ADR 0019, issue #16)", () => {
+  test("a heredoc into a file after the passing check: unverified, until it passes again", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    await tick();
+    bashTool(t, "cat > calc.ts <<'EOF'\nexport const add = (a, b) => a + b;\nEOF");
+    await tick();
+    expect(t.gate().verified).toBe(false);
+    expect(t.gate().reason).toContain("changed after");
+    await t.prove({ kind: "command", command: PASS });
+    expect(t.done("fixed").outcome).toBe("verified");
+  });
+
+  test("bash that only runs things, or was denied, changes nothing", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    await tick();
+    bashTool(t, "bun test 2>&1");
+    bashTool(t, "echo x > a.ts", "denied");
+    await tick();
+    expect(t.done("fixed").outcome).toBe("verified");
+  });
+
+  test("writing package.json through bash makes the check weak", async () => {
+    const t = tasks();
+    t.start("make tests pass");
+    bashTool(t, 'echo \'{"scripts":{"test":"exit 0"}}\' > package.json');
+    await tick();
+    const r = await t.prove({ kind: "command", command: PASS });
+    expect(r.result.details.weakReason).toContain("package.json");
+    expect(t.done("done").outcome).toBe("unverified");
+  });
+
+  test("a turn that wrote a file through bash without proof closes unverified", () => {
+    const t = tasks();
+    t.beginTurn("write it");
+    const id = t.attributionId() as string;
+    bashTool(t, "printf x | tee out.txt");
+    t.endTurn();
+    expect(row(id)?.outcome).toBe("unverified");
+  });
+});
+
 describe("implicit tasks and checks that could not run (R-L3)", () => {
   test("a turn whose only evidence is an error and no edits is dropped", async () => {
     const t = new SessionTasks({
