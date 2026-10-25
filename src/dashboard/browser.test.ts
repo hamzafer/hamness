@@ -199,6 +199,38 @@ suite("dashboard in a browser", () => {
   );
 
   test(
+    "switching views shows a quiet loading state for the new view, never the old one's rows",
+    async () => {
+      const page = await open("dark");
+      const nav = page.getByRole("navigation");
+      await nav.getByRole("button", { name: "Tasks", exact: true }).click();
+      await page.locator("table.tasks").waitFor();
+      let release = () => {};
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      await page.route("**/v1/decisions**", async (route) => {
+        await held;
+        await route.continue();
+      });
+      await nav.getByRole("button", { name: "Decisions", exact: true }).click();
+      const main = page.locator("#main");
+      expect(await main.getAttribute("aria-busy")).toBe("true");
+      expect(await page.locator("table.tasks").count()).toBe(0);
+      expect(await main.locator(".card-title").textContent()).toBe("Safety decisions");
+      expect(await main.locator(".loading").textContent()).toContain("Loading");
+      // The header and range controls stay put while the view loads.
+      expect(await page.locator(".controls").count()).toBe(1);
+      release();
+      await loaded(page);
+      await page.locator("main table tbody td.call").first().waitFor();
+      expect(await main.locator(".loading").count()).toBe(0);
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
     "screenshots in light and dark; no sideways scroll at phone width",
     async () => {
       for (const scheme of ["light", "dark"] as const) {

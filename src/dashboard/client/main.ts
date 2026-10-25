@@ -710,6 +710,11 @@ async function decisionsView(): Promise<Node[]> {
 // ---- Shell ----
 
 const app = document.getElementById("app") as HTMLElement;
+const VIEW_TITLE: Record<View, string> = {
+  overview: "Overview",
+  tasks: "Tasks",
+  decisions: "Safety decisions",
+};
 let generation = 0;
 
 function header(): HTMLElement {
@@ -805,10 +810,19 @@ async function render(): Promise<void> {
     app.replaceChildren(signedOut());
     return;
   }
+  // The new view's own heading and a quiet line until its data is in: the old view's content
+  // is gone the moment the view changes, and a stale answer never lands (`generation`).
   const main = h(
     "main",
     { id: "main", "aria-busy": "true" },
-    h("p", { class: "muted" }, "Loading..."),
+    card(
+      VIEW_TITLE[state.view],
+      h(
+        "p",
+        { class: "loading", role: "status" },
+        `Loading ${VIEW_TITLE[state.view].toLowerCase()}…`,
+      ),
+    ),
   );
   app.replaceChildren(header(), controls(), main);
   try {
