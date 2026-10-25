@@ -1,6 +1,6 @@
 # 0011: Claude through an API key only; ChatGPT plan login through Pi
 
-**Status:** accepted, 2026-10-24; partly superseded by ADR 0023 (the ChatGPT plan is the default, `hamness login openai` uses Pi's `openai-codex` flow, and an Anthropic key is optional)
+**Status:** accepted, 2026-10-24; partly superseded by ADR 0024 (the ChatGPT plan is the default, `hamness login openai` uses Pi's `openai-codex` flow, and an Anthropic key is optional)
 
 Pi can sign in to Anthropic with a Claude Pro/Max subscription (OAuth) and read `ANTHROPIC_OAUTH_TOKEN`. hamness turns both off: Claude subscriptions are offered for Claude Code and Anthropic's own apps, and using them to power a third-party harness risks breaking Anthropic's terms (and the user's account). hamness calls Claude with an API key only, from `ANTHROPIC_API_KEY` or the key file (`hamness keys set anthropic`). `hamness login anthropic` refuses with that advice, a stored Anthropic OAuth credential stops the daemon from starting a session, and `ANTHROPIC_OAUTH_TOKEN` without an API key is an error.
 

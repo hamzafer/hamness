@@ -63,7 +63,7 @@ function interaction(io: CliIo): AuthInteraction {
 
 /**
  * What `hamness login <name>` signs in to. `openai` (and `chatgpt`) is the ChatGPT plan: Pi's
- * `openai-codex` provider, OAuth only, so no API key can reach its models (ADR 0023).
+ * `openai-codex` provider, OAuth only, so no API key can reach its models (ADR 0024).
  */
 const LOGIN_PROVIDER: Readonly<Record<string, string>> = {
   openai: "openai-codex",

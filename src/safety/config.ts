@@ -21,7 +21,7 @@ import { parsePermission, type Rule } from "./rules.ts";
  *
  * The judge's settings are user-only (a repo cannot raise the budget):
  * `{ "safety": { "judge": { "model": "claude-haiku-5-5", "dailyBudgetUsd": 1, "dailyCalls": 500, "timeoutSec": 8 } } }`
- * (`dailyCalls` caps judge calls on a ChatGPT plan, which cost $0; ADR 0023)
+ * (`dailyCalls` caps judge calls on a ChatGPT plan, which cost $0; ADR 0024)
  */
 
 export type { SafetyMode };
@@ -147,7 +147,7 @@ export interface JudgeConfig {
   model: string;
   /** True when the user config names the model. */
   modelSet: boolean;
-  /** Judge calls per local day on a ChatGPT plan, where calls cost $0 (ADR 0023). */
+  /** Judge calls per local day on a ChatGPT plan, where calls cost $0 (ADR 0024). */
   dailyCallCap: number;
   /** Spend cap per local day, in micro-dollars. */
   dailyBudgetMicros: number;

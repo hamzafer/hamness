@@ -91,7 +91,7 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
     } catch {
       return "on"; // the judge call reports the config error
     }
-    // A ChatGPT plan call costs $0, so the cap is on calls (ADR 0023).
+    // A ChatGPT plan call costs $0, so the cap is on calls (ADR 0024).
     if (onPlan()) {
       if (callsToday() + reservedCalls >= cap) {
         unpricedReason = `${BUDGET_REACHED}: ${cap} judge calls today on the ChatGPT plan (safety.judge.dailyCalls)`;

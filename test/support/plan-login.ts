@@ -13,7 +13,7 @@ export function fakeCodexToken(opts: { tier?: string; account?: boolean } = {}):
 /**
  * A synthetic ChatGPT plan login in `<dataDir>/pi/auth.json`, as `hamness login openai` leaves
  * it (Pi's `openai-codex` provider). It expires far in the future, so nothing refreshes it.
- * `provider: "openai"` writes a login stored before ADR 0023 (Pi's Sign in with ChatGPT).
+ * `provider: "openai"` writes a login stored before ADR 0024 (Pi's Sign in with ChatGPT).
  */
 export function writePlanLogin(
   dataDir: string,

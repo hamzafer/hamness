@@ -176,7 +176,7 @@ export type BackendJudge = ((
 ) => Promise<JudgeVerdict>) & {
   /**
    * `plan`: a ChatGPT plan model, whose calls cost $0, so the controller caps calls per day
-   * instead of dollars (ADR 0023). Absent or `api`: the dollar budget applies.
+   * instead of dollars (ADR 0024). Absent or `api`: the dollar budget applies.
    */
   billing?: "plan" | "api";
   /** The model it judges with, when fixed by how it was built (the plan judge). */

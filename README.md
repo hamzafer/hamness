@@ -35,7 +35,7 @@ This links `hamness` into Bun's global bin dir (`~/.bun/bin`; add it to your `PA
 
 A global install resolves dependencies afresh: it doesn't read hamness's `bun.lock` or `bunfig.toml`. Direct dependencies are exact pins either way, but their own dependencies take the newest version their ranges allow. For the exact locked set, install from a clone as above. To hold a global install to a minimum release age too, put `[install]` `minimumReleaseAge = 259200` in `~/.bunfig.toml`.
 
-**2. Sign in with your ChatGPT plan.** hamness runs on your ChatGPT subscription, not on pay-per-token API keys (ADR 0023):
+**2. Sign in with your ChatGPT plan.** hamness runs on your ChatGPT subscription, not on pay-per-token API keys (ADR 0024):
 
 ```sh
 hamness login openai      # opens the ChatGPT sign-in (or a device code); stored in hamness's data dir

@@ -67,7 +67,7 @@ interface ModelSourceRow {
   output: number;
   cacheRead: number;
   cacheWrite: number;
-  /** Calls billed to the ChatGPT plan ($0 each, ADR 0023). */
+  /** Calls billed to the ChatGPT plan ($0 each, ADR 0024). */
   planCalls: number;
 }
 

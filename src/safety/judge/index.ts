@@ -44,7 +44,7 @@ export interface JudgeChoice {
 }
 
 /**
- * Picks the judge (ADR 0023), never a pay-per-token one the user did not choose:
+ * Picks the judge (ADR 0024), never a pay-per-token one the user did not choose:
  * 1. `safety.judge.model` in the user config: that model (an Anthropic one needs a key).
  * 2. A ChatGPT plan login: the plan's cheap judge model, at $0 a call (a daily call cap applies).
  * 3. An Anthropic key, when the user chose an API model (HAMNESS_MODEL or defaultModel).

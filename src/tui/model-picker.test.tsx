@@ -79,7 +79,7 @@ async function render(client: DaemonClient & SessionCommands) {
   return setup;
 }
 
-describe("billing labels (ADR 0023)", () => {
+describe("billing labels (ADR 0024)", () => {
   test("the picker shows plan models at $0 (plan) and API models with their key; the header says plan", async () => {
     const plan: ModelInfo = {
       ...info("openai-codex/gpt-5.6-terra", "GPT-5.6 Terra", 2, 12),

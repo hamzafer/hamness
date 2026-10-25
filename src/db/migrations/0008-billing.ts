@@ -1,7 +1,7 @@
 import type { Migration } from "./types.ts";
 
 /*
- * How a model call was paid for (ADR 0023). `plan`: billed to the user's ChatGPT plan, so
+ * How a model call was paid for (ADR 0024). `plan`: billed to the user's ChatGPT plan, so
  * `cost_micros` is 0 and stats show "$0 (plan)". NULL: a pay-per-token API call, or a row from
  * before this migration.
  */

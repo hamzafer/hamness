@@ -30,7 +30,7 @@ function replyText(res: AssistantMessage): string | undefined {
 }
 
 /**
- * A judge on a ChatGPT plan model through Pi's runtime (ADR 0023): low thinking, a strict
+ * A judge on a ChatGPT plan model through Pi's runtime (ADR 0024): low thinking, a strict
  * verdict, $0 per call. Anything but a valid verdict asks; errors throw, and the controller
  * turns them into ask.
  */
