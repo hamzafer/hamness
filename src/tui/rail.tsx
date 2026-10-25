@@ -1,5 +1,8 @@
 import { For, Show } from "solid-js";
 import type { ContextFill } from "../events/types.ts";
+import { ORB_LABEL } from "../orbs/activity.ts";
+import type { OrbState } from "../orbs/index.ts";
+import { ORB_COLS, Orb } from "./orb.tsx";
 import {
   elapsedMs,
   formatCost,
@@ -10,6 +13,7 @@ import {
   type RailCheck,
   type RailState,
   type RailTask,
+  railOrbState,
   sessionCostMicros,
 } from "./rail-state.ts";
 
@@ -47,6 +51,8 @@ export interface RailProps {
   full?: boolean;
   /** Text width inside the rail. */
   width?: number;
+  /** Seconds into the orbs' animation; without it running agents show a still orb. */
+  orbSeconds?: number | undefined;
 }
 
 function clip(s: string, width: number): string {
@@ -96,7 +102,14 @@ export function Rail(props: RailProps) {
       <Label name="cost" value={formatCost(sessionCostMicros(props.state))} width={width()} />
       <For each={props.state.agents}>
         {(agent) => (
-          <AgentRow agent={agent} now={props.now} width={width()} full={props.full ?? false} />
+          <AgentRow
+            agent={agent}
+            orb={railOrbState(props.state, agent)}
+            orbSeconds={props.orbSeconds}
+            now={props.now}
+            width={width()}
+            full={props.full ?? false}
+          />
         )}
       </For>
       <For each={props.state.checks}>
@@ -143,8 +156,25 @@ function Label(props: { name: string; value: string; width: number }) {
   );
 }
 
-function AgentRow(props: { agent: RailAgent; now: number; width: number; full: boolean }) {
+function AgentRow(props: {
+  agent: RailAgent;
+  orb: OrbState | undefined;
+  orbSeconds: number | undefined;
+  now: number;
+  width: number;
+  full: boolean;
+}) {
   const a = () => props.agent;
+  /** Room for the text beside the orb (its cells and a space). */
+  const textWidth = () => (props.orb ? props.width - ORB_COLS - 1 : props.width);
+  /** Beside the orb, plain words for what it does, and the file a running tool touches. */
+  const detail = () => {
+    if (!props.orb) return tool();
+    const label = ORB_LABEL[props.orb];
+    const withFile = a().toolRunning && a().file ? `${label}  ${a().file}` : label;
+    // The words come first: the file only when both fit beside the orb.
+    return withFile.length <= textWidth() ? withFile : label;
+  };
   const failed = () => a().status === "error";
   const elapsed = () => {
     const ms = elapsedMs(a(), props.now);
@@ -159,14 +189,25 @@ function AgentRow(props: { agent: RailAgent; now: number; width: number; full: b
         when={props.full}
         fallback={
           <>
-            <text fg={failed() ? COLORS.error : COLORS.text}>
-              {spread(head(), elapsed(), props.width)}
-            </text>
-            <Show when={tool()}>
-              <text fg={a().toolRunning ? COLORS.text : COLORS.muted}>
-                {clip(`  ${tool()}`, props.width)}
-              </text>
-            </Show>
+            <box flexDirection="row">
+              <Show when={props.orb}>
+                {(orb: () => OrbState) => (
+                  <box paddingRight={1} flexShrink={0}>
+                    <Orb state={orb()} seconds={props.orbSeconds} />
+                  </box>
+                )}
+              </Show>
+              <box flexDirection="column" flexGrow={1}>
+                <text fg={failed() ? COLORS.error : COLORS.text}>
+                  {spread(head(), elapsed(), textWidth())}
+                </text>
+                <Show when={detail()}>
+                  <text fg={a().toolRunning ? COLORS.text : COLORS.muted}>
+                    {clip(props.orb ? detail() : `  ${detail()}`, textWidth())}
+                  </text>
+                </Show>
+              </box>
+            </box>
             <text fg={COLORS.muted}>{clip(`  ${totals()}`, props.width)}</text>
           </>
         }

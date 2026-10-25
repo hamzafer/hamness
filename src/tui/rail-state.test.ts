@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent, SessionSnapshot } from "../events/types.ts";
 import type { TaskView } from "../tasks/types.ts";
-import { applyRailEvent, initialRail, type RailState, sessionCostMicros } from "./rail-state.ts";
+import {
+  applyRailEvent,
+  initialRail,
+  type RailAgent,
+  type RailState,
+  railOrbState,
+  sessionCostMicros,
+} from "./rail-state.ts";
 
 const SID = "s-1";
 const MAIN = "a-main";
@@ -359,5 +366,40 @@ describe("the current task", () => {
       });
     }
     expect(s.checks.map((c) => c.id)).toEqual(["e5", "e6", "e7"]);
+  });
+});
+
+describe("rail orbs", () => {
+  test("each agent's orb follows its activity, and goes when the run ends", () => {
+    const f = feed();
+    const orb = () => railOrbState(f.state, main(f.state) as RailAgent);
+    expect(orb()).toBeUndefined();
+    f.send(1000, { type: "agent.status", busy: true });
+    expect(orb()).toBe("solving");
+    f.send(1100, { type: "agent.message.start", messageId: "m1", role: "assistant" });
+    f.send(1200, { type: "agent.message.delta", messageId: "m1", text: "Hi" });
+    expect(orb()).toBe("composing");
+    f.send(1300, { type: "agent.message.end", messageId: "m1", role: "assistant", text: "Hi" });
+    f.send(1400, { type: "agent.tool.start", toolCallId: "t1", tool: "grep", args: {} });
+    expect(orb()).toBe("searching");
+    f.send(1500, { type: "safety.approval.request", approval: { id: "ap1", tool: "edit" } });
+    expect(orb()).toBe("listening");
+    f.send(1600, {
+      type: "safety.approval.resolved",
+      approvalId: "ap1",
+      decision: "deny",
+      by: "user",
+    });
+    f.send(1700, { type: "agent.tool.end", toolCallId: "t1", status: "ok", summary: "" });
+    f.send(1800, {
+      type: "check.start",
+      taskId: "t",
+      evidenceId: "e1",
+      kind: "command",
+      label: "bun test",
+    });
+    expect(orb()).toBe("working");
+    f.send(1900, { type: "agent.status", busy: false });
+    expect(orb()).toBeUndefined();
   });
 });
