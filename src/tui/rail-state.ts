@@ -65,7 +65,8 @@ function railTask(t: TaskView): RailTask {
 /** One checker run of the proof gate (P-M3): a command re-run, a fetch, a file, a CI read. */
 export interface RailCheck {
   id: string;
-  kind: EvidenceKind;
+  /** Unknown for a check whose start this client never saw. */
+  kind?: EvidenceKind;
   label: string;
   status: "running" | Exclude<EvidenceStatus, "pending">;
   summary?: string;
@@ -308,6 +309,18 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
         check.status = e.status;
         check.summary = e.summary;
         check.endedAt = now;
+      } else {
+        // Its start came before this client attached (a snapshot holds finished checks only).
+        state.checks.push({
+          id: e.evidenceId,
+          label: "earlier check",
+          status: e.status,
+          summary: e.summary,
+          startedAt: now,
+          endedAt: now,
+        });
+        if (state.checks.length > RAIL_CHECKS_KEPT)
+          state.checks.splice(0, state.checks.length - RAIL_CHECKS_KEPT);
       }
       return;
     }

@@ -86,6 +86,20 @@ describe("rail state", () => {
     expect(state.checks.map((c) => c.id)).toEqual(["e1", "e2"]);
   });
 
+  test("a check that ends without a start seen (it ran during a reattach) still gets its row", () => {
+    const { state, send } = feed();
+    send(5000, {
+      type: "check.end",
+      taskId: "t1",
+      evidenceId: "e9",
+      status: "failed",
+      summary: "exit 1",
+    });
+    expect(state.checks).toMatchObject([
+      { id: "e9", status: "failed", summary: "exit 1", startedAt: 5000, endedAt: 5000 },
+    ]);
+  });
+
   test("a snapshot taken mid-run shows the main agent running its open tool", () => {
     const s = initialRail(
       snap({

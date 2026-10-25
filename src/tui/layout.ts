@@ -29,9 +29,9 @@ export function shortPath(path: string, home: string, max: number): string {
 }
 
 /**
- * Rows `text` takes in a box `width` columns wide, wrapped at spaces (a longer word breaks
- * inside it). The input box grows by this: the textarea only counts its wrapped rows after it
- * has drawn them.
+ * Rows `text` takes in a box `width` columns wide (wide characters count two), wrapped at
+ * spaces (a longer word breaks inside it). The input box grows by this: the textarea only
+ * counts its wrapped rows after it has drawn them.
  */
 export function wrappedRows(text: string, width: number): number {
   const w = Math.max(1, width);
@@ -40,15 +40,16 @@ export function wrappedRows(text: string, width: number): number {
     let used = 0;
     let lineRows = 1;
     for (const word of line.split(" ")) {
-      const need = used === 0 ? word.length : used + 1 + word.length;
+      const cols = Bun.stringWidth(word);
+      const need = used === 0 ? cols : used + 1 + cols;
       if (need <= w) {
         used = need;
         continue;
       }
       if (used > 0) lineRows++;
       // The word on fresh rows, broken where it is longer than one.
-      lineRows += Math.max(0, Math.ceil(word.length / w) - 1);
-      used = word.length % w || w;
+      lineRows += Math.max(0, Math.ceil(cols / w) - 1);
+      used = cols % w || w;
     }
     rows += lineRows;
   }

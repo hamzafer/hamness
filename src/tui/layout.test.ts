@@ -51,6 +51,10 @@ describe("wrappedRows", () => {
     expect(wrappedRows("aaaa bbbbb", 10)).toBe(1);
     // A word longer than the row breaks inside it.
     expect(wrappedRows("x".repeat(25), 10)).toBe(3);
+    // Wide characters take two columns each.
+    expect(wrappedRows("日本語の文", 10)).toBe(1);
+    expect(wrappedRows("日本語の文章です", 10)).toBe(2);
+    expect(wrappedRows("日本 語の文章", 10)).toBe(2);
   });
 });
 
