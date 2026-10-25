@@ -125,6 +125,11 @@ export interface ContextFill {
  */
 export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & (
   | { type: "agent.status"; busy: boolean }
+  /**
+   * The user stopped the agent's run (Esc, or its parent was stopped). Not an error: it comes
+   * before the run's last `agent.status`, in place of an `agent.error`.
+   */
+  | { type: "agent.stopped" }
   | { type: "agent.message.start"; messageId: string; role: "user" | "assistant" }
   | { type: "agent.message.delta"; messageId: string; text: string }
   | {

@@ -73,9 +73,7 @@ export function YoloBanner() {
   return (
     <box height={1} flexShrink={0} backgroundColor={COLORS.danger}>
       <text fg="#000000">
-        {
-          " YOLO MODE: every tool call runs without a check. Set safety.mode in config.json to leave. "
-        }
+        {" YOLO MODE  Every tool call runs without a check. Type /mode ask to leave. "}
       </text>
     </box>
   );

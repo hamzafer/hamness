@@ -8,6 +8,7 @@ import {
   formatCost,
   formatElapsed,
   formatTokens,
+  RAIL_CHECKS,
   RAIL_GLYPH,
   type RailAgent,
   type RailCheck,
@@ -87,7 +88,11 @@ export function Rail(props: RailProps) {
       {...(props.full ? { flexGrow: 1 } : { width: RAIL_WIDTH })}
       minHeight={0}
     >
-      <Label name="task" value={props.state.task?.goal ?? "none yet"} width={width()} />
+      <Label
+        name={props.state.task && props.state.task.outcome !== "open" ? "last" : "task"}
+        value={props.state.task?.goal ?? "none yet"}
+        width={width()}
+      />
       <Show when={props.state.task}>
         {(task: () => RailTask) => (
           <text fg={COLORS[taskTone(task())]}>{clip(`      ${taskStatus(task())}`, width())}</text>
@@ -100,6 +105,9 @@ export function Rail(props: RailProps) {
         </text>
       </Show>
       <Label name="cost" value={formatCost(sessionCostMicros(props.state))} width={width()} />
+      <Show when={props.full && props.state.tasks.length > 0}>
+        <TaskList tasks={props.state.tasks} width={width()} />
+      </Show>
       <For each={props.state.agents}>
         {(agent) => (
           <AgentRow
@@ -112,7 +120,7 @@ export function Rail(props: RailProps) {
           />
         )}
       </For>
-      <For each={props.state.checks}>
+      <For each={props.full ? props.state.checks : props.state.checks.slice(-RAIL_CHECKS)}>
         {(check) => <CheckRow check={check} now={props.now} width={width()} />}
       </For>
     </box>
@@ -139,6 +147,26 @@ function CheckRow(props: { check: RailCheck; now: number; width: number }) {
       <Show when={c().summary}>
         <text fg={COLORS.muted}>{clip(`  ${c().status}: ${c().summary}`, props.width)}</text>
       </Show>
+    </box>
+  );
+}
+
+/** Full screen: the session's tasks, one line each, with how they ended. */
+function TaskList(props: { tasks: RailTask[]; width: number }) {
+  const goalWidth = () => Math.max(10, Math.min(48, props.width - 32));
+  return (
+    <box flexDirection="column" paddingTop={1}>
+      <text fg={COLORS.muted}>tasks this session</text>
+      <For each={props.tasks}>
+        {(task) => (
+          <text fg={COLORS[taskTone(task)]}>
+            {clip(
+              `  ${clip(task.goal, goalWidth()).padEnd(goalWidth())}  ${taskStatus(task)}`,
+              props.width,
+            )}
+          </text>
+        )}
+      </For>
     </box>
   );
 }

@@ -1,4 +1,4 @@
-import type { TaskAction } from "../tasks/types.ts";
+import type { TaskAction, TaskView } from "../tasks/types.ts";
 
 /**
  * The user's task commands: `/task <goal>`, `/override [reason]`, `/abandon [reason]`.
@@ -11,4 +11,12 @@ export function parseTaskCommand(text: string): TaskAction | { error: string } |
   if (m[1] === "task") return arg ? { kind: "start", goal: arg } : { error: "usage: /task <goal>" };
   const kind = m[1] as "override" | "abandon";
   return arg ? { kind, reason: arg } : { kind };
+}
+
+/** The chat's one-line answer to a task command the daemon accepted. */
+export function taskConfirmation(action: TaskAction, task: TaskView): string {
+  if (action.kind === "start") return `Task opened: ${task.goal}`;
+  const reason = task.reason ?? action.reason;
+  const head = action.kind === "override" ? "Task accepted without proof" : "Task dropped";
+  return reason ? `${head}: ${reason}` : `${head}.`;
 }

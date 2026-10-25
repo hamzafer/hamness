@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent, SessionSnapshot } from "../events/types.ts";
-import { applyEvent, initialState, waitingForModel } from "./chat-state.ts";
+import { addSystemLine, applyEvent, initialState, waitingForModel } from "./chat-state.ts";
 
 const SID = "s-1";
 const MAIN = "a-main";
@@ -98,5 +98,88 @@ describe("chat state", () => {
       },
     } as AgentEvent);
     expect(waitingForModel(state)).toBe(false);
+  });
+
+  test("a user stop adds a quiet Stopped. line; a subagent's stop stays in the rail", () => {
+    const state = initialState(snapshot);
+    let seq = 0;
+    const send = (body: Record<string, unknown>) =>
+      applyEvent(state, { sessionId: SID, seq: ++seq, agentId: MAIN, ...body } as AgentEvent);
+
+    send({ type: "agent.stopped", agentId: SUB });
+    expect(state.items).toEqual([]);
+    send({ type: "agent.message.start", messageId: "m1", role: "assistant" });
+    send({ type: "agent.message.end", messageId: "m1", role: "assistant", text: "Half" });
+    send({ type: "agent.stopped" });
+    send({ type: "agent.status", busy: false });
+    expect(state.items.at(-1)).toMatchObject({ kind: "system", text: "Stopped.", tone: "muted" });
+    expect(state.notice).toBeUndefined();
+  });
+
+  test("system lines get their own ids, in order", () => {
+    const state = initialState(snapshot);
+    addSystemLine(state, "Task opened: ship it", "ok");
+    addSystemLine(state, "no open task", "error");
+    expect(state.items).toEqual([
+      { kind: "system", id: "sys-1", text: "Task opened: ship it", tone: "ok" },
+      { kind: "system", id: "sys-2", text: "no open task", tone: "error" },
+    ]);
+  });
+
+  test("thinking level, name and safety mode follow their events", () => {
+    const state = initialState(snapshot);
+    let seq = 0;
+    const send = (body: Record<string, unknown>) =>
+      applyEvent(state, { sessionId: SID, seq: ++seq, ...body } as AgentEvent);
+    send({ type: "agent.thinking", level: "high" });
+    send({ type: "session.name", name: "parser work" });
+    send({ type: "safety.mode", mode: "yolo", warning: "careful" });
+    expect(state.session).toMatchObject({
+      thinkingLevel: "high",
+      name: "parser work",
+      mode: "yolo",
+    });
+  });
+
+  test("compaction: progress while it runs, then one line with the sizes", () => {
+    const state = initialState(snapshot);
+    let seq = 0;
+    const send = (body: Record<string, unknown>) =>
+      applyEvent(state, { sessionId: SID, seq: ++seq, ...body } as AgentEvent);
+    send({ type: "agent.compaction.start", reason: "manual" });
+    expect(state.compacting).toBe(true);
+    send({
+      type: "agent.compaction.end",
+      reason: "manual",
+      aborted: false,
+      tokensBefore: 142_000,
+      tokensAfter: 18_000,
+    });
+    expect(state.compacting).toBe(false);
+    expect(state.items.at(-1)).toMatchObject({
+      kind: "system",
+      text: "Compacted: 142k → 18k tokens",
+      tone: "ok",
+    });
+    send({ type: "agent.compaction.start", reason: "threshold" });
+    send({
+      type: "agent.compaction.end",
+      reason: "threshold",
+      aborted: false,
+      tokensBefore: 190_000,
+      tokensAfter: 20_500,
+    });
+    expect(state.items.at(-1)).toMatchObject({
+      text: "Context was nearly full, so it was compacted: 190k → 20.5k tokens",
+    });
+    send({ type: "agent.compaction.start", reason: "manual" });
+    send({ type: "agent.compaction.end", reason: "manual", aborted: false, error: "no model" });
+    expect(state.items.at(-1)).toMatchObject({
+      text: "Compaction failed: no model",
+      tone: "error",
+    });
+    send({ type: "agent.compaction.start", reason: "manual" });
+    send({ type: "agent.compaction.end", reason: "manual", aborted: true });
+    expect(state.items.at(-1)).toMatchObject({ text: "Compaction stopped.", tone: "muted" });
   });
 });

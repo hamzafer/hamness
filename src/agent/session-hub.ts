@@ -244,6 +244,8 @@ export interface SessionListItem {
   lastActivityAt: number;
   messageCount: number;
   costMicros: number;
+  /** The main agent's first prompt, for a session with no name. */
+  firstPrompt?: string;
   /** The cwd's live session now. */
   current: boolean;
   /** Pi still has its session file, so `/resume` can continue it. */
@@ -320,6 +322,11 @@ interface PendingEntry {
 export class SessionHub {
   private readonly store: ChatStore;
   private readonly byId = new Map<string, LiveSession>();
+  /**
+   * The last event number of each session this daemon ran. A resumed session goes on from it
+   * (seq counts up per session id, across lives), so a client never drops its new events.
+   */
+  private readonly lastSeqs = new Map<string, number>();
   private readonly byCwd = new Map<string, Promise<LiveSession>>();
   private readonly safety: SafetyCheck;
   /** Subagents waiting for a slot, oldest first, and how many run now. */
@@ -629,6 +636,7 @@ export class SessionHub {
       lastActivityAt: r.lastActivityAt,
       messageCount: r.messageCount,
       costMicros: r.costMicros,
+      ...(r.firstPrompt ? { firstPrompt: r.firstPrompt } : {}),
       current: r.id === current,
       resumable: r.messageCount === 0 || (r.piSessionId !== null && files.has(r.piSessionId)),
     }));
@@ -1043,7 +1051,7 @@ export class SessionHub {
       cwd,
       runner,
       models: base,
-      seq: 0,
+      seq: this.lastSeqs.get(sessionId) ?? 0,
       busy: false,
       replies: new Map(),
       currentReplyRow: undefined,
@@ -1221,7 +1229,8 @@ export class SessionHub {
     if (sub.status === "aborted") sub.error ??= "stopped";
     this.store.setAgentStatus(sub.id, sub.status);
     sub.agent?.runner.dispose();
-    if (sub.status !== "done") {
+    if (sub.status === "aborted") this.emit(live, { type: "agent.stopped" }, sub.id);
+    else if (sub.status !== "done") {
       this.emit(live, { type: "agent.error", message: sub.error ?? sub.status }, sub.id);
     }
     if (sub.agent) this.setBusy(live, sub.agent, false);
@@ -1415,6 +1424,7 @@ export class SessionHub {
   /** Publishes a session event about `agentId` (default: the main agent). */
   private emit(live: LiveSession, body: EventBody, agentId: string = live.agentId): void {
     live.seq += 1;
+    this.lastSeqs.set(live.id, live.seq);
     this.opts.publish({
       ...body,
       sessionId: live.id,
@@ -1491,7 +1501,13 @@ export class SessionHub {
         reply.text = e.text;
         reply.done = true;
         agent.lastText = e.text;
-        if (e.error) agent.lastError = explainModelError(e.error, this.opts.dataDir, e.provider);
+        // Pi ends a reply cut short by `abort()` as `aborted`, with an error message. A user
+        // stop is not a failure (`agent.stopped` says it); real errors stay errors.
+        const error =
+          e.error && e.stopReason !== "aborted"
+            ? explainModelError(e.error, this.opts.dataDir, e.provider)
+            : undefined;
+        if (error) agent.lastError = error;
         else delete agent.lastError;
         if (agent === live) live.lastReply = e.text;
         this.store.setMessageContent(reply.rowId, redactText(e.text));
@@ -1510,7 +1526,7 @@ export class SessionHub {
           messageId: reply.rowId,
           role: "assistant",
           text: e.text,
-          ...(e.error ? { error: explainModelError(e.error, this.opts.dataDir, e.provider) } : {}),
+          ...(error ? { error } : {}),
         });
         emit({
           type: "agent.usage",
@@ -1616,6 +1632,7 @@ export class SessionHub {
         }
         // A subagent's last status waits for its result (`finishSubagent`); no Stop hooks.
         if (agent !== live) return;
+        if (e.aborted) emit({ type: "agent.stopped" });
         this.afterRun(live, e.aborted).catch(() => {
           live.currentReplyRow = undefined;
           live.tasks.endTurn();

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
-import type { DaemonClient } from "../client/client.ts";
+import { noCommands } from "../../test/support/tui-client.ts";
+import type { DaemonClient, SessionCommands } from "../client/client.ts";
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import { App } from "./app.tsx";
 
@@ -21,7 +22,8 @@ const snapshot: SessionSnapshot = {
 
 function fakeClient() {
   let listener: (e: HamnessEvent) => void = () => {};
-  const client: DaemonClient = {
+  const client: DaemonClient & SessionCommands = {
+    ...noCommands(),
     ready: Promise.resolve(),
     attach: async () => snapshot,
     prompt: async () => {},
@@ -44,7 +46,7 @@ function fakeClient() {
   return { client, send };
 }
 
-async function render(client: DaemonClient, clock: { t: number }) {
+async function render(client: DaemonClient & SessionCommands, clock: { t: number }) {
   setup = await testRender(() => <App client={client} snapshot={snapshot} now={() => clock.t} />, {
     width: 100,
     height: 24,

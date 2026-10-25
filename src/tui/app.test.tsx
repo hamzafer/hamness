@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { TextAttributes } from "@opentui/core";
 import { testRender } from "@opentui/solid";
-import type { DaemonClient } from "../client/client.ts";
+import { noCommands } from "../../test/support/tui-client.ts";
+import type { DaemonClient, SessionCommands } from "../client/client.ts";
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import type { TaskAction } from "../tasks/types.ts";
 import { App } from "./app.tsx";
@@ -38,7 +39,8 @@ function fakeClient() {
   const prompts: string[] = [];
   const resumed: string[] = [];
   const actions: TaskAction[] = [];
-  const client: DaemonClient = {
+  const client: DaemonClient & SessionCommands = {
+    ...noCommands(),
     ready: Promise.resolve(),
     attach: async () => snapshot,
     prompt: async (_id, text) => {
@@ -80,7 +82,7 @@ function fakeClient() {
 }
 
 async function render(
-  client: DaemonClient,
+  client: DaemonClient & SessionCommands,
   snap: SessionSnapshot = snapshot,
   opts: { kittyKeyboard?: boolean } = {},
 ) {
@@ -420,16 +422,57 @@ describe("TUI chat layout (headless)", () => {
       { kind: "abandon" },
     ]);
     expect(fake.prompts).toEqual([]);
-    // A refused action shows the daemon's reason.
-    await s.waitFor(() => s.captureCharFrame().includes("no open task"));
+    // Each one answers in the chat; a refused one shows the daemon's reason there.
+    const frame = await frameWhere(s, (f) => f.includes("no open task"));
+    expect(frame).toContain("Task opened: ship the parser");
+    expect(frame).toContain("Task accepted without proof: checked by hand");
+    expect(frame).toContain("no open task: nothing to abandon");
   });
 
-  test("/task without a goal says how to use it", async () => {
+  test("/abandon with a reason says the task was dropped", async () => {
+    const fake = fakeClient();
+    fake.client.task = async (_id, action) => ({
+      id: "t1",
+      goal: "g",
+      implicit: false,
+      outcome: "abandoned",
+      ...(action.kind !== "start" && action.reason ? { reason: action.reason } : {}),
+      evidence: 0,
+      passed: 0,
+      costMicros: 0,
+      tokens: 0,
+      startedAt: 0,
+      durationMs: 0,
+    });
+    const s = await render(fake.client);
+    await s.mockInput.typeText("/abandon wrong approach");
+    s.mockInput.pressEnter();
+    await s.waitFor(() => s.captureCharFrame().includes("Task dropped: wrong approach"));
+  });
+
+  test("stopping a run with Esc shows a quiet Stopped. line, not an error", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    fake.send({ type: "agent.status", busy: true });
+    fake.send({ type: "agent.message.start", messageId: "m9", role: "assistant" });
+    fake.send({ type: "agent.message.delta", messageId: "m9", text: "Halfway" });
+    fake.send({ type: "agent.message.end", messageId: "m9", role: "assistant", text: "Halfway" });
+    fake.send({ type: "agent.stopped" });
+    fake.send({ type: "agent.status", busy: false });
+    const frame = await frameWhere(s, (f) => f.includes("Stopped."));
+    expect(frame).toContain("Stopped.");
+    expect(frame).not.toContain("error");
+    expect(frame).not.toContain("aborted");
+  });
+
+  test("/task without a goal: Enter in the menu completes it, Enter again says how to use it", async () => {
     const fake = fakeClient();
     const s = await render(fake.client);
     await s.mockInput.typeText("/task");
     s.mockInput.pressEnter();
-    await s.waitFor(() => s.captureCharFrame().includes("/task <goal>"));
+    await s.waitFor(() => /│\s*\/task \s*│/.test(s.captureCharFrame()));
+    s.mockInput.pressEnter();
+    await s.waitFor(() => s.captureCharFrame().includes("usage: /task <goal>"));
     expect(fake.actions).toEqual([]);
   });
 
@@ -465,7 +508,7 @@ describe("TUI chat layout (headless)", () => {
     const s = await render(fake.client);
     await s.mockInput.typeText("/frobnicate now");
     s.mockInput.pressEnter();
-    await s.waitForFrame((f) => f.includes("unknown command /frobnicate"));
+    await s.waitForFrame((f) => f.includes("Unknown command /frobnicate. Type / to see commands."));
     expect(fake.prompts).toEqual([]);
     // A path is a prompt, not a command.
     await s.mockInput.typeText("/work/demo/notes.txt what is in it?");

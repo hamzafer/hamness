@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
-import type { DaemonClient } from "../client/client.ts";
+import { noCommands } from "../../test/support/tui-client.ts";
+import type { DaemonClient, SessionCommands } from "../client/client.ts";
 import type {
   AgentEvent,
   ApprovalDecision,
@@ -47,7 +48,8 @@ function fakeClient() {
   const answers: Array<[string, ApprovalDecision]> = [];
   const prompts: string[] = [];
   let aborts = 0;
-  const client: DaemonClient = {
+  const client: DaemonClient & SessionCommands = {
+    ...noCommands(),
     ready: Promise.resolve(),
     attach: async () => snapshotWith(),
     prompt: async (_id, text) => {
@@ -76,7 +78,7 @@ function fakeClient() {
   return { client, answers, prompts, send, aborts: () => aborts };
 }
 
-async function render(client: DaemonClient, snapshot = snapshotWith()) {
+async function render(client: DaemonClient & SessionCommands, snapshot = snapshotWith()) {
   setup = await testRender(() => <App client={client} snapshot={snapshot} />, {
     width: 100,
     height: 24,

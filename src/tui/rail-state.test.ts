@@ -4,6 +4,7 @@ import type { TaskView } from "../tasks/types.ts";
 import {
   applyRailEvent,
   initialRail,
+  RAIL_CHECKS_KEPT,
   type RailAgent,
   type RailState,
   railOrbState,
@@ -156,6 +157,19 @@ describe("rail state", () => {
     expect(main(f.state)).toMatchObject({ status: "error", error: "overloaded" });
   });
 
+  test("a user stop ends the run as stopped, not as an error, until the next run", () => {
+    const f = feed();
+    f.send(1, { type: "agent.status", busy: true });
+    f.send(2, { type: "agent.message.end", messageId: "m9", role: "assistant", text: "half" });
+    f.send(3, { type: "agent.stopped" });
+    f.send(4, { type: "agent.status", busy: false });
+    expect(main(f.state)).toMatchObject({ status: "stopped", endedAt: 4 });
+    expect(main(f.state)?.error).toBeUndefined();
+    f.send(5, { type: "agent.status", busy: true });
+    f.send(6, { type: "agent.status", busy: false });
+    expect(main(f.state)?.status).toBe("done");
+  });
+
   test("events for another agent get their own row; other sessions and old events are dropped", () => {
     const f = feed();
     f.send(1, { type: "agent.status", busy: true, agentId: "a-sub" });
@@ -238,7 +252,8 @@ describe("rail state", () => {
       ["main", "idle"],
       ["scout", "running"],
       ["fixer", "done"],
-      ["lost", "error"],
+      // Stopped (by the user, or by a daemon restart), which is not a failure.
+      ["lost", "stopped"],
     ]);
     expect(sessionCostMicros(s)).toBe(7);
   });
@@ -301,7 +316,29 @@ describe("the current task", () => {
     apply(s, 4, { type: "task.start", task: view({ id: "t2", goal: "hi", implicit: true }) });
     expect(s.task?.id).toBe("t2");
     apply(s, 5, { type: "task.drop", taskId: "t2" });
-    expect(s.task).toBeUndefined();
+    // The dropped turn task leaves; the last closed one shows again.
+    expect(s.task).toMatchObject({ id: "t1", outcome: "unverified" });
+    expect(s.tasks.map((t) => t.id)).toEqual(["t1"]);
+  });
+
+  test("a closed task stays shown until a new one opens, and the session's tasks add up", () => {
+    const s = initialRail(snap(), 0);
+    apply(s, 1, { type: "task.start", task: view() });
+    apply(s, 2, { type: "task.end", task: view({ outcome: "verified", evidence: 2, passed: 2 }) });
+    // The next prompt opens an implicit turn task; a turn with no work drops it.
+    apply(s, 3, { type: "task.start", task: view({ id: "t2", goal: "thanks", implicit: true }) });
+    apply(s, 4, { type: "task.drop", taskId: "t2" });
+    expect(s.task).toMatchObject({ id: "t1", outcome: "verified", evidence: 2, passed: 2 });
+    apply(s, 5, { type: "task.start", task: view({ id: "t3", goal: "add a flag" }) });
+    expect(s.task?.id).toBe("t3");
+    apply(s, 6, {
+      type: "task.end",
+      task: view({ id: "t3", goal: "add a flag", outcome: "abandoned" }),
+    });
+    expect(s.tasks.map((t) => [t.id, t.outcome])).toEqual([
+      ["t1", "verified"],
+      ["t3", "abandoned"],
+    ]);
   });
 
   test("evidence for another task does not change the shown one", () => {
@@ -355,8 +392,8 @@ describe("the current task", () => {
       summary: "exit 1 in 40ms",
       endedAt: 3000,
     });
-    // Only the last few checks stay.
-    for (let i = 2; i < 8; i++) {
+    // Only the last RAIL_CHECKS_KEPT checks stay.
+    for (let i = 2; i < RAIL_CHECKS_KEPT + 5; i++) {
       apply(s, i + 1, {
         type: "check.start",
         taskId: "t1",
@@ -365,7 +402,8 @@ describe("the current task", () => {
         label: "u",
       });
     }
-    expect(s.checks.map((c) => c.id)).toEqual(["e5", "e6", "e7"]);
+    expect(s.checks).toHaveLength(RAIL_CHECKS_KEPT);
+    expect(s.checks.at(-1)?.id).toBe(`e${RAIL_CHECKS_KEPT + 4}`);
   });
 });
 
