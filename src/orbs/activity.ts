@@ -6,7 +6,10 @@ import type { OrbState } from "./types.ts";
  * both feed this, so an agent shows the same orb in each.
  */
 export interface Activity {
-  /** Its run is going (`agent.status` busy). */
+  /**
+   * Its run is going: `agent.status` busy, or for `LiveRuns` any sign of work since (a client
+   * that joins mid-run never saw the busy event). Only `agent.status` not busy ends it.
+   */
   running: boolean;
   /** Tool calls waiting for the user's answer. */
   approvals: number;
@@ -65,7 +68,8 @@ interface LiveAgent extends Activity {
 
 /**
  * Every agent's activity across the daemon, from the event stream alone (the dashboard has no
- * snapshot). A page opened mid-run catches up on the run's next event.
+ * snapshot). A page opened mid-run, or back from a reconnect, picks the run up from its next
+ * tool, text, check or approval event. Agents that finished with nothing waiting are dropped.
  */
 export class LiveRuns {
   private agents = new Map<string, LiveAgent>();
@@ -104,19 +108,25 @@ export class LiveRuns {
         }
         break;
       case "agent.message.delta":
+        a.running = true;
         a.streaming = true;
         break;
       case "agent.message.start":
+        a.running = true;
+        a.streaming = false;
+        break;
       case "agent.message.end":
         a.streaming = false;
         break;
       case "agent.tool.start":
+        a.running = true;
         a.open.push({ id: e.toolCallId, tool: e.tool });
         break;
       case "agent.tool.end":
         a.open = a.open.filter((t) => t.id !== e.toolCallId);
         break;
       case "safety.approval.request":
+        a.running = true;
         a.approvalIds.add(e.approval.id);
         break;
       case "safety.approval.resolved":
@@ -127,6 +137,7 @@ export class LiveRuns {
         }
         break;
       case "check.start":
+        a.running = true;
         a.checks.add(e.evidenceId);
         break;
       case "check.end":
@@ -140,6 +151,16 @@ export class LiveRuns {
     else delete a.tool;
     a.approvals = a.approvalIds.size;
     a.checking = a.checks.size > 0;
+    // Forget agents with no run and nothing waiting: finished ones, and late events (usage,
+    // context) about an agent that has stopped.
+    for (const [k, other] of this.agents) {
+      if (!other.running && other.approvals === 0) this.agents.delete(k);
+    }
+  }
+
+  /** How many agents it still tracks. */
+  tracked(): number {
+    return this.agents.size;
   }
 
   /** Agents with a run going or an approval waiting. */

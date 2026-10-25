@@ -1,7 +1,7 @@
 /**
  * What the daemon's agents are doing right now, from its event stream (`/v1/events`, the same
- * WebSocket the TUI uses). The page has no snapshot: one opened mid-run catches up on the run's
- * next event.
+ * WebSocket the TUI uses). The page has no snapshot: one opened mid-run, or reconnected, picks a
+ * run up from its next tool, text, check or approval event (see `LiveRuns`).
  */
 import type { HamnessEvent } from "../../events/types.ts";
 import { LiveRuns, ORB_LABEL } from "../../orbs/activity.ts";

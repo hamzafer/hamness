@@ -70,4 +70,43 @@ describe("live runs (the dashboard's view of the event stream)", () => {
     live.apply(ev({ type: "daemon.stopping" } as unknown as Record<string, unknown>));
     expect(live.state()).toBeUndefined();
   });
+
+  test("joining mid-run (or after a reconnect): any activity means the run is going", () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ type: "agent.tool.start", toolCallId: "t", tool: "grep", args: {} }, "searching"],
+      [{ type: "agent.message.start", messageId: "m", role: "assistant" }, "solving"],
+      [{ type: "agent.message.delta", messageId: "m", text: "x" }, "composing"],
+      [
+        { type: "check.start", taskId: "t", evidenceId: "e", kind: "command", label: "x" },
+        "working",
+      ],
+      [{ type: "safety.approval.request", approval: { id: "ap" } }, "listening"],
+    ];
+    for (const [body, state] of cases) {
+      const live = new LiveRuns();
+      live.apply(ev(body));
+      expect(live.state()).toBe(state as ReturnType<LiveRuns["state"]>);
+    }
+    const live = new LiveRuns();
+    live.apply(ev({ type: "agent.message.delta", messageId: "m", text: "x" }));
+    live.apply(ev({ type: "agent.status", busy: false }));
+    expect(live.state()).toBeUndefined();
+  });
+
+  test("finished agents are forgotten; one still waiting on an approval is kept", () => {
+    const live = new LiveRuns();
+    live.apply(ev({ type: "agent.status", busy: true }));
+    live.apply(ev({ type: "agent.status", busy: true, agentId: "a-sub" }));
+    live.apply(ev({ type: "safety.approval.request", agentId: "a-sub", approval: { id: "ap" } }));
+    live.apply(ev({ type: "agent.status", busy: false }));
+    live.apply(ev({ type: "agent.status", busy: false, agentId: "a-sub" }));
+    expect(live.tracked()).toBe(1);
+    live.apply(
+      ev({ type: "safety.approval.resolved", approvalId: "ap", decision: "deny", by: "user" }),
+    );
+    expect(live.tracked()).toBe(0);
+    // Events after the run ended (usage, a late context) don't leave a row behind.
+    live.apply(ev({ type: "agent.context", tokens: 1, contextWindow: 2, percent: 50 }));
+    expect(live.tracked()).toBe(0);
+  });
 });
