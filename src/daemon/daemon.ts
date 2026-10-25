@@ -13,6 +13,7 @@ import type { HamnessEvent } from "../events/types.ts";
 import { createSafetyService, type SafetyCheck } from "../safety/index.ts";
 import { type BackendJudge, createJudgeController } from "../safety/judge/index.ts";
 import { VERSION } from "../version.ts";
+import { describeDaemon, type FoundDaemon, findDaemons } from "./processes.ts";
 import { claimState, type DaemonState, releaseState, writeState } from "./state.ts";
 import { getStatus } from "./status.ts";
 
@@ -46,16 +47,62 @@ export interface RunningDaemon {
   readonly db: HamnessDb;
   /** Broadcasts to every connected client. */
   emit(event: HamnessEvent): void;
-  stop(): Promise<void>;
+  /**
+   * Ends the sessions (and their MCP servers), the API server and its connections, then the
+   * database, and gives up the data dir. Bounded by `deadlineMs` (default 5 s): what had not
+   * finished by then is named in `open`, and the database and state files are closed anyway.
+   */
+  stop(opts?: { deadlineMs?: number }): Promise<StopReport>;
 }
 
+export interface StopReport {
+  /** Shutdown steps still unfinished at the deadline; empty when everything closed. */
+  open: string[];
+}
+
+/** How long `stop()` waits for sessions and connections to close before giving up on them. */
+export const STOP_DEADLINE_MS = 5000;
+
 export class DaemonAlreadyRunningError extends Error {
-  constructor(readonly owner: DaemonState) {
+  constructor(
+    readonly owner: DaemonState,
+    detail?: string,
+  ) {
     super(
-      `hamness daemon is already running (pid ${owner.pid}${owner.url ? `, ${owner.url}` : ""})`,
+      detail ??
+        `hamness daemon is already running (pid ${owner.pid}${owner.url ? `, ${owner.url}` : ""})`,
     );
     this.name = "DaemonAlreadyRunningError";
   }
+}
+
+/**
+ * A daemon process found on the data dir that has no daemon.json: one that stopped serving
+ * but never exited, or one from before the lock file. Two daemons must never share the DB.
+ * A process `ps` alone finds counts once it is a few seconds old, so a daemon that lost a
+ * start race (and exits) never blocks the winner.
+ */
+function blockingDaemon(dataDir: string, self: number): FoundDaemon | undefined {
+  return findDaemons(dataDir).find((p) => p.pid !== self && (p.locked || p.ageSeconds >= 5));
+}
+
+/** Pids whose lock file this process removes on exit (tests start several daemons in one). */
+const heldLocks = new Map<string, number>();
+let exitHookInstalled = false;
+
+function holdLock(path: string, pid: number, startedAt: number): void {
+  writeState(path, { pid, startedAt });
+  heldLocks.set(path, pid);
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.once("exit", () => {
+    for (const [lock, owner] of heldLocks) releaseState(lock, owner);
+  });
+}
+
+function releaseLock(path: string, pid: number): void {
+  if (heldLocks.get(path) === pid) heldLocks.delete(path);
+  releaseState(path, pid);
 }
 
 /**
@@ -74,6 +121,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     claim = claimState(paths.daemonState, pid);
   }
   if (!claim.ok) throw new DaemonAlreadyRunningError(claim.owner);
+  const stray = blockingDaemon(opts.dataDir, pid);
+  if (stray) {
+    releaseState(paths.daemonState, pid);
+    throw new DaemonAlreadyRunningError(
+      { pid: stray.pid },
+      `another hamness daemon process still runs on this data dir (${describeDaemon(stray)}) without answering; stop it with \`hamness stop --all\``,
+    );
+  }
 
   let db: HamnessDb | undefined;
   try {
@@ -84,6 +139,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     writeTokenFile(paths.token, token);
 
     const startedAt = Date.now();
+    holdLock(paths.daemonLock, pid, startedAt);
     let publish: (event: HamnessEvent) => void = () => {};
     const hooks = createClaudeHooks({
       claudeDir: opts.claudeConfigDir ?? claudeConfigDir(process.env),
@@ -146,25 +202,49 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     publish = (event) => api.publish(event);
     writeState(paths.daemonState, { pid, url: api.url, startedAt });
 
-    let stopped = false;
+    let stopping: Promise<StopReport> | undefined;
     return {
       pid,
       url: api.url,
       wsUrl: api.wsUrl,
       db: openDb,
       emit: (event) => api.publish(event),
-      async stop() {
-        if (stopped) return;
-        stopped = true;
-        api.publish({ type: "daemon.stopping" });
-        hub.stop();
-        await api.stop();
-        openDb.close();
-        releaseState(paths.daemonState, pid);
+      stop(stopOpts = {}) {
+        stopping ??= (async () => {
+          const end = Date.now() + (stopOpts.deadlineMs ?? STOP_DEADLINE_MS);
+          const open: string[] = [];
+          /** Runs one step until it settles or the shared deadline passes. */
+          const step = async (name: string, run: () => Promise<unknown>) => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const late = new Promise<false>((resolve) => {
+              timer = setTimeout(() => resolve(false), Math.max(250, end - Date.now()));
+            });
+            const settled = Promise.resolve()
+              .then(run)
+              .then(
+                () => true,
+                () => true,
+              );
+            if (!(await Promise.race([settled, late]))) open.push(name);
+            clearTimeout(timer);
+          };
+          api.publish({ type: "daemon.stopping" });
+          await step("sessions and their MCP servers", () => hub.stop());
+          await step("the API server and its connections", () => api.stop());
+          try {
+            openDb.close();
+          } catch {
+            open.push("the database");
+          }
+          releaseState(paths.daemonState, pid);
+          return { open };
+        })();
+        return stopping;
       },
     };
   } catch (err) {
     db?.close();
+    releaseLock(paths.daemonLock, pid);
     releaseState(paths.daemonState, pid);
     throw err;
   }
