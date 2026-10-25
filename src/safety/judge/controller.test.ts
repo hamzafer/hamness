@@ -65,7 +65,7 @@ describe("the judge controller", () => {
       },
       { model: "claude-sonnet-5-5" },
     );
-    expect(await c.judge(req())).toEqual(allow);
+    expect(await c.judge(req())).toEqual({ ...allow, model: "claude-sonnet-5-5" });
     expect(models).toEqual(["claude-sonnet-5-5"]);
     expect(c.state("s-1")).toBe("on");
     expect(c.states).toEqual([]);
@@ -121,7 +121,7 @@ describe("the judge controller", () => {
     seed.decision({ at: NOW - 15 * HOUR, verdict: "allow", source: "judge", costMicros: 5000 });
     seed.decision({ at: NOW - HOUR, verdict: "allow", source: "rule", costMicros: 5000 });
     seed.decision({ at: NOW - HOUR, verdict: "allow", source: "judge", costMicros: 999 });
-    expect(await c.judge(req())).toEqual(allow);
+    expect(await c.judge(req())).toMatchObject(allow);
     expect(c.state("s-1")).toBe("on");
 
     seed.decision({ at: NOW - HOUR, verdict: "allow", source: "judge", costMicros: 1 });
@@ -162,7 +162,7 @@ describe("the judge controller", () => {
     expect(calls).toBe(6);
 
     // Other sessions keep their judge.
-    expect(await c.judge(req("s-2"))).toEqual(allow);
+    expect(await c.judge(req("s-2"))).toMatchObject(allow);
     expect(c.state("s-2")).toBe("on");
 
     expect(c.resume("s-1")).toBe(true);
@@ -207,7 +207,7 @@ describe("the judge controller", () => {
     const second = await c.judge(req("s-2"));
     expect(second).toMatchObject({ verdict: "ask", skipped: true, reason: "judge budget reached" });
     release();
-    expect(await first).toEqual(allow);
+    expect(await first).toMatchObject(allow);
     expect(calls).toBe(1);
   });
 

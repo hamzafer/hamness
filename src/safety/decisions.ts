@@ -20,6 +20,8 @@ export interface DecisionRecord {
   latencyMs: number;
   category?: string;
   costMicros?: number;
+  /** For a judge decision: the model that judged (`provider/id`). */
+  judgeModel?: string;
 }
 
 export interface DecisionRow {
@@ -35,6 +37,8 @@ export interface DecisionRow {
   mode: string | null;
   latencyMs: number | null;
   costMicros: number;
+  /** The model that judged, for a judge decision stored since migration 11; else null. */
+  judgeModel: string | null;
   createdAt: number;
 }
 
@@ -48,8 +52,8 @@ export class DecisionStore {
     this.db.sqlite
       .query(
         `INSERT INTO decisions (id, session_id, tool_call_id, tool, args_json, verdict, source,
-           reason, rule, mode, category, latency_ms, cost_micros, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           reason, rule, mode, category, latency_ms, cost_micros, judge_model, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -65,6 +69,7 @@ export class DecisionStore {
         d.category ?? null,
         Math.max(0, Math.round(d.latencyMs)),
         d.costMicros ?? 0,
+        d.judgeModel ?? null,
         now,
         now,
       );
@@ -90,6 +95,7 @@ export class DecisionStore {
           mode: string | null;
           latency_ms: number | null;
           cost_micros: number;
+          judge_model: string | null;
           created_at: number;
         },
         [string] | []
@@ -108,6 +114,7 @@ export class DecisionStore {
       mode: r.mode,
       latencyMs: r.latency_ms,
       costMicros: r.cost_micros,
+      judgeModel: r.judge_model,
       createdAt: r.created_at,
     }));
   }

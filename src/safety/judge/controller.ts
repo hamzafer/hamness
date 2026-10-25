@@ -146,10 +146,9 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
           reject(new Error("timeout"));
         }, timeoutMs);
       });
-      return await Promise.race([
-        backend(req, { signal: ac.signal, model: backend.model ?? config.model }),
-        timedOut,
-      ]);
+      const model = backend.model ?? config.model;
+      const v = await Promise.race([backend(req, { signal: ac.signal, model }), timedOut]);
+      return { ...v, model: v.model ?? model };
     } catch (err) {
       if (ac.signal.aborted) {
         // The request was sent and likely billed: count its estimated input cost (S-L2).
