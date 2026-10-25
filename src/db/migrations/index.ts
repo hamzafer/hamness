@@ -2,6 +2,7 @@ import { initial } from "./0001-initial.ts";
 import { importTables } from "./0002-import.ts";
 import { safetyDecisions } from "./0003-safety.ts";
 import { tasksAndProof } from "./0006-tasks.ts";
+import { sessionCommands } from "./0007-session-commands.ts";
 import type { Migration } from "./types.ts";
 
 /** Every migration in version order. Append only (versions may have gaps). */
@@ -10,6 +11,7 @@ export const migrations: readonly Migration[] = [
   importTables,
   safetyDecisions,
   tasksAndProof,
+  sessionCommands,
 ];
 
 /** The schema version a fresh database migrates to. */

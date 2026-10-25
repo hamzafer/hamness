@@ -57,6 +57,8 @@ export interface TaskListQuery extends StatsQuery {
 export interface TaskListRow {
   id: string;
   sessionId: string;
+  /** The session's name (`/name`), if it has one. */
+  sessionName: string | null;
   source: Source;
   goal: string;
   /** A turn task: hamness opened it for one turn with no task open. */
@@ -83,6 +85,7 @@ export interface TaskListRow {
 interface TaskSqlRow {
   id: string;
   sessionId: string;
+  sessionName: string | null;
   source: Source;
   goal: string;
   implicit: number;
@@ -111,7 +114,7 @@ export function listTasks(sqlite: Database, q: TaskListQuery): Page<TaskListRow>
       TaskSqlRow,
       [number, number, string | null, string | null, number, number | null, string | null, number]
     >(
-      `SELECT t.id, t.session_id AS sessionId, s.source, t.goal, t.implicit, t.outcome,
+      `SELECT t.id, t.session_id AS sessionId, s.title AS sessionName, s.source, t.goal, t.implicit, t.outcome,
          t.outcome_reason AS reason, t.summary, coalesce(t.started_at, t.created_at) AS at,
          t.ended_at AS endedAt,
          coalesce(mc.cost, 0) AS cost, coalesce(mc.tokens, 0) AS tokens,
@@ -152,6 +155,7 @@ export function listTasks(sqlite: Database, q: TaskListQuery): Page<TaskListRow>
     rows.map((r) => ({
       id: r.id,
       sessionId: r.sessionId,
+      sessionName: r.sessionName,
       source: r.source,
       goal: r.goal,
       implicit: r.implicit === 1,

@@ -1,7 +1,13 @@
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { ModelSwitchError, SessionBusyError, type SessionHub } from "../agent/session-hub.ts";
-import type { ApprovalDecision } from "../events/types.ts";
+import {
+  ModelSwitchError,
+  SESSION_NAME_MAX,
+  SessionBusyError,
+  SessionCommandError,
+  type SessionHub,
+} from "../agent/session-hub.ts";
+import type { ApprovalDecision, SafetyMode } from "../events/types.ts";
 import { TaskStateError } from "../tasks/session-tasks.ts";
 import type { TaskAction } from "../tasks/types.ts";
 
@@ -43,6 +49,9 @@ function isDirectory(path: string): boolean {
  * - `POST /v1/sessions/:id/abandon {reason?}`: the user drops the open task
  *   (all three: 409 when the task state doesn't allow it)
  * - `POST /v1/approvals/:id {decision}`: answers an approval (`allow-once`, `allow-always`, `deny`)
+ * - `GET /v1/sessions?cwd=`: the cwd's sessions, for `/resume`
+ * - the slash-command routes in `COMMANDS` below: new, resume, fork, compact, status, thinking,
+ *   name, export, last-reply, mode, compat (ADR 0021)
  */
 export function sessionRoutes(hub: SessionHub) {
   return async (req: Request, url: URL): Promise<Response | undefined> => {
@@ -59,6 +68,11 @@ export function sessionRoutes(hub: SessionHub) {
     const [, , id, action, extra] = parts;
     if (extra !== undefined) return undefined;
 
+    if (!id && req.method === "GET") {
+      const cwd = url.searchParams.get("cwd");
+      if (!cwd || !isAbsolute(cwd)) return json({ error: "cwd must be an absolute path" }, 400);
+      return json({ sessions: await hub.listSessions(cwd) });
+    }
     if (!id && req.method === "POST") {
       const body = await readJson(req);
       const cwd = body?.cwd;
@@ -137,9 +151,112 @@ export function sessionRoutes(hub: SessionHub) {
     if (action === "abort" && req.method === "POST") {
       return (await hub.abort(id)) ? json({ ok: true }) : json({ error: "no such session" }, 404);
     }
+    if (action && action in COMMANDS) {
+      const route = COMMANDS[action]?.[req.method];
+      if (!route) return undefined;
+      const body = req.method === "POST" ? await readJson(req) : {};
+      if (!body) return json({ error: "body must be a JSON object" }, 400);
+      try {
+        return await route(hub, id, body);
+      } catch (err) {
+        if (err instanceof SessionCommandError) return json({ error: err.message }, err.status);
+        if (err instanceof SessionBusyError) return json({ error: err.message }, 409);
+        if (err instanceof ModelSwitchError) return json({ error: err.message }, 400);
+        throw err;
+      }
+    }
     return undefined;
   };
 }
+
+type CommandRoute = (
+  hub: SessionHub,
+  id: string,
+  body: Record<string, unknown>,
+) => Response | Promise<Response>;
+
+const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+const SAFETY_MODES = new Set<string>(["ask", "auto", "yolo"]);
+
+/**
+ * The slash-command routes, `/v1/sessions/:id/<action>` (ADR 0021). Each throws
+ * `SessionCommandError` (its status), `SessionBusyError` (409) or answers itself.
+ */
+const COMMANDS: Record<string, Record<string, CommandRoute>> = {
+  new: { POST: async (hub, id) => json(await hub.newSession(id)) },
+  resume: {
+    POST: async (hub, id, body) => {
+      const target = str(body.sessionId);
+      if (!target) return json({ error: "sessionId must be a session id" }, 400);
+      return json(await hub.resume(id, target));
+    },
+  },
+  fork: {
+    POST: async (hub, id, body) => {
+      const messageId = str(body.messageId);
+      if (!messageId) return json({ error: "messageId must be a user message id" }, 400);
+      return json(await hub.fork(id, messageId), 201);
+    },
+  },
+  compact: {
+    POST: async (hub, id, body) => {
+      if (body.instructions !== undefined && typeof body.instructions !== "string") {
+        return json({ error: "instructions must be a string" }, 400);
+      }
+      const instructions = str(body.instructions);
+      return json(await hub.compact(id, instructions || undefined));
+    },
+  },
+  status: { GET: (hub, id) => json(hub.status(id)) },
+  thinking: {
+    GET: (hub, id) => json(hub.thinking(id)),
+    POST: (hub, id, body) => {
+      const level = str(body.level);
+      if (!level) return json({ error: "level must be a thinking level" }, 400);
+      return json(hub.setThinking(id, level));
+    },
+  },
+  name: {
+    POST: (hub, id, body) => {
+      const name = str(body.name).replace(/\s+/g, " ");
+      if (!name || name.length > SESSION_NAME_MAX) {
+        return json({ error: `name must be 1 to ${SESSION_NAME_MAX} characters` }, 400);
+      }
+      return json(hub.rename(id, name));
+    },
+  },
+  export: {
+    POST: async (hub, id, body) => {
+      const format = body.format ?? "html";
+      if (format !== "html" && format !== "jsonl") {
+        return json({ error: "format must be html or jsonl" }, 400);
+      }
+      if (body.path !== undefined && (typeof body.path !== "string" || !body.path.trim())) {
+        return json({ error: "path must be a non-empty string" }, 400);
+      }
+      const path = await hub.exportSession(id, format, {
+        ...(typeof body.path === "string" ? { path: body.path.trim() } : {}),
+        overwrite: body.overwrite === true,
+      });
+      return json({ path, format });
+    },
+  },
+  "last-reply": {
+    GET: (hub, id) => {
+      const text = hub.lastReply(id);
+      return text === undefined ? json({ error: "no reply yet" }, 404) : json({ text });
+    },
+  },
+  mode: {
+    GET: (hub, id) => json(hub.mode(id)),
+    POST: (hub, id, body) => {
+      const mode = str(body.mode);
+      if (!SAFETY_MODES.has(mode)) return json({ error: "mode must be ask, auto or yolo" }, 400);
+      return json(hub.setMode(id, mode as SafetyMode));
+    },
+  },
+  compat: { GET: (hub, id) => json(hub.compatInfo(id)) },
+};
 
 const DECISIONS = new Set<ApprovalDecision>(["allow-once", "allow-always", "deny"]);
 

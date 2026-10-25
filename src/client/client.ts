@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { openSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelInfo } from "../agent/models.ts";
+import type { CompactionOutcome } from "../agent/runner.ts";
+import type { SessionCompat, SessionListItem, SessionStatus } from "../agent/session-hub.ts";
 import type { Env } from "../config/paths.ts";
 import { dataPaths, ensureDataDir } from "../config/paths.ts";
 import { getStatus } from "../daemon/status.ts";
@@ -9,7 +11,9 @@ import type {
   ApprovalDecision,
   HamnessEvent,
   JudgeState,
+  SafetyMode,
   SessionSnapshot,
+  ThinkingLevel,
 } from "../events/types.ts";
 import type { TaskAction, TaskView } from "../tasks/types.ts";
 
@@ -32,6 +36,35 @@ export interface DaemonClient {
   subscribe(onEvent: (event: HamnessEvent) => void): () => void;
   /** Resolves once the event stream is open (after `subscribe`). */
   readonly ready: Promise<void>;
+}
+
+/** The slash commands' daemon calls (ADR 0021). Each rejects with the daemon's reason. */
+export interface SessionCommands {
+  /** `/new`, `/clear`: the new session's snapshot. */
+  newSession(sessionId: string): Promise<SessionSnapshot>;
+  /** The cwd's sessions, the most recently active first (`/resume`). */
+  listSessions(cwd: string): Promise<SessionListItem[]>;
+  resume(sessionId: string, targetId: string): Promise<SessionSnapshot>;
+  /** `/fork`: the new session, and the forked message's text for the input box. */
+  fork(sessionId: string, messageId: string): Promise<{ snapshot: SessionSnapshot; text: string }>;
+  compact(sessionId: string, instructions?: string): Promise<CompactionOutcome>;
+  status(sessionId: string): Promise<SessionStatus>;
+  thinking(sessionId: string): Promise<{ level: ThinkingLevel; levels: ThinkingLevel[] }>;
+  setThinking(
+    sessionId: string,
+    level: ThinkingLevel,
+  ): Promise<{ level: ThinkingLevel; levels: ThinkingLevel[] }>;
+  rename(sessionId: string, name: string): Promise<SessionSnapshot>;
+  exportSession(
+    sessionId: string,
+    format: "html" | "jsonl",
+    opts?: { path?: string; overwrite?: boolean },
+  ): Promise<string>;
+  /** `/copy`: undefined before the first reply. */
+  lastReply(sessionId: string): Promise<string | undefined>;
+  mode(sessionId: string): Promise<{ mode: SafetyMode; source: "session" | "config" }>;
+  setMode(sessionId: string, mode: SafetyMode): Promise<{ mode: SafetyMode; source: "session" }>;
+  compat(sessionId: string): Promise<SessionCompat>;
 }
 
 const MAIN = join(import.meta.dir, "..", "cli", "main.ts");
@@ -86,24 +119,29 @@ function lastLogError(path: string, from: number): string | undefined {
 }
 
 /** A client for the daemon that serves `dataDir`, using its token file. */
-export async function connectToDaemon(dataDir: string): Promise<DaemonClient> {
+export async function connectToDaemon(dataDir: string): Promise<DaemonClient & SessionCommands> {
   const status = await getStatus(dataDir);
   if (!status.running) throw new Error("the hamness daemon is not running");
   const token = readFileSync(dataPaths(dataDir).token, "utf8").trim();
   return httpClient(status.url, token);
 }
 
-export function httpClient(url: string, token: string): DaemonClient {
-  async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+export function httpClient(url: string, token: string): DaemonClient & SessionCommands {
+  async function send(method: string, path: string, body?: unknown) {
     const res = await fetch(`${url}${path}`, {
       method,
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const parsed = (await res.json().catch(() => ({}))) as { error?: string };
+    return { res, parsed };
+  }
+  async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const { res, parsed } = await send(method, path, body);
     if (!res.ok) throw new Error(parsed.error ?? `${method} ${path}: HTTP ${res.status}`);
     return parsed as T;
   }
+  const s = (id: string, action: string) => `/v1/sessions/${encodeURIComponent(id)}/${action}`;
 
   let markReady: () => void = () => {};
   const ready = new Promise<void>((resolve) => {
@@ -141,6 +179,35 @@ export function httpClient(url: string, token: string): DaemonClient {
             });
       return res.task;
     },
+    newSession: (id) => call<SessionSnapshot>("POST", s(id, "new"), {}),
+    listSessions: async (cwd) =>
+      (
+        await call<{ sessions: SessionListItem[] }>(
+          "GET",
+          `/v1/sessions?cwd=${encodeURIComponent(cwd)}`,
+        )
+      ).sessions,
+    resume: (id, targetId) =>
+      call<SessionSnapshot>("POST", s(id, "resume"), { sessionId: targetId }),
+    fork: (id, messageId) =>
+      call<{ snapshot: SessionSnapshot; text: string }>("POST", s(id, "fork"), { messageId }),
+    compact: (id, instructions) =>
+      call<CompactionOutcome>("POST", s(id, "compact"), instructions ? { instructions } : {}),
+    status: (id) => call<SessionStatus>("GET", s(id, "status")),
+    thinking: (id) => call("GET", s(id, "thinking")),
+    setThinking: (id, level) => call("POST", s(id, "thinking"), { level }),
+    rename: (id, name) => call<SessionSnapshot>("POST", s(id, "name"), { name }),
+    exportSession: async (id, format, opts = {}) =>
+      (await call<{ path: string }>("POST", s(id, "export"), { format, ...opts })).path,
+    lastReply: async (id) => {
+      const { res, parsed } = await send("GET", s(id, "last-reply"));
+      if (res.status === 404 && parsed.error === "no reply yet") return undefined;
+      if (!res.ok) throw new Error(parsed.error ?? `last-reply: HTTP ${res.status}`);
+      return (parsed as { text: string }).text;
+    },
+    mode: (id) => call("GET", s(id, "mode")),
+    setMode: (id, mode) => call("POST", s(id, "mode"), { mode }),
+    compat: (id) => call<SessionCompat>("GET", s(id, "compat")),
     subscribe(onEvent) {
       const ws = new WebSocket(`${url.replace(/^http/, "ws")}/v1/events?token=${token}`);
       ws.onopen = () => markReady();
