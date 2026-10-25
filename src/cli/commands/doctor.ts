@@ -12,6 +12,7 @@ import { hookSources } from "../../compat/hooks.ts";
 import { loadCompat } from "../../compat/index.ts";
 import { claudeConfigDir, claudeManagedDir, managedDirOption } from "../../compat/paths.ts";
 import type { Env } from "../../config/paths.ts";
+import { describeDaemon, findDaemons } from "../../daemon/processes.ts";
 import { getStatus } from "../../daemon/status.ts";
 import { loadJudgeConfig, loadSafetyConfig } from "../../safety/config.ts";
 import { chooseJudge } from "../../safety/judge/index.ts";
@@ -201,6 +202,16 @@ export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<n
       ? { level: "ok", text: `Daemon running (pid ${status.pid}, ${status.url})` }
       : { level: "info", text: "Daemon not running (`hamness` starts it)" },
   );
+  const strays = findDaemons(dataDir).filter(
+    (p) => p.pid !== process.pid && (!status.running || p.pid !== status.pid),
+  );
+  if (strays.length) {
+    checks.push({
+      level: "warn",
+      text: `${plural(strays.length, "stray daemon process")} for this data dir, not answering: ${strays.map(describeDaemon).join(", ")}`,
+      fix: ["Stop them all with `hamness stop --all` (then `hamness` starts a fresh one)"],
+    });
+  }
 
   checks.push(await gh(env.PATH));
 

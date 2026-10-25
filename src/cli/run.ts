@@ -72,7 +72,7 @@ const commands: Record<string, CommandEntry> = {
     run: statusCommand,
   },
   stop: {
-    summary: "Stop the daemon (sessions resume on the next start)",
+    summary: "Stop the daemon (continue a session with hamness -c)",
     usage: STOP_USAGE,
     run: stopCommand,
   },

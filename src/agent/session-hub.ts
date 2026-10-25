@@ -732,7 +732,7 @@ export class SessionHub {
     this.cancelApprovals(live);
     await Promise.all([...live.subagents.values()].map((sub) => this.stopSubagent(sub)));
     this.byId.delete(live.id);
-    live.runner.dispose();
+    void live.runner.dispose();
     if (!live.unsaved) this.store.endSession({ sessionId: live.id, agentId: live.agentId });
     this.opts.safetyModes?.setSessionMode(live.id, undefined);
   }
@@ -1006,19 +1006,30 @@ export class SessionHub {
     return false;
   }
 
-  stop(): void {
+  /**
+   * Ends every session and subagent: their turns abort and their MCP servers close. Resolves
+   * once all runners are disposed, including sessions that were still starting.
+   */
+  async stop(): Promise<void> {
     this.queue.length = 0;
+    const disposing: Array<Promise<void>> = [];
     for (const live of this.byId.values()) {
       this.cancelApprovals(live);
       for (const sub of live.subagents.values()) {
         sub.stopping = true;
-        sub.agent?.runner.dispose();
+        if (sub.agent) disposing.push(sub.agent.runner.dispose());
         if (!FINISHED.has(sub.status)) this.store.setAgentStatus(sub.id, "aborted");
       }
-      live.runner.dispose();
+      disposing.push(live.runner.dispose());
+    }
+    // A session still starting has no byId entry yet: dispose it once it is up.
+    // (dispose is idempotent, so the sessions above can show up here again.)
+    for (const starting of this.byCwd.values()) {
+      disposing.push(starting.then((live) => live.runner.dispose()).catch(() => {}));
     }
     this.byId.clear();
     this.byCwd.clear();
+    await Promise.all(disposing);
   }
 
   /**
@@ -1161,7 +1172,7 @@ export class SessionHub {
         if (plan.kind === "resume") this.store.reopenSession({ sessionId, agentId });
       })();
     } catch (err) {
-      runner.dispose();
+      void runner.dispose();
       throw err;
     }
     this.opts.safetyModes?.setSessionMode(sessionId, ownMode);
@@ -1375,7 +1386,7 @@ export class SessionHub {
     sub.status = sub.stopping ? "aborted" : sub.error !== undefined ? "error" : "done";
     if (sub.status === "aborted") sub.error ??= "stopped";
     this.store.setAgentStatus(sub.id, sub.status);
-    sub.agent?.runner.dispose();
+    void sub.agent?.runner.dispose();
     if (sub.status === "aborted") this.emit(live, { type: "agent.stopped" }, sub.id);
     else if (sub.status !== "done") {
       this.emit(live, { type: "agent.error", message: sub.error ?? sub.status }, sub.id);

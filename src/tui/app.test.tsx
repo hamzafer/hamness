@@ -395,6 +395,32 @@ describe("TUI chat layout (headless)", () => {
     expect(fake.prompts).toEqual(["fix the bug"]);
   });
 
+  test("when the daemon goes away, the chat says so and sends nothing", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    await frameWhere(s, (f) => f.includes("The word is fig."));
+    // The event stream closed under the chat (the client raises daemon.gone).
+    fake.sendRaw({ type: "daemon.gone" });
+    const frame = await frameWhere(s, (f) => f.includes("The hamness daemon stopped."));
+    expect(frame).toContain("The hamness daemon stopped. Restart hamness to reconnect.");
+
+    await s.mockInput.typeText("still there?");
+    s.mockInput.pressEnter();
+    const after = await frameWhere(s, (f) => f.includes("still there?"));
+    expect(fake.prompts).toEqual([]);
+    // The text stays in the box, and the notice stays up.
+    expect(after).toContain("still there?");
+    expect(after).toContain("Restart hamness to reconnect.");
+  });
+
+  test("the daemon's own stopping event shows the same notice", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    fake.sendRaw({ type: "daemon.stopping" });
+    const frame = await frameWhere(s, (f) => f.includes("The hamness daemon stopped."));
+    expect(frame).toContain("Restart hamness to reconnect.");
+  });
+
   test("Shift+Enter and Ctrl+J add a new line; Enter sends the whole prompt", async () => {
     const fake = fakeClient();
     // Shift+Enter needs a terminal that reports it (the kitty keyboard protocol, on by default).

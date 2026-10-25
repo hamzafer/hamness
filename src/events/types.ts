@@ -262,6 +262,11 @@ export type TaskEvent =
 export type HamnessEvent =
   | { type: "daemon.hello"; version: string; pid: number; schemaVersion: number }
   | { type: "daemon.stopping" }
+  /**
+   * Never sent by the daemon: a client's event stream raises it when the connection closes
+   * without the client closing it (the daemon stopped, or was replaced underneath it).
+   */
+  | { type: "daemon.gone" }
   | AgentEvent;
 
 export type HamnessEventType = HamnessEvent["type"];

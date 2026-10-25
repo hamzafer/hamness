@@ -11,8 +11,8 @@ const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 export interface ApiOptions {
   token: string;
   port: number;
-  /** Body of `GET /v1/health`. */
-  health: () => Record<string, unknown>;
+  /** Body of `GET /v1/health`; undefined while the daemon stops (503). */
+  health: () => Record<string, unknown> | undefined;
   /** First event a new WebSocket client receives. */
   hello: () => HamnessEvent;
   /** Feature routes, called after the token check. Return undefined for "not mine". */
@@ -88,7 +88,10 @@ export function startApiServer(opts: ApiOptions): ApiServer {
         if (srv.upgrade(req, { data: undefined })) return undefined;
         return json({ error: "expected a WebSocket upgrade" }, 426);
       }
-      if (req.method === "GET" && url.pathname === "/v1/health") return json(opts.health());
+      if (req.method === "GET" && url.pathname === "/v1/health") {
+        const health = opts.health();
+        return health ? json(health) : json({ error: "stopping" }, 503);
+      }
       try {
         const res = (await opts.dashboard?.api(req, url)) ?? (await opts.routes?.(req, url));
         if (res) return res;
