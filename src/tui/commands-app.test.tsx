@@ -645,6 +645,36 @@ describe("session commands", () => {
     expect(frame).toMatch(/│now write a test for it/);
   });
 
+  test("a long prompt put back by /fork shows whole: the input grows, up to six rows", async () => {
+    const fake = fakeClient();
+    const forked = fake.client.fork;
+    const words = Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ");
+    const text = `first line of the prompt\n${words} the-last-word`;
+    fake.client.fork = async (id, messageId) => ({ ...(await forked(id, messageId)), text });
+    const s = await render(fake);
+    await run(s, "/fork");
+    await frameWhere(s, (f) => f.includes("Fork from a prompt"));
+    s.mockInput.pressEnter();
+    const frame = await frameWhere(
+      s,
+      (f) => f.includes("Forked.") && f.includes("│first line of the prompt"),
+    );
+    expect(frame).toContain("│first line of the prompt");
+    const lines = frame.split("\n");
+    const top = lines.findIndex((l) => l.includes("│first line of the prompt"));
+    const bottom = lines.findIndex((l, i) => i > top && l.trimStart().startsWith("└"));
+    // The first line and every wrapped row of the second, down to its last word.
+    expect(bottom - top).toBeGreaterThanOrEqual(3);
+    expect(lines[bottom - 1]).toContain("the-last-word");
+    // Longer than six rows: the box stops growing at six and scrolls.
+    for (let i = 0; i < 8; i++) s.mockInput.pressKey("j", { ctrl: true });
+    const tall = await frameWhere(s, (f) => !f.includes("│first line of the prompt"));
+    const rows = tall.split("\n");
+    const end = rows.findLastIndex((l) => l.trimStart().startsWith("└"));
+    const start = rows.findLastIndex((l, i) => i < end && l.trimStart().startsWith("┌"));
+    expect(end - start - 1).toBe(6);
+  });
+
   test("/status shows a compact panel; Esc closes it", async () => {
     const fake = fakeClient();
     const s = await render(fake);

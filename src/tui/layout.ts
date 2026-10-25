@@ -28,6 +28,33 @@ export function shortPath(path: string, home: string, max: number): string {
   return `…/${last}`.length <= max ? `…/${last}` : last;
 }
 
+/**
+ * Rows `text` takes in a box `width` columns wide, wrapped at spaces (a longer word breaks
+ * inside it). The input box grows by this: the textarea only counts its wrapped rows after it
+ * has drawn them.
+ */
+export function wrappedRows(text: string, width: number): number {
+  const w = Math.max(1, width);
+  let rows = 0;
+  for (const line of text.split("\n")) {
+    let used = 0;
+    let lineRows = 1;
+    for (const word of line.split(" ")) {
+      const need = used === 0 ? word.length : used + 1 + word.length;
+      if (need <= w) {
+        used = need;
+        continue;
+      }
+      if (used > 0) lineRows++;
+      // The word on fresh rows, broken where it is longer than one.
+      lineRows += Math.max(0, Math.ceil(word.length / w) - 1);
+      used = word.length % w || w;
+    }
+    rows += lineRows;
+  }
+  return Math.max(1, rows);
+}
+
 /** The input box's hint, longest first. */
 export const PROMPT_HINTS: readonly string[] = [
   "Ask hamness… (Enter sends, Shift+Enter or Ctrl+J new line, Esc stops, /help lists commands, Ctrl+C leaves)",

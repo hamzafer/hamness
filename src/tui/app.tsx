@@ -38,7 +38,7 @@ import {
   parseSlash,
 } from "./commands.ts";
 import { HelpPanel } from "./help.tsx";
-import { promptHint, shortPath } from "./layout.ts";
+import { promptHint, shortPath, wrappedRows } from "./layout.ts";
 import { markdownStyle } from "./markdown.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { animationOff, ORB_FPS, ORB_ROWS, Orb } from "./orb.tsx";
@@ -205,7 +205,16 @@ export function App(props: AppProps) {
   const [promptRows, setPromptRows] = createSignal(1);
   const fitPrompt = () =>
     setPromptRows(
-      Math.min(PROMPT_MAX_ROWS, Math.max(1, input?.lineCount ?? 1, input?.virtualLineCount ?? 1)),
+      Math.min(
+        PROMPT_MAX_ROWS,
+        Math.max(
+          1,
+          input?.lineCount ?? 1,
+          input?.virtualLineCount ?? 1,
+          // Inside the box's border.
+          wrappedRows(input?.plainText ?? "", chatWidth() - 2),
+        ),
+      ),
     );
   /** The `/model` picker's list while it is open. */
   const [picker, setPicker] = createSignal<ModelInfo[] | undefined>();
@@ -556,7 +565,7 @@ export function App(props: AppProps) {
  * The prompt box: Enter sends; Shift+Enter (terminals that report it) and Ctrl+J add a
  * new line. Ctrl+J arrives as a linefeed in most terminals, or as `j` with Ctrl in kitty's.
  */
-const PROMPT_MAX_ROWS = 8;
+const PROMPT_MAX_ROWS = 6;
 const PROMPT_KEYS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "kpenter", action: "submit" },

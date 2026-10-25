@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { PROMPT_HINTS, promptHint, shortPath } from "./layout.ts";
+import { PROMPT_HINTS, promptHint, shortPath, wrappedRows } from "./layout.ts";
+
+describe("wrappedRows", () => {
+  test("counts the rows text takes when wrapped at word breaks", () => {
+    expect(wrappedRows("", 10)).toBe(1);
+    expect(wrappedRows("short", 10)).toBe(1);
+    expect(wrappedRows("one\ntwo\n", 10)).toBe(3);
+    expect(wrappedRows("aaaa bbbb cccc", 10)).toBe(2);
+    expect(wrappedRows("aaaa bbbbb", 10)).toBe(1);
+    // A word longer than the row breaks inside it.
+    expect(wrappedRows("x".repeat(25), 10)).toBe(3);
+  });
+});
 
 const HOME = "/home/user";
 
