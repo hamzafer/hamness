@@ -5,6 +5,7 @@ import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient, SessionCommands } from "../client/client.ts";
 import type { AgentEvent, HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import { App } from "./app.tsx";
+import { priceLabel } from "./model-picker.tsx";
 
 type Setup = Awaited<ReturnType<typeof testRender>>;
 let setup: Setup | undefined;
@@ -77,6 +78,43 @@ async function render(client: DaemonClient & SessionCommands) {
   await setup.renderOnce();
   return setup;
 }
+
+describe("billing labels (ADR 0023)", () => {
+  test("the picker shows plan models at $0 (plan) and API models with their key; the header says plan", async () => {
+    const plan: ModelInfo = {
+      ...info("openai-codex/gpt-5.6-terra", "GPT-5.6 Terra", 2, 12),
+      billing: { kind: "plan" },
+    };
+    const api: ModelInfo = {
+      ...info("openai/gpt-5.6-luna", "GPT-5.6 Luna", 0.2, 1.2),
+      billing: { kind: "api", source: "OPENAI_API_KEY" },
+    };
+    expect(priceLabel(plan)).toBe("$0 (plan)");
+    expect(priceLabel(api)).toBe("API (pay per token, from OPENAI_API_KEY) · $0.2 in / $1.2 out");
+
+    const fake = fakeClient();
+    fake.client.models = async () => [plan, api];
+    const planSnap: SessionSnapshot = {
+      ...snapshot,
+      session: { ...snapshot.session, model: "openai-codex/gpt-5.6-terra", billing: "plan" },
+    };
+    fake.client.attach = async () => planSnap;
+    setup = await testRender(
+      () => <App client={fake.client} snapshot={planSnap} approvalArmMs={0} />,
+      { width: 120, height: 24 },
+    );
+    await setup.renderOnce();
+    expect(setup.captureCharFrame()).toContain("openai-codex/gpt-5.6-terra · plan");
+    await setup.mockInput.typeText("/model");
+    setup.mockInput.pressEnter();
+    const frame = await setup.waitForFrame((f) => f.includes("$0 (plan)"));
+    expect(frame).toContain("API (pay per token, from OPENAI_API_KEY)");
+    // Plan models first, as the daemon sends them.
+    expect(frame.indexOf("openai-codex/gpt-5.6-terra")).toBeLessThan(
+      frame.indexOf("openai/gpt-5.6-luna"),
+    );
+  });
+});
 
 describe("/model in the TUI", () => {
   test("/model opens a picker of available models with prices; Enter switches to the highlighted one", async () => {

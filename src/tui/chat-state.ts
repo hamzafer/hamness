@@ -135,6 +135,8 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       return;
     case "agent.model":
       state.session.model = e.model;
+      if (e.billing) state.session.billing = e.billing;
+      else delete state.session.billing;
       return;
     case "safety.judge": {
       const was = state.session.judge;
