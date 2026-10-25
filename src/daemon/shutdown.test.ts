@@ -161,7 +161,7 @@ describe("a second daemon on the same data dir", () => {
     const d = await daemon();
     // What a daemon that stopped serving but never exited leaves: no daemon.json.
     rmSync(dataPaths(dataDir).daemonState);
-    const err = await startDaemon({ dataDir, port: 0 }).catch((e: unknown) => e);
+    const err = await startDaemon({ dataDir, port: 0, strayWaitMs: 300 }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(DaemonAlreadyRunningError);
     expect((err as Error).message).toContain(`pid ${d.pid}`);
     expect((err as Error).message).toContain("hamness stop --all");
@@ -186,4 +186,36 @@ describe("a second daemon on the same data dir", () => {
     const d = await startDaemon({ dataDir, port: 0 });
     await d.stop();
   }, 20_000);
+
+  test("a quick restart waits for the old daemon to finish shutting down", async () => {
+    const old = await daemon({ mcp: true });
+    const sid = await attach(old, join(home.dir, "repo"));
+    await waitForMcpServer(old.pid);
+    await waitForMcpTools(old, sid);
+    old.proc.kill("SIGTERM");
+    // Straight away, while the old one may still be closing its sessions.
+    const d = await startDaemon({ dataDir, port: 0 });
+    // It had exited by then (this test is its parent, so it may not be reaped yet).
+    expect(await old.exitsWithin(200)).toBe(true);
+    expect(old.proc.exitCode).toBe(0);
+    expect(d.pid).toBe(process.pid);
+    await d.stop();
+  }, 30_000);
+});
+
+describe("health while stopping", () => {
+  test("never answers ok once stop has begun", async () => {
+    const d = await startDaemon({ dataDir, port: 0 });
+    const token = readFileSync(dataPaths(dataDir).token, "utf8").trim();
+    const health = () =>
+      fetch(`${d.url}/v1/health`, { headers: { authorization: `Bearer ${token}` } }).then(
+        (r) => r.status,
+        () => "closed",
+      );
+    expect(await health()).toBe(200);
+    const stopping = d.stop();
+    const during = await health();
+    expect(during === 503 || during === "closed").toBe(true);
+    await stopping;
+  });
 });

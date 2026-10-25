@@ -38,6 +38,8 @@ export interface DaemonOptions {
   claudeConfigDir?: string;
   /** Claude Code's managed policy folder, for managed hooks. Default the platform's; tests set it. */
   claudeManagedDir?: string;
+  /** How long to wait for another daemon still holding the data dir to exit. Default 7 s. */
+  strayWaitMs?: number;
 }
 
 export interface RunningDaemon {
@@ -77,14 +79,28 @@ export class DaemonAlreadyRunningError extends Error {
 }
 
 /**
- * A daemon process found on the data dir that has no daemon.json: one that stopped serving
- * but never exited, or one from before the lock file. Two daemons must never share the DB.
- * A process `ps` alone finds counts once it is a few seconds old, so a daemon that lost a
- * start race (and exits) never blocks the winner.
+ * Another daemon process on the data dir: one still shutting down (a quick restart), one that
+ * stopped serving but never exited, or one a scan finds without a lock. Two daemons must
+ * never share the DB. A daemon holding the lock gets `waitMs` to exit first. A process only a
+ * scan finds counts once it is a few seconds old, so one that lost a start race never blocks.
  */
-function blockingDaemon(dataDir: string, self: number): FoundDaemon | undefined {
-  return findDaemons(dataDir).find((p) => p.pid !== self && (p.locked || p.ageSeconds >= 5));
+async function blockingDaemon(
+  dataDir: string,
+  self: number,
+  waitMs: number,
+): Promise<FoundDaemon | undefined> {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const other = findDaemons(dataDir).find(
+      (p) => p.pid !== self && (p.locked || p.ageSeconds >= 5),
+    );
+    if (!other?.locked || Date.now() >= deadline) return other;
+    await Bun.sleep(100);
+  }
 }
+
+/** How long a start waits for a daemon still shutting down on the data dir. */
+export const STRAY_WAIT_MS = 7000;
 
 /** Pids whose lock file this process removes on exit (tests start several daemons in one). */
 const heldLocks = new Map<string, number>();
@@ -121,7 +137,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     claim = claimState(paths.daemonState, pid);
   }
   if (!claim.ok) throw new DaemonAlreadyRunningError(claim.owner);
-  const stray = blockingDaemon(opts.dataDir, pid);
+  const stray = await blockingDaemon(opts.dataDir, pid, opts.strayWaitMs ?? STRAY_WAIT_MS);
   if (stray) {
     releaseState(paths.daemonState, pid);
     throw new DaemonAlreadyRunningError(
@@ -186,10 +202,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       publish: (event) => publish(event),
     });
     hubRef = hub;
+    let stopping: Promise<StopReport> | undefined;
     const api = startApiServer({
       token,
       port: opts.port ?? DEFAULT_PORT,
-      health: () => ({ ok: true, version: VERSION, pid, schemaVersion: openDb.schemaVersion() }),
+      // Undefined once stopping: health answers 503, so a client or a new daemon sees it gone.
+      health: () =>
+        stopping
+          ? undefined
+          : { ok: true, version: VERSION, pid, schemaVersion: openDb.schemaVersion() },
       hello: () => ({
         type: "daemon.hello",
         version: VERSION,
@@ -202,7 +223,6 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     publish = (event) => api.publish(event);
     writeState(paths.daemonState, { pid, url: api.url, startedAt });
 
-    let stopping: Promise<StopReport> | undefined;
     return {
       pid,
       url: api.url,
