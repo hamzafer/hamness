@@ -253,7 +253,13 @@ function overview(r: StatsReport): Node[] {
       ? tile(
           "Active time",
           duration(k.activeMs),
-          `${count(k.activeSessions)} sessions; wall time summed: ${duration(k.wallMs)}`,
+          // Sessions without active time (imported old-format ones) are not in the sum, so
+          // the count says how many are, against the total By source shows.
+          `${
+            k.activeSessions < k.sessions
+              ? `${count(k.activeSessions)} of ${count(k.sessions)} sessions with time recorded`
+              : `${count(k.sessions)} ${k.sessions === 1 ? "session" : "sessions"}`
+          }; wall time summed: ${duration(k.wallMs)}`,
         )
       : tile(
           "Wall time (summed)",

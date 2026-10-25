@@ -199,6 +199,30 @@ suite("dashboard in a browser", () => {
   );
 
   test(
+    "the active time tile counts sessions the same way By source does",
+    async () => {
+      const page = await open("light");
+      await page.getByRole("button", { name: "30d", exact: true }).click();
+      await loaded(page);
+      await page.locator(".tile").first().waitFor();
+      const sub =
+        (await page
+          .locator(".tile", { has: page.locator(".tile-label", { hasText: /^Active time$/ }) })
+          .locator(".tile-sub")
+          .textContent()) ?? "";
+      const bySource = await page
+        .locator(".card", { has: page.locator(".card-title", { hasText: /^By source$/ }) })
+        .locator(".barlist-value")
+        .allTextContents();
+      const total = bySource.reduce((n, t) => n + Number(/(\d+) sessions/.exec(t)?.[1] ?? 0), 0);
+      // The seed has Codex sessions without active time: the tile says how many have it.
+      expect(sub).toMatch(new RegExp(`^\\d+ of ${total} sessions with time recorded;`));
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
     "switching views shows a quiet loading state for the new view, never the old one's rows",
     async () => {
       const page = await open("dark");
