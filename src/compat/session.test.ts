@@ -146,6 +146,15 @@ describe("a session with Claude Code's setup", () => {
     expect(calls()).toBe("echo hi\n");
   });
 
+  test("the runner counts the tools each started MCP server registered", async () => {
+    writeTree(tmp.dir, { "home/.claude.json": json({ mcpServers: { test: echoServer() } }) });
+    fake.script([{ text: "Hi." }]);
+    const r = await start();
+    await r.prompt("hello");
+    for (let i = 0; i < 50 && !r.mcpTools().test; i++) await Bun.sleep(20);
+    expect(r.mcpTools()).toEqual({ test: 1 });
+  });
+
   test("a denied MCP call never reaches the server", async () => {
     writeTree(tmp.dir, { "home/.claude.json": json({ mcpServers: { test: echoServer() } }) });
     fake.script([

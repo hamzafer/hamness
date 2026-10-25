@@ -234,6 +234,7 @@ describe("listDecisions", () => {
           id: d,
           sessionId: s,
           sessionSource: "hamness",
+          sessionCwd: "app",
           tool: "bash",
           call: "rm -rf /tmp/x",
           callFull: "rm -rf /tmp/x",

@@ -566,7 +566,7 @@ describe("export and last reply", () => {
 describe("safety mode per session", () => {
   test("get and set ask, auto, yolo; yolo is loud and decides the calls", async () => {
     fake.script([
-      { tools: [{ name: "bash", args: { command: "echo hi > note.txt" } }] },
+      { tools: [{ name: "bash", args: { command: "mkdir notes" } }] },
       { text: "done" },
     ]);
     const { d, call, attach, say, log } = await start({ rules: true });
@@ -586,7 +586,7 @@ describe("safety mode per session", () => {
       { type: "safety.mode" }
     >;
     expect(ev.mode).toBe("yolo");
-    expect(ev.warning).toMatch(/every tool call/i);
+    expect(ev.warning).toMatch(/deny rules still block/i);
     expect((await attach()).session.mode).toBe("yolo");
 
     await say(s.session.id, "write a note");

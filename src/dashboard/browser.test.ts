@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, chromium, type Page } from "playwright-core";
 import { seedDemoHistory } from "../../test/support/dashboard-seed.ts";
+import { seeder } from "../../test/support/stats-seed.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { dataPaths } from "../config/paths.ts";
 import { type RunningDaemon, startDaemon } from "../daemon/daemon.ts";
@@ -225,6 +226,257 @@ suite("dashboard in a browser", () => {
       await long.click();
       expect(await long.textContent()).toEndWith("--target=bun");
       await page.screenshot({ path: join(shots, "decisions-dark.png"), fullPage: true });
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "decision times stay on one line; paths in the session folder read relative",
+    async () => {
+      const page = await open("light");
+      await page
+        .getByRole("navigation")
+        .getByRole("button", { name: "Decisions", exact: true })
+        .click();
+      await page.locator("main table tbody tr").first().waitFor();
+      const times = await page.locator("main table tbody td.when").allTextContents();
+      expect(times.length).toBeGreaterThan(0);
+      for (const t of times) expect(t).toMatch(/^(\d{2}:\d{2}|[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2})$/);
+      // One line: each time cell's text lays out as a single line box.
+      const tall = await page.evaluate(
+        () =>
+          [...document.querySelectorAll<HTMLElement>("main td.when")].filter((td) => {
+            const r = document.createRange();
+            r.selectNodeContents(td);
+            return new Set([...r.getClientRects()].map((b) => Math.round(b.top))).size !== 1;
+          }).length,
+      );
+      expect(tall).toBe(0);
+      const reasons = (await page.locator("main table tbody td.reason").allTextContents()).join(
+        "\n",
+      );
+      expect(reasons).toContain('"*" for src/');
+      expect(reasons).not.toContain("/work/acme/app/");
+      const short = page.locator("main td.reason .reasonbtn").first();
+      expect(await short.textContent()).not.toContain("/work/acme/app/");
+      await short.click();
+      expect(await short.textContent()).toContain("/work/acme/app/");
+      expect(await short.getAttribute("aria-expanded")).toBe("true");
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "the decisions view fits a phone: every row's verdict is on screen, no sideways scroll",
+    async () => {
+      for (const scheme of ["light", "dark"] as const) {
+        const page = await open(scheme, 390, 844);
+        await page
+          .getByRole("navigation")
+          .getByRole("button", { name: "Decisions", exact: true })
+          .click();
+        await page.locator("main table tbody tr").first().waitFor();
+        const off = await page.evaluate(() => {
+          const wrap = document.querySelector<HTMLElement>("main .table-wrap");
+          const pills = [...document.querySelectorAll("main tbody .pill")];
+          return {
+            page: document.documentElement.scrollWidth - window.innerWidth,
+            wrap: wrap ? wrap.scrollWidth - wrap.clientWidth : -1,
+            pills: pills.filter((p) => p.getBoundingClientRect().right > window.innerWidth).length,
+            total: pills.length,
+          };
+        });
+        expect(off.page).toBeLessThanOrEqual(0);
+        expect(off.wrap).toBeLessThanOrEqual(0);
+        expect(off.total).toBeGreaterThan(0);
+        expect(off.pills).toBe(0);
+        // The cards keep table semantics: display changes would drop the implicit roles.
+        const roles = await page.evaluate(() => {
+          const t = document.querySelector("main table.decisions");
+          const role = (s: string) =>
+            [...(t?.querySelectorAll(s) ?? [])].every((e) => e.getAttribute("role") !== null)
+              ? [...new Set([...(t?.querySelectorAll(s) ?? [])].map((e) => e.getAttribute("role")))]
+              : ["missing"];
+          return {
+            table: t?.getAttribute("role"),
+            groups: role("thead, tbody"),
+            rows: role("tr"),
+            heads: role("th"),
+            cells: role("td"),
+            labels: t?.querySelectorAll("[data-label]").length,
+          };
+        });
+        expect(roles).toEqual({
+          table: "table",
+          groups: ["rowgroup"],
+          rows: ["row"],
+          heads: ["columnheader"],
+          cells: ["cell"],
+          labels: 0,
+        });
+        expect(await page.getByRole("columnheader", { name: "Verdict" }).count()).toBe(1);
+        await page.screenshot({ path: join(shots, `decisions-${scheme}-phone.png`) });
+        await page.close();
+      }
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "top models are ranked by cost, with labels outside the bars",
+    async () => {
+      const page = await open("dark");
+      const models = page.locator(".card", {
+        has: page.locator(".card-title", { hasText: /^Top models$/ }),
+      });
+      const values = await models.locator(".barlist-value").allTextContents();
+      const costs = values.map((v) =>
+        Number(/\$([\d,.]+)/.exec(v)?.[1]?.replaceAll(",", "") ?? -1),
+      );
+      expect(costs.length).toBeGreaterThan(1);
+      expect(costs).toEqual([...costs].sort((a, b) => b - a));
+      expect(values[0]).toMatch(/calls/);
+      // No label or value overlaps its bar.
+      const overlaps = await models.evaluate(
+        (card) =>
+          [...card.querySelectorAll("li")].filter((li) => {
+            const bar = li.querySelector(".barlist-bar")?.getBoundingClientRect();
+            if (!bar) return true;
+            return [...li.querySelectorAll(".barlist-label, .barlist-value")].some((t) => {
+              const r = t.getBoundingClientRect();
+              return (
+                r.bottom > bar.top && r.top < bar.bottom && r.right > bar.left && r.left < bar.right
+              );
+            });
+          }).length,
+      );
+      expect(overlaps).toBe(0);
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "the verified rate tile says what it divides by",
+    async () => {
+      const page = await open("light");
+      const sub =
+        (await page
+          .locator(".tile", { has: page.locator(".tile-label", { hasText: /^Verified rate$/ }) })
+          .locator(".tile-sub")
+          .textContent()) ?? "";
+      expect(sub).toMatch(/^of \d+ verified \+ unverified/);
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "an open page refreshes quietly after a run ends, without a loading state",
+    async () => {
+      const page = await open("dark");
+      const cost = tileValue(page, "Cost");
+      const before = await cost.textContent();
+      await page.evaluate(() => {
+        const w = window as unknown as { flashed: boolean };
+        w.flashed = false;
+        new MutationObserver(() => {
+          if (document.querySelector("#main[aria-busy], #main .loading")) w.flashed = true;
+        }).observe(document.body, { subtree: true, childList: true, attributes: true });
+      });
+      const sessionId = openTaskSession();
+      seeder(d.db.sqlite).modelCall({
+        sessionId,
+        at: Date.now(),
+        model: "claude-opus-5-5",
+        input: 10,
+        output: 10,
+        costMicros: 7_000_000,
+      });
+      await startRun(page, sessionId);
+      d.emit(event(sessionId, { type: "agent.status", busy: false }));
+      await page.waitForFunction(
+        (b) => document.querySelector(".tile-value")?.textContent !== b,
+        before,
+        { timeout: 10_000 },
+      );
+      expect(await page.evaluate(() => (window as unknown as { flashed: boolean }).flashed)).toBe(
+        false,
+      );
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "a clicked button does not stop live refresh: the view updates and keeps its focus",
+    async () => {
+      const page = await open("light");
+      await page
+        .getByRole("navigation")
+        .getByRole("button", { name: "Decisions", exact: true })
+        .click();
+      await page.locator("main table tbody tr").first().waitFor();
+      const btn = page.locator("main td.call .callbtn").first();
+      await btn.click();
+      await btn.click(); // open, then closed again: focus stays on it
+      const key = await btn.getAttribute("data-key");
+      expect(key).toBeTruthy();
+      const before = await page.locator("main table tbody tr").count();
+      const sessionId = openTaskSession();
+      seeder(d.db.sqlite).decision({
+        sessionId,
+        at: Date.now(),
+        tool: "bash",
+        verdict: "allow",
+        source: "rule",
+        reason: "fresh decision for the refresh test",
+        args: { command: "ls fresh" },
+      });
+      d.emit(event(sessionId, { type: "agent.tool.end", toolCallId: "fr1", status: "ok" }));
+      await page.getByText("fresh decision for the refresh test").waitFor({ timeout: 10_000 });
+      expect(await page.locator("main table tbody tr").count()).toBeGreaterThanOrEqual(before);
+      expect(await page.evaluate(() => document.activeElement?.getAttribute("data-key"))).toBe(key);
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
+    "a replaced chart stops observing its size",
+    async () => {
+      const page = await (browser as Browser).newPage({ viewport: { width: 1280, height: 900 } });
+      await page.addInitScript(() => {
+        const w = window as unknown as { liveObservers: number };
+        w.liveObservers = 0;
+        const Real = window.ResizeObserver;
+        window.ResizeObserver = class extends Real {
+          override observe(t: Element, o?: ResizeObserverOptions) {
+            w.liveObservers++;
+            super.observe(t, o);
+          }
+          override disconnect() {
+            w.liveObservers--;
+            super.disconnect();
+          }
+        };
+      });
+      await page.goto(link);
+      await loaded(page);
+      await page.locator(".chart svg").waitFor();
+      for (const name of ["Tokens", "Tasks", "Cost"]) {
+        await page
+          .getByRole("group", { name: "Chart metric" })
+          .getByRole("button", { name, exact: true })
+          .click();
+        await loaded(page);
+        await page.locator(".chart svg").waitFor();
+      }
+      expect(
+        await page.evaluate(() => (window as unknown as { liveObservers: number }).liveObservers),
+      ).toBe(1);
       await page.close();
     },
     BROWSER_TIMEOUT,

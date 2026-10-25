@@ -6,7 +6,8 @@ import { userConfigPath } from "../safety/config.ts";
 /** One line on what a safety mode does, for setup and `hamness doctor`. */
 export function modeSummary(mode: SafetyMode, judgeOn: boolean): string {
   if (mode === "ask") return "ask: you decide every tool call no rule decides";
-  if (mode === "yolo") return "yolo: every tool call is allowed (a red banner says so)";
+  if (mode === "yolo")
+    return "yolo: every tool call no deny rule stops is allowed, with no question (a red banner says so)";
   return judgeOn
     ? "auto: the judge model decides calls no rule decides, and asks you when unsure"
     : "auto: the judge is off (no Anthropic key), so calls no rule decides ask you";

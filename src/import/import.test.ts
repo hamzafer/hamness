@@ -491,6 +491,21 @@ describe("Codex import", () => {
     ]);
   });
 
+  test("a subagent thread's turns add no active time: it runs alongside its parent", async () => {
+    const child = "019a0000-0000-7000-8000-000000000003";
+    writeLines(codexSessionPath(codexDir, thread), rollout());
+    writeLines(codexSessionPath(codexDir, child), [
+      codexMeta(child, "2026-03-04T10:00:02.000Z", { parent_thread_id: thread }),
+      codexTurnContext("2026-03-04T10:00:02.500Z", "gpt-5.6-luna"),
+      codexTaskComplete("2026-03-04T10:00:09.000Z", 7000),
+    ]);
+
+    await importHistory(db, opts());
+
+    // The parent's own 9 s, not 9 + 7 for agents that ran side by side.
+    expect(all("SELECT active_ms FROM sessions")).toEqual([{ active_ms: 9000 }]);
+  });
+
   test("reads zstd-compressed rollouts", async () => {
     const path = `${codexSessionPath(codexDir, thread)}.zst`;
     mkdirSync(dirname(path), { recursive: true });
