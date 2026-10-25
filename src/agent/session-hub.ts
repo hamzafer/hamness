@@ -1348,7 +1348,8 @@ export class SessionHub {
 
   private info(live: LiveSession): SessionInfo {
     const mode = this.modeOf(live);
-    const judge = mode === "auto" ? this.opts.judge?.state(live.id) : undefined;
+    // Yolo skips the judge, but its state still shows (it is what `/mode auto` brings back).
+    const judge = mode === "auto" || mode === "yolo" ? this.opts.judge?.state(live.id) : undefined;
     return {
       id: live.id,
       cwd: live.cwd,

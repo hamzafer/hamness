@@ -211,9 +211,17 @@ describe("approval prompt (headless)", () => {
     await s.waitForFrame((f) => f.includes("[y] allow once"));
   });
 
-  test("yolo mode shows a loud banner", async () => {
-    const s = await render(fakeClient().client, snapshotWith({}, "yolo"));
-    expect(s.captureCharFrame()).toContain("YOLO");
+  test("yolo mode shows a loud banner; the header keeps the judge's state", async () => {
+    const yolo = snapshotWith({}, "yolo");
+    const s = await render(fakeClient().client, {
+      ...yolo,
+      session: { ...yolo.session, judge: "paused" },
+    });
+    const frame = s.captureCharFrame();
+    expect(frame).toContain("YOLO");
+    expect(frame).toContain("Type /mode auto to leave.");
+    expect(frame).not.toContain("/mode ask");
+    expect(frame).toContain("judge paused");
     await setup?.dispose();
     setup = undefined;
     const calm = await render(fakeClient().client, snapshotWith({}, "auto"));

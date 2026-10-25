@@ -190,9 +190,14 @@ export function App(props: AppProps) {
   /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
   const chatWidth = () => Math.max(20, dims().width - RAIL_WIDTH - 2);
   const home = props.home ?? homedir();
+  /** The judge's state for the header: in `auto`, and in `yolo` (it's back on `/mode auto`). */
+  const judgeShown = () =>
+    state.session.mode === "auto" || state.session.mode === "yolo"
+      ? state.session.judge
+      : undefined;
   /** The cwd in the header's room left after its other parts. */
   const headerPath = () => {
-    const judge = state.session.mode === "auto" && state.session.judge;
+    const judge = judgeShown();
     const rest =
       `hamness ·  · ${state.session.model}`.length +
       (state.session.name ? `${state.session.name} · `.length : 0) +
@@ -447,7 +452,7 @@ export function App(props: AppProps) {
             <text fg={COLORS.muted}>
               {headerPath()} · {state.session.model}
             </text>
-            <Show when={state.session.mode === "auto" && state.session.judge}>
+            <Show when={judgeShown()}>
               {(judge: () => JudgeState) => (
                 <text fg={judge() === "on" ? COLORS.muted : COLORS.warn}>
                   {` · ${JUDGE_LABEL[judge()]}`}
