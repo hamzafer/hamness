@@ -87,3 +87,12 @@ const KNOWN_ENV: Readonly<Record<string, string>> = {
 export function envKeyHint(provider: string): string {
   return KNOWN_ENV[provider] ?? `${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
 }
+
+/** Deletes one provider's key from the key file. False when it had none. */
+export function removeKey(dataDir: string, provider: string): boolean {
+  const keys = readKeyFile(dataDir);
+  if (!(provider in keys)) return false;
+  delete keys[provider];
+  writeJsonAtomic(keyFilePath(dataDir), keys, 0o600);
+  return true;
+}
