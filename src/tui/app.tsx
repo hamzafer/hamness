@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import type { KeyBinding, SyntaxStyle, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { ModelInfo } from "../agent/models.ts";
 import type { DaemonClient } from "../client/client.ts";
@@ -11,6 +11,7 @@ import type {
   SessionSnapshot,
   TranscriptItem,
 } from "../events/types.ts";
+import { ORB_LABEL } from "../orbs/activity.ts";
 import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
 import {
   applyEvent,
@@ -23,8 +24,9 @@ import { COMMAND_WORDS, HelpPanel } from "./help.tsx";
 import { promptHint, shortPath } from "./layout.ts";
 import { markdownStyle } from "./markdown.ts";
 import { ModelPicker } from "./model-picker.tsx";
+import { animationOff, ORB_FPS, ORB_ROWS, Orb } from "./orb.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
-import { applyRailEvent, initialRail } from "./rail-state.ts";
+import { applyRailEvent, initialRail, railOrbState } from "./rail-state.ts";
 import { parseTaskCommand } from "./task-commands.ts";
 
 const COLORS = {
@@ -55,6 +57,8 @@ export interface AppProps {
   now?: () => number;
   /** The home folder, shown as `~` in the header. Default: the user's. */
   home?: string;
+  /** Animate the thinking orbs. Default: on, unless `HAMNESS_NO_ANIMATION=1`. */
+  animate?: boolean;
 }
 
 export function App(props: AppProps) {
@@ -83,6 +87,28 @@ export function App(props: AppProps) {
       (waiting) => setWaitingSince(waiting ? now() : undefined),
     ),
   );
+
+  /**
+   * The thinking orbs' clock. It ticks at `ORB_FPS` only while an orb shows (a wait for the
+   * model, or an agent on the rail running or waiting on the user); idle, no timer runs.
+   * `animate={false}` or `HAMNESS_NO_ANIMATION=1`: no timer at all, the orbs stand still.
+   */
+  const animate = props.animate ?? !animationOff();
+  const [orbClock, setOrbClock] = createSignal(now());
+  // A memo, so the timer only restarts when the answer flips, not on every rail change.
+  const orbsShowing = createMemo(
+    () =>
+      waitingSince() !== undefined || rail.agents.some((a) => railOrbState(rail, a) !== undefined),
+  );
+  createEffect(
+    on(orbsShowing, (showing) => {
+      if (!showing || !animate) return;
+      setOrbClock(now());
+      const timer = setInterval(() => setOrbClock(now()), 1000 / ORB_FPS);
+      onCleanup(() => clearInterval(timer));
+    }),
+  );
+  const orbSeconds = () => (animate ? orbClock() / 1000 : undefined);
 
   const dims = useTerminalDimensions();
   /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
@@ -214,9 +240,12 @@ export function App(props: AppProps) {
             }
           </For>
           <Show when={waitingSince() !== undefined}>
-            <text fg={COLORS.muted}>
-              {`  thinking… ${Math.max(0, Math.floor((clock() - (waitingSince() ?? 0)) / 1000))}s`}
-            </text>
+            <box flexDirection="row" paddingLeft={2} height={ORB_ROWS}>
+              <Orb state="solving" seconds={orbSeconds()} />
+              <text fg={COLORS.muted}>
+                {` ${ORB_LABEL.solving}… ${Math.max(0, Math.floor((clock() - (waitingSince() ?? 0)) / 1000))}s`}
+              </text>
+            </box>
           </Show>
         </scrollbox>
         <Show when={state.notice}>
@@ -265,6 +294,7 @@ export function App(props: AppProps) {
       <Rail
         state={rail}
         now={clock()}
+        orbSeconds={orbSeconds()}
         full={railFull()}
         {...(railFull() ? { width: Math.max(20, dims().width - 4) } : {})}
       />

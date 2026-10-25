@@ -663,6 +663,33 @@ tr.detail td {
   }
 }
 
+/* ---- Live runs: the orb is the one moving thing on the page ---- */
+
+.live,
+.live-note {
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+.live {
+  display: inline-flex;
+  font-size: 13px;
+  color: var(--text);
+}
+.live-note {
+  display: flex;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.live[hidden],
+.live-note[hidden] {
+  display: none;
+}
+.orb {
+  flex: none;
+  display: block;
+}
+
 @media (forced-colors: active) {
   .pill-dot,
   .barlist-bar {
