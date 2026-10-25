@@ -67,8 +67,10 @@ export interface RailCheck {
   endedAt?: number;
 }
 
-/** Checks kept on the rail: the newest few. */
+/** Checks shown beside the chat: the newest few. */
 export const RAIL_CHECKS = 3;
+/** Checks kept for the full-screen rail. */
+export const RAIL_CHECKS_KEPT = 20;
 
 export interface RailState {
   sessionId: string;
@@ -77,7 +79,10 @@ export interface RailState {
   agents: RailAgent[];
   checks: RailCheck[];
   context?: ContextFill;
+  /** The open task, else the last closed one (it stays until a new task opens). */
   task?: RailTask;
+  /** This session's tasks seen so far, oldest first; dropped turn tasks leave. */
+  tasks: RailTask[];
 }
 
 const MAIN_FALLBACK_ID = "main";
@@ -118,9 +123,10 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
     seq: snapshot.seq,
     agents,
     checks: [],
+    tasks: [],
   };
   if (snapshot.context) state.context = { ...snapshot.context };
-  if (snapshot.task) state.task = railTask(snapshot.task);
+  if (snapshot.task) showTask(state, railTask(snapshot.task));
 
   const main = agentFor(state, mainAgentId);
   if (snapshot.session.busy) {
@@ -224,16 +230,23 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
       return;
     case "task.start":
     case "task.end":
-      state.task = railTask(e.task);
+      showTask(state, railTask(e.task));
       return;
     case "task.evidence":
-      if (state.task?.id === e.taskId) {
-        state.task.evidence = e.evidence;
-        state.task.passed = e.passed;
+      for (const t of [state.task, state.tasks.find((t) => t.id === e.taskId)]) {
+        if (t?.id === e.taskId) {
+          t.evidence = e.evidence;
+          t.passed = e.passed;
+        }
       }
       return;
     case "task.drop":
-      if (state.task?.id === e.taskId) delete state.task;
+      state.tasks = state.tasks.filter((t) => t.id !== e.taskId);
+      if (state.task?.id === e.taskId) {
+        const last = state.tasks.findLast((t) => t.outcome !== "open");
+        if (last) state.task = { ...last };
+        else delete state.task;
+      }
       return;
     case "check.start":
       state.checks.push({
@@ -243,8 +256,8 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
         status: "running",
         startedAt: now,
       });
-      if (state.checks.length > RAIL_CHECKS)
-        state.checks.splice(0, state.checks.length - RAIL_CHECKS);
+      if (state.checks.length > RAIL_CHECKS_KEPT)
+        state.checks.splice(0, state.checks.length - RAIL_CHECKS_KEPT);
       return;
     case "check.end": {
       const check = state.checks.find((c) => c.id === e.evidenceId);
@@ -258,6 +271,14 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
     default:
       return;
   }
+}
+
+/** Shows `task` and records it in the session's list (by id: a later view replaces it). */
+function showTask(state: RailState, task: RailTask) {
+  state.task = task;
+  const i = state.tasks.findIndex((t) => t.id === task.id);
+  if (i >= 0) state.tasks[i] = { ...task };
+  else state.tasks.push({ ...task });
 }
 
 function setError(agent: RailAgent, message: string, now: number) {

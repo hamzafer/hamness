@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent, SessionSnapshot } from "../events/types.ts";
 import type { TaskView } from "../tasks/types.ts";
-import { applyRailEvent, initialRail, type RailState, sessionCostMicros } from "./rail-state.ts";
+import {
+  applyRailEvent,
+  initialRail,
+  RAIL_CHECKS_KEPT,
+  type RailState,
+  sessionCostMicros,
+} from "./rail-state.ts";
 
 const SID = "s-1";
 const MAIN = "a-main";
@@ -308,7 +314,29 @@ describe("the current task", () => {
     apply(s, 4, { type: "task.start", task: view({ id: "t2", goal: "hi", implicit: true }) });
     expect(s.task?.id).toBe("t2");
     apply(s, 5, { type: "task.drop", taskId: "t2" });
-    expect(s.task).toBeUndefined();
+    // The dropped turn task leaves; the last closed one shows again.
+    expect(s.task).toMatchObject({ id: "t1", outcome: "unverified" });
+    expect(s.tasks.map((t) => t.id)).toEqual(["t1"]);
+  });
+
+  test("a closed task stays shown until a new one opens, and the session's tasks add up", () => {
+    const s = initialRail(snap(), 0);
+    apply(s, 1, { type: "task.start", task: view() });
+    apply(s, 2, { type: "task.end", task: view({ outcome: "verified", evidence: 2, passed: 2 }) });
+    // The next prompt opens an implicit turn task; a turn with no work drops it.
+    apply(s, 3, { type: "task.start", task: view({ id: "t2", goal: "thanks", implicit: true }) });
+    apply(s, 4, { type: "task.drop", taskId: "t2" });
+    expect(s.task).toMatchObject({ id: "t1", outcome: "verified", evidence: 2, passed: 2 });
+    apply(s, 5, { type: "task.start", task: view({ id: "t3", goal: "add a flag" }) });
+    expect(s.task?.id).toBe("t3");
+    apply(s, 6, {
+      type: "task.end",
+      task: view({ id: "t3", goal: "add a flag", outcome: "abandoned" }),
+    });
+    expect(s.tasks.map((t) => [t.id, t.outcome])).toEqual([
+      ["t1", "verified"],
+      ["t3", "abandoned"],
+    ]);
   });
 
   test("evidence for another task does not change the shown one", () => {
@@ -362,8 +390,8 @@ describe("the current task", () => {
       summary: "exit 1 in 40ms",
       endedAt: 3000,
     });
-    // Only the last few checks stay.
-    for (let i = 2; i < 8; i++) {
+    // Only the last RAIL_CHECKS_KEPT checks stay.
+    for (let i = 2; i < RAIL_CHECKS_KEPT + 5; i++) {
       apply(s, i + 1, {
         type: "check.start",
         taskId: "t1",
@@ -372,6 +400,7 @@ describe("the current task", () => {
         label: "u",
       });
     }
-    expect(s.checks.map((c) => c.id)).toEqual(["e5", "e6", "e7"]);
+    expect(s.checks).toHaveLength(RAIL_CHECKS_KEPT);
+    expect(s.checks.at(-1)?.id).toBe(`e${RAIL_CHECKS_KEPT + 4}`);
   });
 });

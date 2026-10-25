@@ -37,11 +37,23 @@ function stateAfter(events: Array<[number, Record<string, unknown>]>): RailState
   return s;
 }
 
-async function frameOf(state: RailState, now: number, opts: { width?: number } = {}) {
-  setup = await testRender(() => <Rail state={state} now={now} />, {
-    width: opts.width ?? 32,
-    height: 16,
-  });
+async function frameOf(
+  state: RailState,
+  now: number,
+  opts: { width?: number; height?: number; full?: boolean } = {},
+) {
+  const full = opts.full ?? false;
+  setup = await testRender(
+    () => (
+      <Rail
+        state={state}
+        now={now}
+        full={full}
+        {...(full ? { width: (opts.width ?? 32) - 4 } : {})}
+      />
+    ),
+    { width: opts.width ?? 32, height: opts.height ?? 16 },
+  );
   await setup.renderOnce();
   return setup.captureCharFrame();
 }
@@ -194,6 +206,86 @@ describe("the task slot", () => {
     );
     expect(frame).toMatch(/task +fix parser/);
     expect(frame).toMatch(/open · 1\/2 proof/);
+  });
+
+  test("a closed task stays, labelled last, with its outcome and proof", async () => {
+    const frame = await frameOf(
+      withTask({
+        id: "t",
+        goal: "fix parser",
+        implicit: false,
+        outcome: "verified",
+        evidence: 2,
+        passed: 2,
+      }),
+      0,
+    );
+    expect(frame).toMatch(/last +fix parser/);
+    expect(frame).toMatch(/verified · 2\/2 proof/);
+    expect(frame).not.toMatch(/task +fix parser/);
+  });
+
+  test("full screen lists the session's tasks, every agent's totals and all checks", async () => {
+    const check = (n: number, status: string) =>
+      [
+        [
+          n * 1000,
+          {
+            type: "check.start",
+            taskId: "t1",
+            evidenceId: `e${n}`,
+            kind: "command",
+            label: `check ${n}`,
+          },
+        ],
+        [
+          n * 1000 + 500,
+          { type: "check.end", taskId: "t1", evidenceId: `e${n}`, status, summary: `result ${n}` },
+        ],
+      ] as Array<[number, Record<string, unknown>]>;
+    const task = (id: string, goal: string, outcome: string, evidence = 1, passed = 1) => ({
+      id,
+      goal,
+      implicit: false,
+      outcome,
+      evidence,
+      passed,
+      costMicros: 0,
+      tokens: 0,
+      startedAt: 0,
+      durationMs: 0,
+    });
+    const state = stateAfter([
+      [0, { type: "task.start", task: task("t1", "fix the parser", "open", 0, 0) }],
+      ...check(1, "passed"),
+      ...check(2, "failed"),
+      ...check(3, "passed"),
+      ...check(4, "passed"),
+      [5000, { type: "task.end", task: task("t1", "fix the parser", "verified", 4, 3) }],
+      [6000, { type: "task.start", task: task("t2", "add a flag", "open", 0, 0) }],
+      [7000, { type: "task.end", task: task("t2", "add a flag", "overridden", 0, 0) }],
+      [8000, { type: "agent.status", busy: true, agentId: "a-sub123" }],
+      [9000, { type: "agent.status", busy: false, agentId: "a-sub123" }],
+    ]);
+    const frame = await frameOf(state, 10_000, { width: 100, height: 40, full: true });
+    expect(frame).toMatch(/fix the parser +verified · 3\/4 proof/);
+    expect(frame).toMatch(/add a flag +overridden · 0\/0 proof/);
+    for (const n of [1, 2, 3, 4]) expect(frame).toContain(`result ${n}`);
+    expect(frame).toMatch(/main.*1\.2k tok +\$0\.0050/);
+    expect(frame).toMatch(/sub123.*1s.*0 tok/);
+  });
+
+  test("beside the chat only the newest checks show", async () => {
+    const events: Array<[number, Record<string, unknown>]> = [];
+    for (const n of [1, 2, 3, 4]) {
+      events.push([
+        n,
+        { type: "check.start", taskId: "t1", evidenceId: `e${n}`, kind: "url", label: `c${n}` },
+      ]);
+    }
+    const frame = await frameOf(stateAfter(events), 10, { height: 30 });
+    expect(frame).not.toContain("c1");
+    expect(frame).toContain("c4");
   });
 
   test("unverified is red, verified and open are not", () => {
