@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writePlanLogin } from "../../test/support/plan-login.ts";
@@ -145,5 +145,38 @@ describe("hamness doctor", () => {
       ),
     ).toBe(1);
     expect(line(t.text(), "Config")).toMatch(/^fail .*config\.json.*not valid JSON/);
+  });
+});
+
+describe("the older OpenAI sign-in (Pi's Sign in with ChatGPT, provider openai)", () => {
+  const authJson = () => JSON.parse(readFileSync(join(home.dir, "pi", "auth.json"), "utf8"));
+
+  test("doctor names it next to the Codex plan login and how to remove only it", async () => {
+    writePlanLogin(home.dir, { tier: "go" });
+    writePlanLogin(home.dir, { provider: "openai" });
+    const t = io();
+    expect(await runCli(["doctor"], env(), t.cli)).toBe(0);
+    expect(line(t.text(), "Model")).toMatch(/^ok +Model openai-codex\//);
+    expect(line(t.text(), "An older OpenAI sign-in")).toMatch(
+      /^info +An older OpenAI sign-in .*api\.openai\.com.*ChatGPT plan/,
+    );
+    expect(t.text()).toContain("hamness logout openai-api");
+    expect(t.text()).not.toContain("fake-access-token");
+  });
+
+  test("hamness logout openai-api removes it and keeps the Codex plan login", async () => {
+    writePlanLogin(home.dir, { tier: "go" });
+    writePlanLogin(home.dir, { provider: "openai" });
+    const t = io();
+    expect(await runCli(["logout", "openai-api"], env(), t.cli)).toBe(0);
+    expect(Object.keys(authJson())).toEqual(["openai-codex"]);
+    expect(t.text()).toContain("Signed out of the older OpenAI sign-in");
+  });
+
+  test("hamness logout openai still removes both", async () => {
+    writePlanLogin(home.dir, { tier: "go" });
+    writePlanLogin(home.dir, { provider: "openai" });
+    expect(await runCli(["logout", "openai"], env(), io().cli)).toBe(0);
+    expect(Object.keys(authJson())).toEqual([]);
   });
 });

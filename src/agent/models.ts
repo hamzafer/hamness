@@ -450,6 +450,8 @@ export interface ModelCredential {
   envHint?: string;
   /** A stored `openai` ChatGPT login from before ADR 0024 (Pi's newer Sign in with ChatGPT). */
   legacyOpenaiLogin: boolean;
+  /** That `openai` login stored next to an `openai-codex` plan login. */
+  olderOpenaiLogin: boolean;
 }
 
 /**
@@ -473,8 +475,9 @@ export async function defaultModelCredential(opts: {
     runtime,
   });
   const legacyOpenaiLogin = plans.includes("openai") && !plans.includes(PLAN_PROVIDER);
+  const olderOpenaiLogin = plans.includes("openai") && plans.includes(PLAN_PROVIDER);
   const parsed = spec ? parseModelSpec(spec) : undefined;
-  if (!parsed) return { origin: "none", legacyOpenaiLogin };
+  if (!parsed) return { origin: "none", legacyOpenaiLogin, olderOpenaiLogin };
   const billing = billingOf(parsed.provider, {
     plans,
     env: opts.env,
@@ -488,5 +491,6 @@ export async function defaultModelCredential(opts: {
     ...(billing ? { billing } : {}),
     envHint: envKeyHint(parsed.provider),
     legacyOpenaiLogin,
+    olderOpenaiLogin,
   };
 }
