@@ -7,6 +7,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 import { ChatStore } from "../agent/store.ts";
@@ -534,6 +535,103 @@ describe("a check whose config the agent edited is weak (V-H1)", () => {
     expect(t.gate().verified).toBe(false);
     expect(t.gate().reason).toContain("weak");
     expect(t.done("done").outcome).toBe("unverified");
+  });
+});
+
+/** A bash tool call on the current task, finished with `status`. */
+function bashTool(t: SessionTasks, command: string, status: "ok" | "denied" = "ok") {
+  const id = chat.addToolCall(
+    { ...ids, taskId: t.attributionId() },
+    { messageId: undefined, tool: "bash", argsJson: JSON.stringify({ command }) },
+  );
+  chat.finishToolCall(id, { status, summary: status });
+  return id;
+}
+
+describe("bash that writes files counts as an edit (ADR 0019, issue #16)", () => {
+  test("a heredoc into a file after the passing check: unverified, until it passes again", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    await tick();
+    bashTool(t, "cat > calc.ts <<'EOF'\nexport const add = (a, b) => a + b;\nEOF");
+    await tick();
+    expect(t.gate().verified).toBe(false);
+    expect(t.gate().reason).toContain("changed after");
+    await t.prove({ kind: "command", command: PASS });
+    expect(t.done("fixed").outcome).toBe("verified");
+  });
+
+  test("bash that only runs things, or was denied, changes nothing", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    await tick();
+    bashTool(t, "bun test 2>&1");
+    bashTool(t, "echo x > a.ts", "denied");
+    await tick();
+    expect(t.done("fixed").outcome).toBe("verified");
+  });
+
+  test("bash that writes only outside the session folder changes nothing", async () => {
+    const t = tasks();
+    t.start("fix");
+    await t.prove({ kind: "command", command: PASS });
+    await tick();
+    bashTool(t, "bun test > /tmp/out.txt 2>&1");
+    bashTool(t, `bun test | tee ${join(tmpdir(), "hamness-log.txt")}`);
+    await tick();
+    expect(t.done("fixed").outcome).toBe("verified");
+
+    t.beginTurn("what does the test output say?");
+    const id = t.attributionId() as string;
+    bashTool(t, "bun test 2>&1 | tee /tmp/log.txt");
+    t.endTurn();
+    expect(row(id)).toBeNull();
+  });
+
+  test("a call a crash left running is closed on resume, so it can't block verification", async () => {
+    const first = tasks();
+    const task = first.start("fix");
+    const id = chat.addToolCall(
+      { ...ids, taskId: first.attributionId() },
+      {
+        messageId: undefined,
+        tool: "bash",
+        argsJson: JSON.stringify({ command: "echo x > a.ts" }),
+      },
+    );
+    const resumed = tasks();
+    const r = db.sqlite
+      .query<{ status: string; ended_at: number | null }, [string]>(
+        "SELECT status, ended_at FROM tool_calls WHERE id = ?",
+      )
+      .get(id);
+    expect(r?.status).toBe("error");
+    expect(r?.ended_at).not.toBeNull();
+    await tick();
+    await resumed.prove({ kind: "command", command: PASS });
+    expect(resumed.done("fixed").outcome).toBe("verified");
+    expect(resumed.view()?.id).toBe(task.id);
+  });
+
+  test("writing package.json through bash makes the check weak", async () => {
+    const t = tasks();
+    t.start("make tests pass");
+    bashTool(t, 'echo \'{"scripts":{"test":"exit 0"}}\' > package.json');
+    await tick();
+    const r = await t.prove({ kind: "command", command: PASS });
+    expect(r.result.details.weakReason).toContain("package.json");
+    expect(t.done("done").outcome).toBe("unverified");
+  });
+
+  test("a turn that wrote a file through bash without proof closes unverified", () => {
+    const t = tasks();
+    t.beginTurn("write it");
+    const id = t.attributionId() as string;
+    bashTool(t, "printf x | tee out.txt");
+    t.endTurn();
+    expect(row(id)?.outcome).toBe("unverified");
   });
 });
 

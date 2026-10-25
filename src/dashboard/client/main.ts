@@ -1,4 +1,4 @@
-import { count, duration, money } from "../../stats/format.ts";
+import { count, duration, money, moneyCompact } from "../../stats/format.ts";
 import type {
   DecisionListRow,
   EvidenceRow,
@@ -201,9 +201,16 @@ const METRICS: Record<
     label: string;
     value: (b: StatsReport["series"]["buckets"][number]) => number;
     format: (v: number) => string;
+    /** Shorter y-axis labels for narrow widths. */
+    compact?: (v: number) => string;
   }
 > = {
-  cost: { label: "Cost", value: (b) => b.costMicros, format: (v) => money(Math.round(v)) },
+  cost: {
+    label: "Cost",
+    value: (b) => b.costMicros,
+    format: (v) => money(Math.round(v)),
+    compact: (v) => moneyCompact(Math.round(v)),
+  },
   tokens: { label: "Tokens", value: (b) => b.tokens, format: (v) => count(Math.round(v)) },
   tasks: { label: "Tasks", value: (b) => b.tasks, format: (v) => count(Math.round(v)) },
 };
@@ -255,7 +262,13 @@ function overview(r: StatsReport): Node[] {
       ? tile(
           "Active time",
           duration(k.activeMs),
-          `${count(k.activeSessions)} sessions; wall time summed: ${duration(k.wallMs)}`,
+          // Sessions without active time (imported old-format ones) are not in the sum, so
+          // the count says how many are, against the total By source shows.
+          `${
+            k.activeSessions < k.sessions
+              ? `${count(k.activeSessions)} of ${count(k.sessions)} sessions with time recorded`
+              : `${count(k.sessions)} ${k.sessions === 1 ? "session" : "sessions"}`
+          }; wall time summed: ${duration(k.wallMs)}`,
         )
       : tile(
           "Wall time (summed)",
@@ -292,6 +305,7 @@ function overview(r: StatsReport): Node[] {
           points,
           label: m.label,
           format: m.format,
+          ...(m.compact ? { compact: m.compact } : {}),
           tick: hourly ? hourLabel : dayLabel,
           title: hourly ? (t) => `${dayLabel(t)}, ${hourLabel(t)}` : dayLabel,
           partialLast: true,
@@ -603,6 +617,32 @@ async function tasksView(): Promise<Node[]> {
 
 const VERDICT_KIND = { allow: "good", ask: "warning", deny: "critical" } as const;
 
+/**
+ * The call as `hamness audit` prints it (redacted, cut short), the full text in its title.
+ * A cut call opens to its full text on click.
+ */
+function callCell(d: DecisionListRow): HTMLElement {
+  const code = h("code", { title: d.callFull }, d.call);
+  if (d.call === d.callFull) return h("td", { class: "call" }, code);
+  const toggle = h(
+    "button",
+    {
+      type: "button",
+      class: "callbtn",
+      "aria-expanded": "false",
+      "aria-label": "Show the full call",
+    },
+    code,
+  );
+  toggle.addEventListener("click", () => {
+    const open = toggle.getAttribute("aria-expanded") !== "true";
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.setAttribute("aria-label", open ? "Show the short call" : "Show the full call");
+    code.textContent = open ? d.callFull : d.call;
+  });
+  return h("td", { class: "call" }, toggle);
+}
+
 async function decisionsView(): Promise<Node[]> {
   const filters = h(
     "div",
@@ -637,6 +677,7 @@ async function decisionsView(): Promise<Node[]> {
           {},
           h("td", {}, when(d.createdAt)),
           h("td", {}, h("code", {}, d.tool)),
+          callCell(d),
           h("td", {}, pill(VERDICT_KIND[d.verdict], d.verdict)),
           h("td", {}, d.decidedBy),
           h("td", { class: "hide-sm" }, d.sessionSource ? SOURCE_LABEL[d.sessionSource] : "none"),
@@ -669,6 +710,7 @@ async function decisionsView(): Promise<Node[]> {
               {},
               h("th", { scope: "col" }, "Time"),
               h("th", { scope: "col" }, "Tool"),
+              h("th", { scope: "col" }, "Call"),
               h("th", { scope: "col" }, "Verdict"),
               h("th", { scope: "col" }, "Decided by"),
               h("th", { scope: "col", class: "hide-sm" }, "Source"),
@@ -736,6 +778,11 @@ function syncLive(): void {
 // ---- Shell ----
 
 const app = document.getElementById("app") as HTMLElement;
+const VIEW_TITLE: Record<View, string> = {
+  overview: "Overview",
+  tasks: "Tasks",
+  decisions: "Safety decisions",
+};
 let generation = 0;
 
 function header(): HTMLElement {
@@ -846,10 +893,19 @@ async function render(): Promise<void> {
     live = true;
     connectLive(takeToken, runs, syncLive);
   }
+  // The new view's own heading and a quiet line until its data is in: the old view's content
+  // is gone the moment the view changes, and a stale answer never lands (`generation`).
   const main = h(
     "main",
     { id: "main", "aria-busy": "true" },
-    h("p", { class: "muted" }, "Loading..."),
+    card(
+      VIEW_TITLE[state.view],
+      h(
+        "p",
+        { class: "loading", role: "status" },
+        `Loading ${VIEW_TITLE[state.view].toLowerCase()}…`,
+      ),
+    ),
   );
   app.replaceChildren(header(), controls(), main);
   try {

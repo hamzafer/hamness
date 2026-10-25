@@ -8,6 +8,17 @@ export function money(micros: number | null): string {
   return `$${dollars.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** Micro-dollars as a short axis label: `$2k`, `$2.5k`, `$1.3M`, `$750`, `$7.50`, `$0`. */
+export function moneyCompact(micros: number): string {
+  const dollars = micros / 1_000_000;
+  const one = (x: number) => String(Number(x.toFixed(1)));
+  if (dollars >= 1e6) return `$${one(dollars / 1e6)}M`;
+  if (dollars >= 1e3) return `$${one(dollars / 1e3)}k`;
+  if (dollars >= 10) return `$${Math.round(dollars)}`;
+  if (dollars === 0) return "$0";
+  return `$${dollars.toFixed(2)}`;
+}
+
 /** 950, 12.3k, 4.5M, 1.2B. */
 export function count(n: number): string {
   if (n < 1_000) return String(n);

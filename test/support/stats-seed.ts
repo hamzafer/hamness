@@ -149,18 +149,21 @@ export function seeder(sqlite: Database) {
     costMicros?: number;
     reason?: string | null;
     rule?: string | null;
+    /** The tool call's (already redacted) arguments. */
+    args?: Record<string, unknown>;
   }) => {
     const id = newId();
     sqlite
       .query(
-        `INSERT INTO decisions (id, session_id, tool, verdict, source, reason, rule, latency_ms,
-           cost_micros, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO decisions (id, session_id, tool, args_json, verdict, source, reason, rule,
+           latency_ms, cost_micros, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         o.sessionId ?? null,
         o.tool ?? "bash",
+        o.args ? JSON.stringify(o.args) : null,
         o.verdict,
         o.source,
         o.reason ?? null,

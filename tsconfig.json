@@ -20,5 +20,9 @@
     "jsxImportSource": "@opentui/solid"
   },
   "include": ["src", "test"],
-  "exclude": ["src/dashboard/client", "src/dashboard/browser.test.ts"]
+  "exclude": [
+    "src/dashboard/client",
+    "src/dashboard/browser.test.ts",
+    "src/dashboard/chart.test.ts"
+  ]
 }
