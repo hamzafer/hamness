@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bashWrites } from "./bash-writes.ts";
+import { bashReadOnly, bashWrites } from "./bash-writes.ts";
 
 const cwd = "/work";
 const home = "/home/dev";
@@ -82,5 +82,42 @@ describe("bashWrites: files a bash command writes", () => {
     expect(w("echo 'unclosed > x").writes).toBe(false);
     expect(w("f() { bun test; }; f >/dev/null 2>&1").writes).toBe(false);
     expect(w('echo "don\'t > x" (').writes).toBe(false);
+  });
+});
+
+describe("bashReadOnly: a command known to change nothing", () => {
+  test("listed read-only commands, piped and chained", () => {
+    for (const cmd of [
+      "ls -la",
+      "cat README.md | head -20",
+      "grep -rn foo src && wc -l src/a.ts",
+      "rg foo 2>/dev/null",
+      "git log --oneline -5; git status",
+      "find . -name '*.ts'",
+    ]) {
+      expect(bashReadOnly(cmd)).toBe(true);
+    }
+  });
+
+  test("anything else, writes, flags that write, substitutions and unparseable input are not", () => {
+    for (const cmd of [
+      `python -c "open('x.txt','w').write('1')"`,
+      `node -e 'require("fs").writeFileSync("x", "1")'`,
+      "echo hi > a.txt",
+      "cat a | tee b",
+      "sed -i s/a/b/ f",
+      "git commit -m x",
+      "git diff --output=patch.diff",
+      "rg --pre ./run foo",
+      "tree -o out.txt",
+      "find . -delete",
+      "find . -exec rm {} ;",
+      "ls $(touch x)",
+      "cat <<EOF > f\nx\nEOF",
+      "echo 'unclosed",
+      "",
+    ]) {
+      expect(bashReadOnly(cmd)).toBe(false);
+    }
   });
 });

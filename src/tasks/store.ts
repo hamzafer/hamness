@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
-import { bashWrites } from "./bash-writes.ts";
+import { bashReadOnly, bashWrites } from "./bash-writes.ts";
 import type { GateEvidence } from "./gate.ts";
 import type { EvidenceClaim, TaskOutcome, TaskView } from "./types.ts";
 
@@ -23,6 +23,21 @@ interface TaskRow {
 /** Tools whose calls change files: a turn that used them did work worth proving. */
 const MUTATING_TOOLS = ["edit", "write"];
 
+/** Tools that change nothing: Pi's read tools and hamness's own task tools. */
+const READ_ONLY_TOOLS = new Set([
+  "read",
+  "grep",
+  "ls",
+  "find",
+  "glob",
+  "task_start",
+  "task_done",
+  "prove",
+]);
+
+/** Who opened an explicit task: the agent with `task_start`, the user with `/task`. */
+export type TaskOpener = "agent" | "user";
+
 /**
  * The `tasks` rows and evidence claims. It has no way to write an evidence result:
  * that is `proof.ts`'s job alone (and the database refuses anything else, migration 0006).
@@ -34,17 +49,63 @@ export class TaskStore {
     return this.db.sqlite;
   }
 
-  open(sessionId: string, goal: string, implicit: boolean, branch?: string): string {
+  /** `openedBy`: who opened an explicit task (migration 0010); none for an implicit one. */
+  open(
+    sessionId: string,
+    goal: string,
+    implicit: boolean,
+    branch?: string,
+    openedBy?: TaskOpener,
+  ): string {
     const id = newId();
     const now = Date.now();
     this.sql
       .query(
-        `INSERT INTO tasks (id, session_id, goal, implicit, outcome, branch, started_at, created_at,
-           updated_at)
-         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, session_id, goal, implicit, outcome, branch, opened_by, started_at,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
       )
-      .run(id, sessionId, goal, implicit ? 1 : 0, branch ?? null, now, now, now);
+      .run(id, sessionId, goal, implicit ? 1 : 0, branch ?? null, openedBy ?? null, now, now, now);
     return id;
+  }
+
+  openedBy(id: string): TaskOpener | undefined {
+    const r = this.sql
+      .query<{ opened_by: TaskOpener | null }, [string]>("SELECT opened_by FROM tasks WHERE id = ?")
+      .get(id);
+    return r?.opened_by ?? undefined;
+  }
+
+  /** How many evidence rows the task has, in any state (a pending or `error` one too). */
+  evidenceRows(id: string): number {
+    return (
+      this.sql
+        .query<{ n: number }, [string]>("SELECT count(*) AS n FROM evidence WHERE task_id = ?")
+        .get(id)?.n ?? 0
+    );
+  }
+
+  /**
+   * True when every tool call of the task is known to change nothing: hamness's task tools,
+   * Pi's read tools, and bash that `bashReadOnly` clears. Any other call (MCP, a subagent,
+   * an unknown tool, bash it can't read) is work, denied or not (ADR 0012).
+   */
+  onlyReadOnlyCalls(id: string): boolean {
+    const rows = this.sql
+      .query<{ tool: string; args_json: string | null }, [string]>(
+        "SELECT tool, args_json FROM tool_calls WHERE task_id = ?",
+      )
+      .all(id);
+    return rows.every((r) => {
+      if (READ_ONLY_TOOLS.has(r.tool)) return true;
+      if (r.tool !== "bash") return false;
+      try {
+        const args = JSON.parse(r.args_json ?? "{}") as Record<string, unknown>;
+        return typeof args.command === "string" && bashReadOnly(args.command);
+      } catch {
+        return false;
+      }
+    });
   }
 
   /** The PR and commit from the task's passing CI evidence (the latest wins). */
@@ -58,8 +119,10 @@ export class TaskStore {
   }
 
   /** An implicit task becomes an explicit one with the agent's or user's goal. */
-  promote(id: string, goal: string): void {
-    this.sql.query("UPDATE tasks SET goal = ?, implicit = 0 WHERE id = ?").run(goal, id);
+  promote(id: string, goal: string, openedBy: TaskOpener): void {
+    this.sql
+      .query("UPDATE tasks SET goal = ?, implicit = 0, opened_by = ? WHERE id = ?")
+      .run(goal, openedBy, id);
   }
 
   close(
@@ -78,17 +141,19 @@ export class TaskStore {
   }
 
   /**
-   * Removes an implicit task that turned out to be no task (no evidence, no edits): its rows
-   * stay, counted toward the session but no task (ADR 0012).
+   * Removes an open task that turned out to be no task (no evidence, no edits): an implicit
+   * one at turn end, or an explicit one at `task_done`. Its rows stay, counted toward the
+   * session but no task (ADR 0012). A closed task is never removed.
    */
   drop(id: string): void {
     this.sql.transaction(() => {
       for (const table of ["messages", "model_calls", "tool_calls", "agents"]) {
         this.sql.query(`UPDATE ${table} SET task_id = NULL WHERE task_id = ?`).run(id);
       }
-      // Checks that could not run (R-L3): with no task left they belong to nothing.
+      // Only an implicit task drops with evidence: checks that could not run (`error`, R-L3),
+      // which belong to nothing once the task is gone. An explicit task drops with none.
       this.sql.query("DELETE FROM evidence WHERE task_id = ?").run(id);
-      this.sql.query("DELETE FROM tasks WHERE id = ? AND implicit = 1").run(id);
+      this.sql.query("DELETE FROM tasks WHERE id = ? AND outcome = 'open'").run(id);
     })();
   }
 
