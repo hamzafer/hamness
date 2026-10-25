@@ -1,13 +1,21 @@
 import { statSync } from "node:fs";
-import { defaultModelCredential } from "../../agent/models.ts";
+import { envKeyName, readKeyFile } from "../../agent/keys.ts";
+import {
+  billingLabel,
+  defaultModelCredential,
+  PLAN_DEFAULT_MODEL,
+  PLAN_TIER_MODEL,
+} from "../../agent/models.ts";
+import { readPlanLogin, tierLabel } from "../../agent/plan.ts";
 import { hookSources } from "../../compat/hooks.ts";
 import { loadCompat } from "../../compat/index.ts";
 import { claudeConfigDir, claudeManagedDir, managedDirOption } from "../../compat/paths.ts";
+import type { Env } from "../../config/paths.ts";
 import { getStatus } from "../../daemon/status.ts";
-import { loadSafetyConfig } from "../../safety/config.ts";
-import { judgeFromKeys } from "../../safety/judge/index.ts";
+import { loadJudgeConfig, loadSafetyConfig } from "../../safety/config.ts";
+import { chooseJudge } from "../../safety/judge/index.ts";
 import type { CliContext } from "../run.ts";
-import { keyHowTo, modeSummary } from "../setup.ts";
+import { API_KEYS_OPTIONAL, modeSummary, SIGN_IN, setupSteps } from "../setup.ts";
 
 export const DOCTOR_USAGE = [
   "Usage: hamness doctor",
@@ -67,6 +75,23 @@ async function tuiLoads(): Promise<Check> {
   }
 }
 
+/** The plan tier's default model id (`PLAN_TIER_MODEL`, else `PLAN_DEFAULT_MODEL`). */
+const planDefaultId = (tier: string | undefined) =>
+  (tier && PLAN_TIER_MODEL[tier]) || PLAN_DEFAULT_MODEL.slice(PLAN_DEFAULT_MODEL.indexOf("/") + 1);
+
+const KNOWN_KEYS = ["anthropic", "openai", "google", "openrouter", "xai", "mistral", "groq"];
+
+/** Which API keys exist (names only), and that they are optional and pay per token. */
+function apiKeysLine(dataDir: string, env: Env): string {
+  const file = readKeyFile(dataDir);
+  const found = [...new Set([...KNOWN_KEYS, ...Object.keys(file)])]
+    .map((p) => envKeyName(p, env) ?? (file[p] ? `${p} (key file)` : undefined))
+    .filter((x): x is string => x !== undefined);
+  return found.length
+    ? `API keys: ${found.join(", ")} (pay per token; used only by API models you pick)`
+    : `API keys: none (${API_KEYS_OPTIONAL})`;
+}
+
 /** `hamness doctor`: one line per check, `ok` / `warn` / `fail`. */
 export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<number> {
   const cwd = process.cwd();
@@ -83,30 +108,64 @@ export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<n
 
   try {
     const cred = await defaultModelCredential({ dataDir, env });
-    if (cred.source === "none") {
+    if (!cred.model) {
+      checks.push({ level: "fail", text: "Model: not set up", fix: setupSteps(cred, dataDir) });
+    } else if (!cred.billing) {
       checks.push({
         level: "fail",
-        text: `${cred.model}: no API key`,
-        fix: keyHowTo(cred, dataDir),
+        text: `Model ${cred.model}: no key or login`,
+        fix: setupSteps(cred, dataDir),
       });
     } else {
-      const from =
-        cred.source === "env"
-          ? `from ${cred.envName}`
-          : cred.source === "file"
-            ? "from the key file"
-            : "signed in";
-      checks.push({ level: "ok", text: `${cred.model}: key ${from}` });
+      const why =
+        cred.origin === "env"
+          ? " (HAMNESS_MODEL)"
+          : cred.origin === "config"
+            ? " (defaultModel)"
+            : "";
+      checks.push({
+        level: "ok",
+        text: `Model ${cred.model}${why}: ${billingLabel(cred.billing, true)}`,
+      });
     }
+    const plan = readPlanLogin(dataDir);
+    if (plan && !plan.hasAccount) {
+      checks.push({
+        level: "warn",
+        text: "ChatGPT plan login has no account id, so the plan's models can't be reached",
+        fix: ["  Sign in again: hamness login openai"],
+      });
+    } else if (plan) {
+      checks.push({
+        level: "info",
+        text: `ChatGPT plan: ${tierLabel(plan.tier)} · default ${planDefaultId(plan.tier)}`,
+      });
+    } else if (cred.legacyOpenaiLogin) {
+      checks.push({
+        level: "warn",
+        text: "An older ChatGPT login is stored under openai; the plan's Codex models need a new one",
+        fix: [`  ${SIGN_IN}`],
+      });
+    }
+    checks.push({ level: "info", text: apiKeysLine(dataDir, env) });
   } catch (err) {
-    checks.push({ level: "fail", text: `Model key: ${(err as Error).message}` });
+    checks.push({ level: "fail", text: `Model: ${(err as Error).message}` });
   }
 
   let judgeOn = false;
   try {
-    judgeOn = judgeFromKeys({ dataDir, env }) !== undefined;
+    const judge = await chooseJudge({ dataDir, env });
+    judgeOn = judge.backend !== undefined;
+    checks.push(
+      judge.backend
+        ? {
+            level: "info",
+            text: `Judge ${judge.model}: ${judge.billing === "plan" ? `ChatGPT plan, up to ${loadJudgeConfig(dataDir).dailyCallCap} calls a day` : "API (pay per token, daily $ budget)"}`,
+          }
+        : { level: "info", text: `Judge off: ${judge.off}` },
+    );
   } catch {
-    // The key file's problem is reported by the key check above.
+    // A broken key file or config is reported by the checks around this one.
   }
   try {
     const config = loadSafetyConfig(dataDir, cwd);

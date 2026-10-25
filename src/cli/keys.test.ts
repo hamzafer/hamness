@@ -98,3 +98,36 @@ describe("hamness keys list", () => {
     expect(t.all()).not.toContain("env-secret");
   });
 });
+
+describe("hamness keys remove", () => {
+  test("deletes the provider's key and keeps the others, never printing them", async () => {
+    writeFileSync(keyFile(), JSON.stringify({ openai: SECRET, anthropic: "sk-ant-other" }), {
+      mode: 0o600,
+    });
+    const t = io();
+    expect(await runCli(["keys", "remove", "openai"], env(), t.cli)).toBe(0);
+    expect(JSON.parse(readFileSync(keyFile(), "utf8"))).toEqual({ anthropic: "sk-ant-other" });
+    expect(statSync(keyFile()).mode & 0o777).toBe(0o600);
+    expect(t.all()).toContain("Removed the openai key");
+    expect(t.all()).not.toContain(SECRET);
+  });
+
+  test("says when an env var still provides the key", async () => {
+    writeFileSync(keyFile(), JSON.stringify({ anthropic: SECRET }), { mode: 0o600 });
+    const t = io();
+    const code = await runCli(
+      ["keys", "remove", "anthropic"],
+      { ...env(), ANTHROPIC_API_KEY: "sk-ant-env" },
+      t.cli,
+    );
+    expect(code).toBe(0);
+    expect(t.all()).toContain("ANTHROPIC_API_KEY is still set in your environment");
+    expect(t.all()).not.toContain("sk-ant-env");
+  });
+
+  test("a provider with no stored key is exit 1", async () => {
+    const t = io();
+    expect(await runCli(["keys", "remove", "openai"], env(), t.cli)).toBe(1);
+    expect(t.all()).toContain("no openai key");
+  });
+});

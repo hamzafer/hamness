@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { writePlanLogin } from "../../test/support/plan-login.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
 
 const MAIN = join(import.meta.dir, "main.ts");
@@ -13,6 +14,8 @@ const env = (): Record<string, string | undefined> => ({
   HAMNESS_PORT: "0",
   // No real key reaches these tests, whatever the developer's shell has.
   ANTHROPIC_API_KEY: undefined,
+  OPENAI_API_KEY: undefined,
+  GEMINI_API_KEY: undefined,
   HAMNESS_MODEL: undefined,
 });
 
@@ -140,16 +143,18 @@ describe("hamness CLI", () => {
     const r = await run();
     expect(r.code).toBe(1);
     expect(r.stdout).toContain("Welcome to hamness.");
-    expect(r.stdout).toContain("hamness keys set anthropic");
-    expect(r.stdout).toContain("ANTHROPIC_API_KEY");
+    expect(r.stdout).toContain("Sign in with your ChatGPT plan: hamness login openai");
+    expect(r.stdout).toContain("optional: hamness keys set anthropic|openai");
+    expect(r.stdout).not.toContain("needs an API key");
     expect(r.stdout).toContain("Safety mode is auto");
     expect(r.stdout).toContain("hamness doctor");
     // Setup never starts the daemon.
     expect((await run("status")).code).toBe(1);
   });
 
-  test("with a key but no terminal, `hamness` says the TUI needs one", async () => {
-    const r = await runWith({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" });
+  test("with a plan login but no terminal, `hamness` says the TUI needs one", async () => {
+    writePlanLogin(home.dir);
+    const r = await run();
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("needs a terminal");
   });

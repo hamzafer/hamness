@@ -1,17 +1,17 @@
 import {
-  DEFAULT_MODEL,
+  billingLabel,
   listModels,
+  loadModels,
   type ModelInfo,
   modelInfo,
-  parseModelSpec,
-  resolveModels,
+  modelName,
 } from "../../agent/models.ts";
 import type { CliContext } from "../run.ts";
 
 export const MODELS_USAGE = [
   "Usage: hamness models [--all]",
   "",
-  "Lists the models you have a key or login for, with prices; * marks the default.",
+  "Lists the models you have a login or key for, ChatGPT plan models first; * marks the default.",
   "  --all  The whole catalog, keyed or not",
 ].join("\n");
 
@@ -22,9 +22,15 @@ function contextLabel(tokens: number): string {
   return `${Math.round(tokens / 1000)}K ctx`;
 }
 
-export function formatModel(m: ModelInfo, isDefault: boolean, width: number): string {
+/** A plan model's calls cost $0; an API model shows its per-token price and where the key is. */
+export function priceText(m: ModelInfo): string {
+  if (m.billing?.kind === "plan") return "$0 (plan)";
   const price = `${money(m.inputPerMTok)} in / ${money(m.outputPerMTok)} out per MTok${m.priced ? "" : " (Pi catalog)"}`;
-  return `${isDefault ? "*" : " "} ${m.id.padEnd(width)}  ${m.name}  ${price}  ${contextLabel(m.contextWindow)}`;
+  return m.billing ? `${price} · ${billingLabel(m.billing, true)}` : price;
+}
+
+export function formatModel(m: ModelInfo, isDefault: boolean, width: number): string {
+  return `${isDefault ? "*" : " "} ${m.id.padEnd(width)}  ${m.name}  ${priceText(m)}  ${contextLabel(m.contextWindow)}`;
 }
 
 /** `hamness models [--all]`: the models you can switch to (`/model` in the TUI). */
@@ -34,27 +40,30 @@ export async function modelsCommand({ args, env, dataDir, io }: CliContext): Pro
     io.err(MODELS_USAGE);
     return 2;
   }
-  let resolved: Awaited<ReturnType<typeof resolveModels>>;
+  let loaded: Awaited<ReturnType<typeof loadModels>>;
   try {
-    resolved = await resolveModels({ dataDir, env });
+    loaded = await loadModels({ dataDir, env });
   } catch (err) {
     io.err(`hamness models: ${(err as Error).message}`);
     return 1;
   }
   const rows = all
-    ? resolved.runtime.getModels().map(modelInfo)
-    : await listModels(resolved.runtime);
+    ? loaded.runtime.getModels().map((m) => modelInfo(m, loaded.billing(m.provider)))
+    : await listModels(loaded.runtime, loaded.billing, loaded.planTier);
   if (rows.length === 0) {
     io.out(
-      "No models available: add a key (`hamness keys set <provider>`) or sign in (`hamness login openai`).",
+      "No models available: sign in with your ChatGPT plan (`hamness login openai`). Optional: `hamness keys set <provider>` for pay-per-token API models.",
     );
     return 0;
   }
-  const spec = parseModelSpec(env.HAMNESS_MODEL || DEFAULT_MODEL);
-  const def = spec ? `${spec.provider}/${spec.id}` : DEFAULT_MODEL;
+  const def = loaded.model ? modelName(loaded.model) : undefined;
   const width = Math.max(...rows.map((r) => r.id.length));
   for (const row of rows) io.out(formatModel(row, row.id === def, width));
   io.out("");
-  io.out("* is the default for new sessions (HAMNESS_MODEL). Switch in the TUI with /model.");
+  io.out(
+    def
+      ? "* is the default for new sessions (HAMNESS_MODEL or defaultModel override it). Switch in the TUI with /model."
+      : "No default yet: `hamness login openai` signs in with your ChatGPT plan.",
+  );
   return 0;
 }

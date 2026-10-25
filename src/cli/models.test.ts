@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { writePlanLogin } from "../../test/support/plan-login.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
 import type { CliIo } from "./io.ts";
 import { runCli } from "./run.ts";
@@ -17,7 +18,8 @@ function io() {
 }
 
 describe("hamness models", () => {
-  test("lists the models a key unlocks, marks the default, shows prices, never the key", async () => {
+  test("plan models first at $0 (plan) with the default marked; API models priced, key named", async () => {
+    writePlanLogin(home.dir, { tier: "team" });
     const t = io();
     const code = await runCli(
       ["models"],
@@ -25,10 +27,21 @@ describe("hamness models", () => {
       t.cli,
     );
     expect(code).toBe(0);
-    const text = t.out.join("\n");
-    expect(text).toMatch(/\* anthropic\/claude-opus-5-5 .*\$4 in \/ \$20 out/);
-    expect(text).toMatch(/ {2}anthropic\/claude-haiku-5-5 /);
+    const lines = t.out;
+    expect(lines[0]).toMatch(/^\* openai-codex\/gpt-6\.1-sol .*\$0 \(plan\)/);
+    const text = lines.join("\n");
+    expect(text).toMatch(
+      / {2}anthropic\/claude-opus-5-5 .*\$4 in \/ \$20 out per MTok · API \(pay per token, from ANTHROPIC_API_KEY\)/,
+    );
     expect(text).not.toContain("sk-ant-secret-key");
+  });
+
+  test("an API key alone marks no default", async () => {
+    const t = io();
+    await runCli(["models"], { HAMNESS_HOME: home.dir, OPENAI_API_KEY: "sk-x" }, t.cli);
+    const text = t.out.join("\n");
+    expect(text).not.toMatch(/^\*/m);
+    expect(text).toContain("hamness login openai");
   });
 
   test("--all lists the whole catalog, keyed or not", async () => {

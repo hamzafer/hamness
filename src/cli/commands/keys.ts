@@ -4,14 +4,17 @@ import {
   keyFilePath,
   PROVIDER_ID,
   readKeyFile,
+  removeKey,
   saveKey,
 } from "../../agent/keys.ts";
 import type { CliContext } from "../run.ts";
 
 export const KEYS_USAGE = [
-  "Usage: hamness keys <set|list>",
-  "  set <provider>  Store an API key (typed at a hidden prompt, or piped on stdin)",
-  "  list            Show which providers have a key, and where it comes from",
+  "Usage: hamness keys <set|remove|list>",
+  "  set <provider>     Store an API key (typed at a hidden prompt, or piped on stdin)",
+  "  remove <provider>  Delete a provider's key from the key file",
+  "  list               Show which providers have a key, and where it comes from",
+  "API keys are optional and pay per token; the default is your ChatGPT plan (hamness login openai).",
   "An environment variable (e.g. ANTHROPIC_API_KEY) wins over the key file.",
 ].join("\n");
 
@@ -20,6 +23,8 @@ export async function keysCommand(ctx: CliContext): Promise<number> {
   const [sub, provider, extra] = ctx.args;
   try {
     if (sub === "set" && provider && extra === undefined) return await setKey(ctx, provider);
+    if (sub === "remove" && provider && extra === undefined)
+      return removeProviderKey(ctx, provider);
     if (sub === "list" && provider === undefined) return listKeys(ctx);
   } catch (err) {
     if (err instanceof KeyFileError) {
@@ -55,6 +60,21 @@ async function setKey({ io, env, dataDir }: CliContext, provider: string): Promi
   const envName = envKeyName(provider, env);
   if (envName) io.out(`Note: ${envName} is set and wins over the key file.`);
   io.out("Restart the daemon (or start it) for running sessions to pick it up.");
+  return 0;
+}
+
+function removeProviderKey({ io, env, dataDir }: CliContext, provider: string): number {
+  if (!removeKey(dataDir, provider)) {
+    io.err(`hamness keys: no ${provider} key in ${keyFilePath(dataDir)}`);
+    return 1;
+  }
+  io.out(`Removed the ${provider} key from ${keyFilePath(dataDir)}.`);
+  const envName = envKeyName(provider, env);
+  if (envName)
+    io.out(
+      `Note: ${envName} is still set in your environment, so ${provider} API models still work.`,
+    );
+  io.out("Restart the daemon (`hamness stop`, then `hamness`) for running sessions to drop it.");
   return 0;
 }
 
