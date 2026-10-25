@@ -322,6 +322,11 @@ interface PendingEntry {
 export class SessionHub {
   private readonly store: ChatStore;
   private readonly byId = new Map<string, LiveSession>();
+  /**
+   * The last event number of each session this daemon ran. A resumed session goes on from it
+   * (seq counts up per session id, across lives), so a client never drops its new events.
+   */
+  private readonly lastSeqs = new Map<string, number>();
   private readonly byCwd = new Map<string, Promise<LiveSession>>();
   private readonly safety: SafetyCheck;
   /** Subagents waiting for a slot, oldest first, and how many run now. */
@@ -1046,7 +1051,7 @@ export class SessionHub {
       cwd,
       runner,
       models: base,
-      seq: 0,
+      seq: this.lastSeqs.get(sessionId) ?? 0,
       busy: false,
       replies: new Map(),
       currentReplyRow: undefined,
@@ -1419,6 +1424,7 @@ export class SessionHub {
   /** Publishes a session event about `agentId` (default: the main agent). */
   private emit(live: LiveSession, body: EventBody, agentId: string = live.agentId): void {
     live.seq += 1;
+    this.lastSeqs.set(live.id, live.seq);
     this.opts.publish({
       ...body,
       sessionId: live.id,
