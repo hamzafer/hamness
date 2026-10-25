@@ -228,6 +228,8 @@ export interface SessionListItem {
   lastActivityAt: number;
   messageCount: number;
   costMicros: number;
+  /** The main agent's first prompt, for a session with no name. */
+  firstPrompt?: string;
   /** The cwd's live session now. */
   current: boolean;
   /** Pi still has its session file, so `/resume` can continue it. */
@@ -611,6 +613,7 @@ export class SessionHub {
       lastActivityAt: r.lastActivityAt,
       messageCount: r.messageCount,
       costMicros: r.costMicros,
+      ...(r.firstPrompt ? { firstPrompt: r.firstPrompt } : {}),
       current: r.id === current,
       resumable: r.piSessionId !== null && files.has(r.piSessionId),
     }));

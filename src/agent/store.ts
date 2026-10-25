@@ -66,6 +66,8 @@ export interface SessionListRow {
   messageCount: number;
   /** All the session's model calls, subagents included. */
   costMicros: number;
+  /** The main agent's first user message, for a session with no name. */
+  firstPrompt?: string;
 }
 
 export interface SessionUsage {
@@ -149,6 +151,7 @@ export class ChatStore {
           last_at: number | null;
           messages: number;
           cost: number;
+          first: string | null;
         },
         [string]
       >(
@@ -159,7 +162,11 @@ export class ChatStore {
               AND m.agent_id = (SELECT a.id FROM agents a WHERE a.session_id = s.id
                                 AND a.kind = 'main')) AS messages,
            (SELECT coalesce(sum(mc.cost_micros), 0) FROM model_calls mc
-              WHERE mc.session_id = s.id) AS cost
+              WHERE mc.session_id = s.id) AS cost,
+           (SELECT m.content FROM messages m WHERE m.session_id = s.id AND m.role = 'user'
+              AND m.agent_id = (SELECT a.id FROM agents a WHERE a.session_id = s.id
+                                AND a.kind = 'main')
+              ORDER BY m.created_at, m.rowid LIMIT 1) AS first
          FROM sessions s
          WHERE s.source = 'hamness' AND s.cwd = ?
            AND (s.title IS NOT NULL OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id))
@@ -176,6 +183,7 @@ export class ChatStore {
           lastActivityAt: r.last_at ?? startedAt,
           messageCount: r.messages,
           costMicros: r.cost,
+          ...(r.first ? { firstPrompt: r.first } : {}),
         };
       });
   }

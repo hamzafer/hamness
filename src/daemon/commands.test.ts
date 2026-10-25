@@ -178,9 +178,11 @@ describe("list and resume", () => {
         resumable: boolean;
         startedAt: number;
         lastActivityAt: number;
+        firstPrompt?: string;
       }>;
     };
     expect(sessions.map((s) => s.id)).toEqual([second.session.id, first.session.id]);
+    expect(sessions.map((s) => s.firstPrompt)).toEqual(["something else", "what is the word?"]);
     expect(sessions.map((s) => s.current)).toEqual([true, false]);
     expect(sessions.every((s) => s.messageCount === 2 && s.costMicros > 0 && s.resumable)).toBe(
       true,
