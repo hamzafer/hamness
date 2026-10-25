@@ -267,6 +267,13 @@ export function renderStats(reports: StatsReport[], detail: number): string {
   }
   if (d.source === null)
     notes.push("Tasks, verified rate and cost per verified task cover hamness sessions only.");
+  if (hasTasks && anyTasks)
+    notes.push(
+      "Verified rate is verified / (verified + unverified); overridden and abandoned tasks are left out.",
+    );
+  notes.push(
+    "Wall and active time are summed over sessions; a session's active time is at most its wall time.",
+  );
   if (notes.length > 0) lines.push("", "Notes", ...notes.map((n) => `  ${n}`));
   return lines.join("\n");
 }

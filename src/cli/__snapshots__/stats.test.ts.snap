@@ -28,8 +28,8 @@ By source, 7 days
 
 Top models, 7 days
   Model            Calls   Cost  Tokens
-  claude-sonnet-5      4  $1.24  191.2k
   claude-opus-5-5      1  $1.25  265.0k
+  claude-sonnet-5      4  $1.24  191.2k
 
 Top tools, 7 days
   Tool  Calls  Errors  Avg time
@@ -46,7 +46,9 @@ Safety decisions, 7 days
 Notes
   Cost of imported history is estimated from token counts.
   1 model call in 30 days with no known price, counted as $0: local-llm.
-  Tasks, verified rate and cost per verified task cover hamness sessions only."
+  Tasks, verified rate and cost per verified task cover hamness sessions only.
+  Verified rate is verified / (verified + unverified); overridden and abandoned tasks are left out.
+  Wall and active time are summed over sessions; a session's active time is at most its wall time."
 `;
 
 exports[`renderStats one range and one source 1`] = `
@@ -78,5 +80,6 @@ Safety decisions, 30 days
 
 Notes
   Cost of imported history is estimated from token counts.
-  1 model call in 30 days with no known price, counted as $0: local-llm (marked *)."
+  1 model call in 30 days with no known price, counted as $0: local-llm (marked *).
+  Wall and active time are summed over sessions; a session's active time is at most its wall time."
 `;

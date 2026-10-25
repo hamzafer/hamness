@@ -74,7 +74,9 @@ export function claudeHandler({ store, path, state }: HandlerContext): LineHandl
           toolResults(obj.message?.content, at);
           break;
         case "system":
-          if (obj.subtype === "turn_duration") span.activeMs += num(obj.durationMs);
+          // Only the main transcript adds active time; a subagent runs inside its turns.
+          if (obj.subtype === "turn_duration" && kind === "main")
+            span.activeMs += num(obj.durationMs);
           break;
       }
       return true;

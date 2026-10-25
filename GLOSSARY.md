@@ -24,8 +24,8 @@
 - **Side rail:** the always-on right pane in the TUI showing agents, checks, the current task and gauges (background shells once Pi has them).
 - **Source:** where a session came from: `hamness`, `claude-code` or `codex` (imported).
 - **Import:** reading Claude Code or Codex history, read-only and incremental, into the same tables. Each source file has an **import cursor** (byte offset, size, mtime) so a re-run reads only new lines.
-- **Active time:** the time an agent spent working in a session (sum of its turn durations), as opposed to wall time from first to last event.
-- **Verified rate:** verified tasks over closed tasks (every outcome but `open`) in a range. hamness only: imported history has no tasks.
+- **Active time:** the time the main agent spent working in a session (sum of its turn durations; subagents running alongside are not added), as opposed to wall time from first to last event. A session never counts more active time than its wall time.
+- **Verified rate:** verified tasks over the tasks the proof gate decided (`verified` + `unverified`) in a range; overridden and abandoned tasks are counted on their own (ADR 0012). hamness only: imported history has no tasks.
 - **Cost per verified task:** all hamness spend in a range divided by its verified tasks, so failed and abandoned work counts against it.
 - **Instruction file:** a `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/*.md` or `AGENTS.md` that goes into the system prompt, found the way Claude Code finds it.
 - **Skill:** a folder with a `SKILL.md` (frontmatter plus instructions). Its name and description are in the prompt; the `skill` tool loads the body.
