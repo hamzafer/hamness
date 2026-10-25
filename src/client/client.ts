@@ -3,7 +3,12 @@ import { openSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelInfo } from "../agent/models.ts";
 import type { CompactionOutcome } from "../agent/runner.ts";
-import type { SessionCompat, SessionListItem, SessionStatus } from "../agent/session-hub.ts";
+import type {
+  Launch,
+  SessionCompat,
+  SessionListItem,
+  SessionStatus,
+} from "../agent/session-hub.ts";
 import type { Env } from "../config/paths.ts";
 import { dataPaths, ensureDataDir } from "../config/paths.ts";
 import { getStatus } from "../daemon/status.ts";
@@ -19,7 +24,11 @@ import type { TaskAction, TaskView } from "../tasks/types.ts";
 
 /** What a client (TUI, later the dashboard) needs from the daemon. */
 export interface DaemonClient {
-  attach(cwd: string): Promise<SessionSnapshot>;
+  /**
+   * The client's session in `cwd` (ADR 0023): `new` a fresh one, `continue` (the default) the
+   * cwd's latest, `session` that one (`--resume <id>`, and coming back to the session it had).
+   */
+  attach(cwd: string, how?: Launch): Promise<SessionSnapshot>;
   prompt(sessionId: string, text: string): Promise<void>;
   abort(sessionId: string): Promise<void>;
   /** The models a session can switch to. */
@@ -42,8 +51,8 @@ export interface DaemonClient {
 export interface SessionCommands {
   /** `/new`, `/clear`: the new session's snapshot. */
   newSession(sessionId: string): Promise<SessionSnapshot>;
-  /** The cwd's sessions, the most recently active first (`/resume`). */
-  listSessions(cwd: string): Promise<SessionListItem[]>;
+  /** The cwd's sessions, the most recently active first (`/resume`); `current` is the caller's. */
+  listSessions(cwd: string, current?: string): Promise<SessionListItem[]>;
   resume(sessionId: string, targetId: string): Promise<SessionSnapshot>;
   /** `/fork`: the new session, and the forked message's text for the input box. */
   fork(sessionId: string, messageId: string): Promise<{ snapshot: SessionSnapshot; text: string }>;
@@ -163,7 +172,11 @@ export function httpClient(url: string, token: string): DaemonClient & SessionCo
 
   return {
     ready,
-    attach: (cwd) => call<SessionSnapshot>("POST", "/v1/sessions", { cwd }),
+    attach: (cwd, how = { kind: "continue" }) =>
+      call<SessionSnapshot>("POST", "/v1/sessions", {
+        cwd,
+        ...(how.kind === "session" ? { sessionId: how.id } : { start: how.kind }),
+      }),
     prompt: async (id, text) => {
       await call("POST", `/v1/sessions/${encodeURIComponent(id)}/prompt`, { text });
     },
@@ -193,11 +206,13 @@ export function httpClient(url: string, token: string): DaemonClient & SessionCo
       return res.task;
     },
     newSession: (id) => call<SessionSnapshot>("POST", s(id, "new"), {}),
-    listSessions: async (cwd) =>
+    listSessions: async (cwd, current) =>
       (
         await call<{ sessions: SessionListItem[] }>(
           "GET",
-          `/v1/sessions?cwd=${encodeURIComponent(cwd)}`,
+          `/v1/sessions?cwd=${encodeURIComponent(cwd)}${
+            current ? `&current=${encodeURIComponent(current)}` : ""
+          }`,
         )
       ).sessions,
     resume: (id, targetId) =>

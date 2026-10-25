@@ -149,8 +149,8 @@ function fakeClient() {
       calls.push(`new ${id}`);
       return replace(snap(NEW, [], { task }), "new");
     },
-    listSessions: async (cwd) => {
-      calls.push(`list ${cwd}`);
+    listSessions: async (cwd, current) => {
+      calls.push(`list ${cwd} ${current ?? "-"}`);
       return SESSIONS;
     },
     resume: async (id, target) => {
@@ -231,12 +231,16 @@ function fakeClient() {
   };
 }
 
-async function render(fake: ReturnType<typeof fakeClient>, opts: { onExit?: () => void } = {}) {
+async function render(
+  fake: ReturnType<typeof fakeClient>,
+  opts: { onExit?: () => void; snapshot?: SessionSnapshot; openResume?: boolean } = {},
+) {
   setup = await testRender(
     () => (
       <App
         client={fake.client}
-        snapshot={snapshot}
+        snapshot={opts.snapshot ?? snapshot}
+        {...(opts.openResume ? { openResume: true } : {})}
         home="/home/user"
         animate={false}
         approvalArmMs={0}
@@ -502,7 +506,7 @@ describe("an approval comes first", () => {
     s.mockInput.pressEscape();
     await frameWhere(s, (f) => !f.includes("Resume a session"));
     expect(answers).toEqual(["deny"]);
-    expect(fake.calls).toEqual([`list ${CWD}`]);
+    expect(fake.calls).toEqual([`list ${CWD} ${SID}`]);
   });
 
   test("a picker that opens while an approval waits stays hidden; Esc denies, not both", async () => {
@@ -596,7 +600,7 @@ describe("session commands", () => {
     const after = await frameWhere(s, (f) => f.includes("Resumed: release notes"));
     expect(after).toContain("draft the release notes");
     expect(after).not.toContain("now write a test for it");
-    expect(fake.calls).toEqual([`list ${CWD}`, `resume ${SID} ${OLD}`]);
+    expect(fake.calls).toEqual([`list ${CWD} ${SID}`, `resume ${SID} ${OLD}`]);
   });
 
   test("/resume and /fork filter as you type", async () => {
@@ -610,7 +614,7 @@ describe("session commands", () => {
     expect(frame).toContain("release");
     s.mockInput.pressEnter();
     await frameWhere(s, (f) => f.includes("Resumed: release notes"));
-    expect(fake.calls).toEqual([`list ${CWD}`, `resume ${SID} ${OLD}`]);
+    expect(fake.calls).toEqual([`list ${CWD} ${SID}`, `resume ${SID} ${OLD}`]);
   });
 
   test("a filter that matches nothing says so; Enter picks nothing", async () => {
@@ -633,7 +637,7 @@ describe("session commands", () => {
     s.mockInput.pressArrow("down");
     s.mockInput.pressEnter();
     await frameWhere(s, (f) => f.includes("can't be resumed"));
-    expect(fake.calls).toEqual([`list ${CWD}`]);
+    expect(fake.calls).toEqual([`list ${CWD} ${SID}`]);
   });
 
   test("/fork picks an earlier prompt, forks there and puts it back in the input box", async () => {
@@ -871,7 +875,55 @@ describe("session commands", () => {
   });
 });
 
+describe("launch (ADR 0023)", () => {
+  test("a fresh chat with an open task elsewhere shows one quiet hint line", async () => {
+    const fake = fakeClient();
+    const s = await render(fake, {
+      snapshot: snap(NEW, [], { openTask: { sessionId: SID, goal: "parser" } }),
+    });
+    const frame = await frameWhere(s, (f) => f.includes("An open task"));
+    expect(frame).toContain("An open task from your last session: parser. /resume to continue it.");
+    expect(frame.split("An open task").length).toBe(2);
+  });
+
+  test("no open task elsewhere, no hint", async () => {
+    const fake = fakeClient();
+    const s = await render(fake, { snapshot: snap(NEW) });
+    const frame = await frameWhere(s, () => false);
+    expect(frame).not.toContain("An open task");
+  });
+
+  test("`--resume` with no id opens the /resume picker at startup", async () => {
+    const fake = fakeClient();
+    const s = await render(fake, { snapshot: snap(NEW), openResume: true });
+    const frame = await frameWhere(s, (f) => f.includes("Resume a session"));
+    expect(frame).toContain("Resume a session");
+    expect(fake.calls).toContain(`list ${CWD} ${NEW}`);
+  });
+
+  test("/resume lists the folder's sessions with this window's as the current one", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/resume");
+    await frameWhere(s, (f) => f.includes("Resume a session"));
+    expect(fake.calls).toContain(`list ${CWD} ${SID}`);
+  });
+});
+
 describe("session.replaced", () => {
+  test("following another window's replace attaches to the session it names, not the latest", async () => {
+    const fake = fakeClient();
+    const asked: unknown[] = [];
+    fake.client.attach = async (cwd, how) => {
+      asked.push({ cwd, how });
+      return snap(NEW);
+    };
+    const s = await render(fake);
+    await fake.client.newSession(SID);
+    await frameWhere(s, (f) => f.includes("A new session started"));
+    expect(asked).toEqual([{ cwd: CWD, how: { kind: "session", id: NEW } }]);
+  });
+
   test("a prompt sent while following another window's switch goes to the new session", async () => {
     const fake = fakeClient();
     const sent: string[] = [];

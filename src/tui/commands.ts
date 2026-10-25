@@ -218,7 +218,9 @@ export const COMMANDS: readonly SlashCommand[] = [
     description: "Switch to another session in this folder",
     run: async (ctx) => {
       const now = Date.now();
-      const sessions = await ctx.client.listSessions(ctx.session().cwd).catch(fail(ctx));
+      const sessions = await ctx.client
+        .listSessions(ctx.session().cwd, ctx.session().id)
+        .catch(fail(ctx));
       if (!sessions) return;
       if (!sessions.some((s) => !s.current)) {
         ctx.say("No other sessions in this folder yet.");

@@ -135,6 +135,22 @@ describe("daemon client", () => {
     expect((await client.resume(next.session.id, id)).session.id).toBe(id);
   });
 
+  test("attach takes the launch's choice: a fresh session, the latest, or one by id", async () => {
+    const work = join(home.dir, "work");
+    mkdirSync(work);
+    const client = await connectToDaemon(join(home.dir, "data"));
+    const first = await client.attach(work, { kind: "new" });
+    const second = await client.attach(work, { kind: "new" });
+    expect(second.session.id).not.toBe(first.session.id);
+    expect((await client.attach(work, { kind: "session", id: first.session.id })).session.id).toBe(
+      first.session.id,
+    );
+    const listed = await client.listSessions(work, second.session.id);
+    expect(listed.every((s) => s.current === (s.id === second.session.id))).toBe(true);
+    const err = await client.attach(work, { kind: "session", id: "nope" }).catch((e: unknown) => e);
+    expect((err as DaemonError).status).toBe(404);
+  });
+
   test("a failed request rejects with the daemon's error", async () => {
     const client = await connectToDaemon(join(home.dir, "data"));
     await expect(client.attach("relative")).rejects.toThrow(/absolute/);
