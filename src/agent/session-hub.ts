@@ -233,7 +233,7 @@ const asThinking = (v: string | undefined): ThinkingLevel | undefined =>
   (THINKING_LEVELS as readonly string[]).includes(v ?? "") ? (v as ThinkingLevel) : undefined;
 const SAFETY_MODES: readonly SafetyMode[] = ["ask", "auto", "yolo"];
 export const YOLO_WARNING =
-  "yolo mode: every tool call runs with no rules, judge or question; only Claude Code hooks can still stop one. Switch back with /mode auto.";
+  "yolo mode: every tool call runs with no question or judge; only deny rules (secrets, sudo, your own) and Claude Code hooks can still stop one. Switch back with /mode auto.";
 export const SESSION_NAME_MAX = 200;
 
 /** One session of `GET /v1/sessions?cwd=`. */

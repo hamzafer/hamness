@@ -247,6 +247,58 @@ describe("safety in the daemon", () => {
     expect(decisions()[0]).toMatchObject({ verdict: "allow", source: "mode", mode: "yolo" });
   });
 
+  test("yolo still obeys deny rules: a .env read and sudo are denied", async () => {
+    userConfig({ mode: "yolo" });
+    writeFileSync(join(work, ".env"), "TOKEN=synthetic\n");
+    fake.script([
+      { tools: [{ name: "read", args: { path: ".env" } }] },
+      bashCall("sudo touch owned"),
+      { text: "ok" },
+    ]);
+    const { prompt, settled, decisions, log } = await start();
+    await prompt("go");
+    await settled();
+    expect(log.ofType("safety.approval.request")).toHaveLength(0);
+    expect(existsSync(join(work, "owned"))).toBe(false);
+    expect(decisions().map((d) => `${d.tool} ${d.verdict}/${d.source}/${d.mode}`)).toEqual([
+      "read deny/rule/yolo",
+      "bash deny/rule/yolo",
+    ]);
+  });
+
+  test("yolo still obeys a user deny rule", async () => {
+    userConfig({ mode: "yolo", permission: { bash: { "mkdir *": "deny" } } });
+    fake.script([bashCall("mkdir nope"), { text: "ok" }]);
+    const { prompt, settled, decisions } = await start();
+    await prompt("go");
+    await settled();
+    expect(existsSync(join(work, "nope"))).toBe(false);
+    expect(decisions()[0]).toMatchObject({ verdict: "deny", source: "rule", mode: "yolo" });
+  });
+
+  test("yolo skips ask rules and the judge: undecided and ask calls run unasked", async () => {
+    userConfig({ mode: "yolo" });
+    mkdirSync(join(work, "junk"));
+    const judged: JudgeRequest[] = [];
+    const judge: Judge = async (req) => {
+      judged.push(req);
+      return { verdict: "ask", reason: "judge says ask" };
+    };
+    fake.script([bashCall("mkdir wild"), bashCall("rm -rf junk"), { text: "ok" }]);
+    const { prompt, settled, decisions, log } = await start(judge);
+    await prompt("go");
+    await settled();
+    expect(log.ofType("safety.approval.request")).toHaveLength(0);
+    expect(judged).toHaveLength(0);
+    expect(existsSync(join(work, "wild"))).toBe(true);
+    expect(existsSync(join(work, "junk"))).toBe(false);
+    expect(decisions().map((d) => `${d.verdict}/${d.source}`)).toEqual([
+      "allow/mode",
+      "allow/mode",
+    ]);
+    expect(decisions()[1]?.reason).toContain("yolo");
+  });
+
   test("the same call three times in a row asks, even when a rule allows it", async () => {
     writeFileSync(join(work, "a.txt"), "hi\n");
     const read = { tools: [{ name: "read", args: { path: "a.txt" } }] };

@@ -566,7 +566,7 @@ describe("export and last reply", () => {
 describe("safety mode per session", () => {
   test("get and set ask, auto, yolo; yolo is loud and decides the calls", async () => {
     fake.script([
-      { tools: [{ name: "bash", args: { command: "echo hi > note.txt" } }] },
+      { tools: [{ name: "bash", args: { command: "mkdir notes" } }] },
       { text: "done" },
     ]);
     const { d, call, attach, say, log } = await start({ rules: true });

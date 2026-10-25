@@ -16,8 +16,9 @@ import { type Evaluation, evaluate, type ListOptions, type Rule } from "./rules.
  *
  *   hooks ── deny ─────────────────────────────────────────▶ deny (source: hook, final)
  *         └─ allow / ask: recorded, then the rules still run (a rule deny wins)
- *   yolo mode ─────────────────────────────────────────────▶ allow (source: mode)
- *   rules ── allow / deny ─────────────────────────────────▶ verdict (source: rule)
+ *   rules ── deny ─────────────────────────────────────────▶ deny (source: rule; yolo too)
+ *   yolo mode ── anything else (not a hook ask) ───────────▶ allow (source: mode; ADR 0022)
+ *   rules ── allow ────────────────────────────────────────▶ allow (source: rule)
  *         └─ ask ─────────────────────────────────────────▶ user
  *         └─ undecided ── auto mode + judge ── allow ─────▶ allow (source: judge)
  *                     │                    ├─ ask / error ▶ user
@@ -273,13 +274,6 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       }
     }
 
-    // yolo skips safety questions, not the proof gate's.
-    if (mode === "yolo" && hook?.verdict !== "ask" && !proving) {
-      if (hook?.verdict === "allow") return { allow: true };
-      record({ verdict: "allow", source: "mode", reason: "yolo mode allows every call" });
-      return { allow: true };
-    }
-
     const evalCtx = {
       cwd,
       home,
@@ -337,8 +331,18 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       record({ verdict: "deny", source: "rule", reason: because, ...ruleOf });
       return { allow: false, reason: because };
     }
-    if (proving && mode === "yolo" && hook?.verdict !== "ask") {
-      record({ verdict: "allow", source: "mode", reason: "yolo mode runs it" });
+    // yolo skips asks, the judge and the doom loop, never a deny rule (ADR 0022), nor the
+    // proof gate's "count it?" question. A hook's ask still asks.
+    if (mode === "yolo" && hook?.verdict !== "ask") {
+      if (hook?.verdict === "allow") return ran();
+      if (evaluation.verdict === "allow") {
+        record({ verdict: "allow", source: "rule", reason: because, ...ruleOf });
+      } else {
+        const reason = proving
+          ? "yolo mode runs it (no deny rule matched)"
+          : "yolo mode allows it (no deny rule matched)";
+        record({ verdict: "allow", source: "mode", reason });
+      }
       return ran();
     }
     if (hook?.verdict === "allow" && evaluation.verdict !== "ask" && !looping) {

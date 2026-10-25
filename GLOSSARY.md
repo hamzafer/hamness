@@ -18,7 +18,7 @@
 - **Judge:** the small model that decides tool calls no rule decides.
 - **Decision:** a safety verdict on one tool call, with source (`rule`, `judge`, `hook`, `user`, `mode`) and reason.
 - **Approval:** a tool call that asks, waiting for the user's answer: allow once, allow always (saves a rule to the project config) or deny. No answer before the timeout is a deny.
-- **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything).
+- **Mode:** how undecided calls are handled: `ask` (the user), `auto` (the judge, then the user), `yolo` (allow everything no deny rule stops, with no questions; ADR 0022).
 - **Audit log:** the stored list of decisions.
 - **Hook:** a command from Claude Code's settings that hamness runs on an event (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop). A project's hooks run only as its repo **trusted** them.
 - **Side rail:** the always-on right pane in the TUI showing agents, checks, the current task and gauges (background shells once Pi has them).
