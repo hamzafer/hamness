@@ -335,8 +335,47 @@ describe("TUI chat layout (headless)", () => {
       { kind: "abandon" },
     ]);
     expect(fake.prompts).toEqual([]);
-    // A refused action shows the daemon's reason.
-    await s.waitFor(() => s.captureCharFrame().includes("no open task"));
+    // Each one answers in the chat; a refused one shows the daemon's reason there.
+    const frame = await frameWhere(s, (f) => f.includes("no open task"));
+    expect(frame).toContain("Task opened: ship the parser");
+    expect(frame).toContain("Task accepted without proof: checked by hand");
+    expect(frame).toContain("no open task: nothing to abandon");
+  });
+
+  test("/abandon with a reason says the task was dropped", async () => {
+    const fake = fakeClient();
+    fake.client.task = async (_id, action) => ({
+      id: "t1",
+      goal: "g",
+      implicit: false,
+      outcome: "abandoned",
+      ...(action.kind !== "start" && action.reason ? { reason: action.reason } : {}),
+      evidence: 0,
+      passed: 0,
+      costMicros: 0,
+      tokens: 0,
+      startedAt: 0,
+      durationMs: 0,
+    });
+    const s = await render(fake.client);
+    await s.mockInput.typeText("/abandon wrong approach");
+    s.mockInput.pressEnter();
+    await s.waitFor(() => s.captureCharFrame().includes("Task dropped: wrong approach"));
+  });
+
+  test("stopping a run with Esc shows a quiet Stopped. line, not an error", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    fake.send({ type: "agent.status", busy: true });
+    fake.send({ type: "agent.message.start", messageId: "m9", role: "assistant" });
+    fake.send({ type: "agent.message.delta", messageId: "m9", text: "Halfway" });
+    fake.send({ type: "agent.message.end", messageId: "m9", role: "assistant", text: "Halfway" });
+    fake.send({ type: "agent.stopped" });
+    fake.send({ type: "agent.status", busy: false });
+    const frame = await frameWhere(s, (f) => f.includes("Stopped."));
+    expect(frame).toContain("Stopped.");
+    expect(frame).not.toContain("error");
+    expect(frame).not.toContain("aborted");
   });
 
   test("/task without a goal says how to use it", async () => {

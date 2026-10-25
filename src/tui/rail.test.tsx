@@ -46,7 +46,7 @@ async function frameOf(state: RailState, now: number, opts: { width?: number } =
   return setup.captureCharFrame();
 }
 
-const rowLines = (frame: string) => frame.split("\n").filter((l) => /[○●✓✗] /.test(l));
+const rowLines = (frame: string) => frame.split("\n").filter((l) => /[○●✓✗■] /.test(l));
 
 describe("side rail (headless)", () => {
   test("idle: the main agent, a task placeholder, the context gauge and session cost", async () => {
@@ -122,6 +122,18 @@ describe("side rail (headless)", () => {
     const frame = await frameOf(state, 5_000);
     expect(rowLines(frame)[0]).toMatch(/✗ main/);
     expect(frame).toContain("No API key");
+  });
+
+  test("stopped: a neutral square, no cross and no reason", async () => {
+    const state = stateAfter([
+      [1_000, { type: "agent.status", busy: true }],
+      [1_200, { type: "agent.stopped" }],
+      [1_300, { type: "agent.status", busy: false }],
+    ]);
+    const frame = await frameOf(state, 5_000);
+    expect(frame).toMatch(/■ main/);
+    expect(frame).not.toContain("✗");
+    expect(frame).not.toContain("abort");
   });
 
   test("a subagent gets its own row under the main agent", async () => {

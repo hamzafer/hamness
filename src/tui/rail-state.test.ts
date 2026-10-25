@@ -149,6 +149,19 @@ describe("rail state", () => {
     expect(main(f.state)).toMatchObject({ status: "error", error: "overloaded" });
   });
 
+  test("a user stop ends the run as stopped, not as an error, until the next run", () => {
+    const f = feed();
+    f.send(1, { type: "agent.status", busy: true });
+    f.send(2, { type: "agent.message.end", messageId: "m9", role: "assistant", text: "half" });
+    f.send(3, { type: "agent.stopped" });
+    f.send(4, { type: "agent.status", busy: false });
+    expect(main(f.state)).toMatchObject({ status: "stopped", endedAt: 4 });
+    expect(main(f.state)?.error).toBeUndefined();
+    f.send(5, { type: "agent.status", busy: true });
+    f.send(6, { type: "agent.status", busy: false });
+    expect(main(f.state)?.status).toBe("done");
+  });
+
   test("events for another agent get their own row; other sessions and old events are dropped", () => {
     const f = feed();
     f.send(1, { type: "agent.status", busy: true, agentId: "a-sub" });
@@ -231,7 +244,8 @@ describe("rail state", () => {
       ["main", "idle"],
       ["scout", "running"],
       ["fixer", "done"],
-      ["lost", "error"],
+      // Stopped (by the user, or by a daemon restart), which is not a failure.
+      ["lost", "stopped"],
     ]);
     expect(sessionCostMicros(s)).toBe(7);
   });

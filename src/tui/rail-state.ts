@@ -7,8 +7,8 @@ import type { EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
  * clock as an argument, so tests drive it without rendering or waiting.
  */
 
-/** `done`: the last run finished cleanly. `idle`: no run yet. */
-export type RailStatus = "idle" | "running" | "done" | "error";
+/** `done`: the last run finished cleanly. `stopped`: the user stopped it. `idle`: no run yet. */
+export type RailStatus = "idle" | "running" | "done" | "stopped" | "error";
 
 export interface RailAgent {
   id: string;
@@ -28,6 +28,8 @@ export interface RailAgent {
   tokens: number;
   costMicros: number;
   error?: string;
+  /** The user stopped the current run (`agent.stopped`); it ends `stopped`, not `done`. */
+  stopped?: boolean;
   /** Tool calls still running, oldest first. */
   open: Array<{ id: string; tool: string; file?: string }>;
 }
@@ -103,7 +105,8 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
       row.status = "running";
       row.startedAt = now;
     } else if (a.status === "done") row.status = "done";
-    else if (a.status === "error" || a.status === "aborted") row.status = "error";
+    else if (a.status === "aborted") row.status = "stopped";
+    else if (a.status === "error") row.status = "error";
     return row;
   });
   if (!agents.some((a) => a.id === mainAgentId)) {
@@ -179,8 +182,9 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
         agent.startedAt = now;
         delete agent.endedAt;
         delete agent.error;
+        delete agent.stopped;
       } else if (agent.status === "running") {
-        agent.status = agent.error ? "error" : "done";
+        agent.status = agent.error ? "error" : agent.stopped ? "stopped" : "done";
         agent.endedAt = now;
         agent.open = [];
         clearTool(agent);
@@ -210,6 +214,13 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
       return;
     case "agent.error":
       setError(agent, e.message, now);
+      return;
+    case "agent.stopped":
+      agent.stopped = true;
+      if (agent.status !== "running" && !agent.error) {
+        agent.status = "stopped";
+        agent.endedAt ??= now;
+      }
       return;
     case "task.start":
     case "task.end":
@@ -297,5 +308,6 @@ export const RAIL_GLYPH: Record<RailStatus, string> = {
   idle: "○",
   running: "●",
   done: "✓",
+  stopped: "■",
   error: "✗",
 };

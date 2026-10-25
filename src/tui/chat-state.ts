@@ -6,12 +6,27 @@ import type {
   TranscriptItem,
 } from "../events/types.ts";
 
+/**
+ * A line hamness itself writes in the chat (a stop, a task command's answer). Client-side
+ * only: it is not stored, so it is gone after a reattach.
+ */
+export interface SystemLine {
+  kind: "system";
+  id: string;
+  text: string;
+  tone: "muted" | "ok" | "warn" | "error";
+}
+
+export type ChatItem = TranscriptItem | SystemLine;
+
 /** What the chat pane shows. Mutated in place by `applyEvent` (inside a Solid `produce`). */
 export interface ChatState {
   session: SessionInfo;
   /** Last applied event number; older or replayed events are dropped. */
   seq: number;
-  items: TranscriptItem[];
+  items: ChatItem[];
+  /** How many system lines were added, for their ids. */
+  systemLines?: number;
   /** Client-side problems (a refused prompt, a lost connection). */
   notice?: string;
   /** Tool calls waiting for the user, oldest first. */
@@ -35,6 +50,12 @@ function findMessage(state: ChatState, id: string) {
 function findTool(state: ChatState, id: string) {
   const item = state.items.find((i) => i.kind === "tool" && i.id === id);
   return item?.kind === "tool" ? item : undefined;
+}
+
+/** Adds a system line at the end of the chat. */
+export function addSystemLine(state: ChatState, text: string, tone: SystemLine["tone"]): void {
+  state.systemLines = (state.systemLines ?? 0) + 1;
+  state.items.push({ kind: "system", id: `sys-${state.systemLines}`, text, tone });
 }
 
 export function applyEvent(state: ChatState, e: HamnessEvent): void {
@@ -99,6 +120,9 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       return;
     case "safety.approval.resolved":
       state.approvals = state.approvals.filter((a) => a.id !== e.approvalId);
+      return;
+    case "agent.stopped":
+      addSystemLine(state, "Stopped.", "muted");
       return;
     case "agent.error":
     case "agent.notice":
