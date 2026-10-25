@@ -370,6 +370,33 @@ describe("the current task", () => {
 });
 
 describe("rail orbs", () => {
+  test("approvals in the snapshot wait on the agent that asked", () => {
+    const approval = (id: string, agentId?: string) => ({
+      id,
+      toolCallId: `c-${id}`,
+      tool: "bash",
+      args: {},
+      reason: "r",
+      suggestions: [],
+      expiresAt: 0,
+      ...(agentId ? { agentId } : {}),
+    });
+    const s = initialRail(
+      snap({
+        agents: [
+          { id: MAIN, kind: "main", tokens: 0, costMicros: 0 },
+          { id: "a-sub", kind: "subagent", name: "scout", tokens: 0, costMicros: 0 },
+        ],
+        approvals: [approval("ap1"), approval("ap2", "a-sub")],
+      }),
+      1000,
+    );
+    expect(s.agents.map((a) => [a.id, a.approvals])).toEqual([
+      [MAIN, ["ap1"]],
+      ["a-sub", ["ap2"]],
+    ]);
+  });
+
   test("each agent's orb follows its activity, and goes when the run ends", () => {
     const f = feed();
     const orb = () => railOrbState(f.state, main(f.state) as RailAgent);

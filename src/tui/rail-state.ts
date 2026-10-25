@@ -137,7 +137,9 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
   if (snapshot.task) state.task = railTask(snapshot.task);
 
   const main = agentFor(state, mainAgentId);
-  main.approvals = (snapshot.approvals ?? []).map((a) => a.id);
+  for (const a of snapshot.approvals ?? []) {
+    agentFor(state, a.agentId ?? mainAgentId).approvals.push(a.id);
+  }
   if (snapshot.session.busy) {
     main.status = "running";
     main.startedAt = now;
