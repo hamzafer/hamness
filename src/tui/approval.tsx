@@ -5,6 +5,9 @@ import { argSummary } from "./chat-state.ts";
 
 const COLORS = { warn: "#e0af68", muted: "#737aa2", text: "#c0caf5", danger: "#f7768e" };
 
+/** The call's main argument is shown whole up to this many characters (a few wrapped rows). */
+const APPROVAL_ARG_MAX = 600;
+
 export interface ApprovalPromptProps {
   approval: PendingApproval;
   /** How many approvals are waiting, this one included. */
@@ -49,15 +52,18 @@ export function ApprovalPrompt(props: ApprovalPromptProps) {
       borderColor={COLORS.warn}
       title={title()}
       flexDirection="column"
-      height={5}
       flexShrink={0}
       paddingLeft={1}
+      paddingRight={1}
     >
-      <text fg={COLORS.text}>
-        {props.approval.tool} {argSummary(props.approval.args, 80)}
+      {/* Each part on its own rows, wrapped: the box grows to fit, so none draws over another. */}
+      <text fg={COLORS.text} flexShrink={0} wrapMode="char">
+        {`${props.approval.tool} ${argSummary(props.approval.args, APPROVAL_ARG_MAX)}`}
       </text>
-      <text fg={COLORS.muted}>{props.approval.reason}</text>
-      <box flexDirection="row">
+      <text fg={COLORS.muted} flexShrink={0} wrapMode="word">
+        {props.approval.reason}
+      </text>
+      <box flexDirection="row" flexShrink={0}>
         <text fg={COLORS.warn}>[y] allow once </text>
         <Show when={always().length > 0}>
           <text fg={COLORS.warn}> [a] always allow {patterns()} </text>

@@ -101,6 +101,33 @@ describe("approval prompt (headless)", () => {
     expect(frame).toContain("[n] deny");
   });
 
+  test("a judge ask with a long reason and a long command never draws one over the other", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    const command = `bash -c "$(printf %s ${"QUJD".repeat(30)} | base64 -d)" && echo the-command-tail`;
+    const reason =
+      "The command decodes a base64 string and executes the result via bash -c, so its actual " +
+      "behavior is hidden and cannot be verified before running.\nThe user should confirm it.";
+    fake.send({
+      type: "safety.approval.request",
+      approval: pending({ args: { command }, reason, suggestions: [] }),
+    });
+    const frame = await s.waitForFrame((f) => f.includes("[y] allow once"));
+    const lines = frame.split("\n");
+    const at = (text: string) => lines.findIndex((l) => l.includes(text));
+    // The command is whole, on its own lines, above the reason; the choices come last.
+    expect(at("bash -c")).toBeGreaterThan(-1);
+    expect(at("the-command-tail")).toBeGreaterThan(at("bash -c"));
+    expect(at("The command decodes")).toBeGreaterThan(at("the-command-tail"));
+    expect(frame).toContain("verified before running.");
+    expect(frame).toContain("The user should confirm it.");
+    expect(at("[y] allow once")).toBeGreaterThan(at("The user should confirm it."));
+    // No reason text inside the command's rows.
+    for (let i = at("bash -c"); i <= at("the-command-tail"); i++) {
+      expect(lines[i]).not.toContain("decodes");
+    }
+  });
+
   test("y allows once; the key is not typed into the prompt box", async () => {
     const fake = fakeClient();
     const s = await render(fake.client);
