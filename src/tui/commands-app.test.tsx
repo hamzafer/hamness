@@ -692,12 +692,61 @@ describe("session commands", () => {
 
   test("a daemon error shows inline", async () => {
     const fake = fakeClient();
-    fake.client.exportSession = async () => {
-      throw new DaemonError("/work/demo/s.html exists; send overwrite: true to replace it", 409);
+    fake.client.listSessions = async () => {
+      throw new DaemonError("the session index is locked", 500);
     };
     const s = await render(fake);
-    await run(s, "/export s.html");
-    await frameWhere(s, (f) => f.includes("s.html exists"));
+    await run(s, "/resume");
+    await frameWhere(s, (f) => f.includes("the session index is locked"));
+  });
+
+  test("/export onto an existing file says how to replace it; --force does", async () => {
+    const fake = fakeClient();
+    const forced: boolean[] = [];
+    fake.client.exportSession = async (_id, _format, opts) => {
+      forced.push(opts?.overwrite === true);
+      if (!opts?.overwrite) {
+        throw new DaemonError(
+          "/work/demo/out.jsonl exists; send overwrite: true to replace it",
+          409,
+        );
+      }
+      return "/work/demo/out.jsonl";
+    };
+    const s = await render(fake);
+    await run(s, "/export jsonl out.jsonl");
+    const frame = await frameWhere(s, (f) => f.includes("out.jsonl exists."));
+    expect(frame).toContain("out.jsonl exists. Use /export jsonl out.jsonl --force to replace it.");
+    expect(frame).not.toContain("overwrite: true");
+    await run(s, "/export jsonl out.jsonl --force");
+    await frameWhere(s, (f) => f.includes("Exported to /work/demo/out.jsonl"));
+    expect(forced).toEqual([false, true]);
+  });
+
+  test("a failed /compact says so once, in one readable line", async () => {
+    const fake = fakeClient();
+    const raw =
+      "Summarization failed: API integrators: you can reduce refusals for your users by " +
+      "configuring a fallback model — see https://docs.example.com/refusals-and-fallback";
+    fake.client.compact = async () => {
+      fake.send({ type: "agent.compaction.start", reason: "manual" });
+      fake.send({
+        type: "agent.compaction.end",
+        reason: "manual",
+        aborted: false,
+        error: `Compaction failed: ${raw}`,
+      });
+      throw new DaemonError(raw, 409);
+    };
+    const s = await render(fake);
+    await run(s, "/compact");
+    const frame = await frameWhere(s, (f) => f.includes("Compaction failed"));
+    await Bun.sleep(30);
+    const after = await frameWhere(s, () => true);
+    expect(frame).toContain("Compaction failed: the model refused to write the summary.");
+    expect(after.match(/Compaction failed/g)?.length).toBe(1);
+    expect(after).not.toContain("Summarization failed");
+    expect(after).not.toContain("API integrators");
   });
 
   test("a setting refused while the session switches or compacts (409) says to try again", async () => {

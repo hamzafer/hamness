@@ -89,16 +89,42 @@ export function relativeTime(at: number, now: number): string {
   return `${Math.floor(s / 86_400)}d ago`;
 }
 
-/** `/export [html|jsonl] [path]`; a lone path ending in `.jsonl` means jsonl. */
-export function parseExportArgs(arg: string): { format: "html" | "jsonl"; path?: string } {
-  const m = /^(html|jsonl)(?:\s+([\s\S]+))?$/.exec(arg.trim());
-  if (m)
-    return m[2]
-      ? { format: m[1] as "html" | "jsonl", path: m[2].trim() }
-      : { format: m[1] as "html" | "jsonl" };
-  const path = arg.trim();
-  if (!path) return { format: "html" };
-  return { format: path.endsWith(".jsonl") ? "jsonl" : "html", path };
+/**
+ * `/export [html|jsonl] [path] [--force]`; a lone path ending in `.jsonl` means jsonl.
+ * `--force` replaces a file that is already there.
+ */
+export function parseExportArgs(arg: string): {
+  format: "html" | "jsonl";
+  path?: string;
+  force?: true;
+} {
+  const words = arg.trim().split(/\s+/).filter(Boolean);
+  const force = words.includes("--force");
+  const rest = words.filter((w) => w !== "--force").join(" ");
+  const out = ((): { format: "html" | "jsonl"; path?: string } => {
+    const m = /^(html|jsonl)(?:\s+([\s\S]+))?$/.exec(rest);
+    if (m)
+      return m[2]
+        ? { format: m[1] as "html" | "jsonl", path: m[2].trim() }
+        : { format: m[1] as "html" | "jsonl" };
+    if (!rest) return { format: "html" };
+    return { format: rest.endsWith(".jsonl") ? "jsonl" : "html", path: rest };
+  })();
+  return force ? { ...out, force } : out;
+}
+
+/** The daemon's refusal to replace a file (`… exists; send overwrite: true …`), said for the TUI. */
+function exportExistsLine(
+  err: unknown,
+  format: string,
+  path: string | undefined,
+): string | undefined {
+  if (!(err instanceof DaemonError) || err.status !== 409 || !/ exists; /.test(err.message)) {
+    return undefined;
+  }
+  const target = path ?? err.message.slice(0, err.message.indexOf(" exists; "));
+  const name = path ?? target.split("/").at(-1) ?? target;
+  return `${name} exists. Use /export ${format} ${target} --force to replace it.`;
 }
 
 const MODES: ReadonlyArray<readonly [SafetyMode, string]> = [
@@ -334,13 +360,20 @@ export const COMMANDS: readonly SlashCommand[] = [
   {
     name: "export",
     args: "[html|jsonl] [path]",
-    description: "Save the session to a file",
+    description: "Save the session to a file; --force replaces one",
     run: (ctx, arg) => {
-      const { format, path } = parseExportArgs(arg);
+      const { format, path, force } = parseExportArgs(arg);
       ctx.client
-        .exportSession(ctx.session().id, format, path ? { path } : {})
+        .exportSession(ctx.session().id, format, {
+          ...(path ? { path } : {}),
+          ...(force ? { overwrite: true } : {}),
+        })
         .then((written) => ctx.say(`Exported to ${shortPath(written, ctx.home, 200)}`))
-        .catch(fail(ctx));
+        .catch((err: unknown) => {
+          const exists = exportExistsLine(err, format, path);
+          if (exists) ctx.say(exists, "warn");
+          else fail(ctx)(err);
+        });
     },
   },
   {

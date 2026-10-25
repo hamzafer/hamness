@@ -160,6 +160,16 @@ describe("helpers", () => {
     expect(parseExportArgs("html out/s.html")).toEqual({ format: "html", path: "out/s.html" });
     expect(parseExportArgs("notes.jsonl")).toEqual({ format: "jsonl", path: "notes.jsonl" });
     expect(parseExportArgs("notes.html")).toEqual({ format: "html", path: "notes.html" });
+    expect(parseExportArgs("jsonl out.jsonl --force")).toEqual({
+      format: "jsonl",
+      path: "out.jsonl",
+      force: true,
+    });
+    expect(parseExportArgs("--force notes.html")).toEqual({
+      format: "html",
+      path: "notes.html",
+      force: true,
+    });
   });
 
   test("relativeTime reads like a person would say it", () => {
