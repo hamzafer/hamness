@@ -86,6 +86,7 @@ function goalOf(text: string): string {
  * - `/abandon` (user only): the open task becomes `abandoned`.
  * - At turn end an implicit task still open closes: `verified` with passing evidence,
  *   `unverified` with failed evidence, file edits or subagents, and is dropped when it had none.
+ * - At turn end an agent's explicit task with no evidence and no such work is dropped too.
  *
  * Rows the hub stores count toward `attributionId()`: the open task, or the one closed
  * earlier in this turn, so the wrap-up of a task still counts toward it.
@@ -158,6 +159,10 @@ export class SessionTasks {
       if (this.gate(open.id).verified) this.closeAs(open.id, "verified");
       else if (this.didWork(open.id)) this.closeAs(open.id, "unverified");
       else this.drop(open.id);
+    } else if (open && this.idleAgentTask(open.id)) {
+      // The agent opened it and the turn ended with nothing done (its only action denied, say)
+      // and no task_done: nothing would ever close it, so drop it like a chat turn (ADR 0012).
+      this.drop(open.id);
     }
     // Next turn starts fresh unless an explicit task is still open.
     if (!this.openTask()) this.current = undefined;
@@ -322,6 +327,15 @@ export class SessionTasks {
       this.store.evidenceRows(id) === 0 &&
       !this.store.hasSubagents(id) &&
       this.store.onlyReadOnlyCalls(id)
+    );
+  }
+
+  /** An explicit task the agent opened with no evidence rows and no work (`didWork`). */
+  private idleAgentTask(id: string): boolean {
+    return (
+      this.store.openedBy(id) === "agent" &&
+      this.store.evidenceRows(id) === 0 &&
+      !this.didWork(id)
     );
   }
 
