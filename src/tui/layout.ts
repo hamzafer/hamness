@@ -56,6 +56,25 @@ export function wrappedRows(text: string, width: number): number {
   return Math.max(1, rows);
 }
 
+const WELCOME_HINT = "Type / for commands";
+
+/**
+ * The empty chat's one line in `width` columns: folder, model and the hint. Short of room the
+ * folder goes first, then the model's provider, then the model; the hint always stays.
+ */
+export function welcomeLine(cwd: string, home: string, model: string, width: number): string {
+  const sep = " · ";
+  const bare = model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
+  const room = width - model.length - WELCOME_HINT.length - 2 * sep.length;
+  const folder = room >= 8 ? shortPath(cwd, home, room) : "";
+  if (folder && folder.length <= room) return [folder, model, WELCOME_HINT].join(sep);
+  for (const m of [model, bare]) {
+    const line = `${m}${sep}${WELCOME_HINT}`;
+    if (line.length <= width) return line;
+  }
+  return WELCOME_HINT;
+}
+
 /** `1 prompt`, `2 prompts`: the count and the word in the number it needs. */
 export function plural(n: number, word: string, many = `${word}s`): string {
   return `${n} ${n === 1 ? word : many}`;

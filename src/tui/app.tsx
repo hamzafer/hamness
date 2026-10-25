@@ -38,7 +38,7 @@ import {
   parseSlash,
 } from "./commands.ts";
 import { HelpPanel } from "./help.tsx";
-import { promptHint, shortPath, wrappedRows } from "./layout.ts";
+import { promptHint, shortPath, welcomeLine, wrappedRows } from "./layout.ts";
 import { markdownStyle } from "./markdown.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { animationOff, ORB_FPS, ORB_ROWS, Orb } from "./orb.tsx";
@@ -484,7 +484,8 @@ export function App(props: AppProps) {
           >
             <Show when={!state.items.some((i) => i.kind === "message" && i.role === "user")}>
               <text fg={COLORS.muted}>
-                {`  ${shortPath(state.session.cwd, home, Math.max(10, chatWidth() - 60))} · ${state.session.model} · Type / for commands`}
+                {/* The indent and the scrollbar's column come off the pane's width. */}
+                {`  ${welcomeLine(state.session.cwd, home, state.session.model, chatWidth() - 3)}`}
               </text>
             </Show>
             <For each={state.items}>

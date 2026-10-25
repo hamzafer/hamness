@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PROMPT_HINTS, plural, promptHint, shortPath, wrappedRows } from "./layout.ts";
+import { PROMPT_HINTS, plural, promptHint, shortPath, welcomeLine, wrappedRows } from "./layout.ts";
 import { statusRows } from "./status-panel.tsx";
 
 describe("plural", () => {
@@ -39,6 +39,21 @@ describe("plural", () => {
     const row = (k: string) => rows.find(([key]) => key === k)?.[1];
     expect(row("Messages")).toBe("1 prompt, 1 reply, 1 tool call");
     expect(row("Task")).toBe("g · open · 1/1 check");
+  });
+});
+
+describe("welcomeLine", () => {
+  test("folder, model and the hint when they fit; parts drop, never the hint, when they don't", () => {
+    const model = "anthropic/claude-opus-5-5";
+    expect(welcomeLine("/home/user/dev/app", HOME, model, 100)).toBe(
+      `~/dev/app · ${model} · Type / for commands`,
+    );
+    for (const width of [20, 30, 40, 46, 60]) {
+      const line = welcomeLine("/home/user/dev/projects/some-app", HOME, model, width);
+      expect(line.length).toBeLessThanOrEqual(width);
+      expect(line).toContain("Type / for commands");
+    }
+    expect(welcomeLine("/home/user/dev/app", HOME, model, 46)).toContain("claude-opus-5-5");
   });
 });
 

@@ -132,15 +132,26 @@ export function Picker(props: {
     }
   });
   const lines = () => alignRows(props.spec.rows);
+  /**
+   * What the list shows: each shown row, under a heading where its group starts. Headings are
+   * rows too, so the window of `PICKER_ROWS` counts them.
+   */
+  const entries = createMemo(() => {
+    const out: Array<{ index: number; text: string; heading?: string }> = [];
+    let group: string | undefined;
+    for (const index of shown()) {
+      const g = props.spec.rows[index]?.group;
+      if (g && g !== group) out.push({ index: -1, text: g, heading: g });
+      group = g;
+      out.push({ index, text: lines()[index] ?? "" });
+    }
+    return out;
+  });
   const visible = () => {
-    const from = windowStart(selected(), total(), PICKER_ROWS);
-    return shown()
-      .slice(from, from + PICKER_ROWS)
-      .map((index, k, all) => {
-        const group = props.spec.rows[index]?.group;
-        const prev = k > 0 ? props.spec.rows[all[k - 1] ?? -1]?.group : undefined;
-        return { text: lines()[index] ?? "", index, heading: group && group !== prev ? group : "" };
-      });
+    const all = entries();
+    const at = all.findIndex((e) => e.heading === undefined && e.index === shown()[selected()]);
+    const from = windowStart(Math.max(0, at), all.length, PICKER_ROWS);
+    return all.slice(from, from + PICKER_ROWS);
   };
   const more = () => (total() > PICKER_ROWS ? `  ${selected() + 1}/${total()}` : "");
   const title = () => ` ${props.spec.title}${query() ? ` · ${query()}` : ""} `;
@@ -158,11 +169,11 @@ export function Picker(props: {
         {(row) => {
           const r = () => props.spec.rows[row.index];
           const on = () => row.index === shown()[selected()];
+          if (row.heading !== undefined) {
+            return <text fg={PICKER_COLORS.dim}>{row.heading}</text>;
+          }
           return (
             <>
-              <Show when={row.heading}>
-                <text fg={PICKER_COLORS.dim}>{row.heading}</text>
-              </Show>
               <box
                 flexDirection="row"
                 height={1}
@@ -186,8 +197,11 @@ export function Picker(props: {
       <Show when={total() === 0}>
         <text fg={PICKER_COLORS.muted}>{`  Nothing matches "${query()}".`}</text>
       </Show>
-      <text fg={PICKER_COLORS.dim}>
-        {`Type to filter · ↑↓ move · Enter picks · Esc ${query() ? "clears" : "closes"}${more()}`}
+      <text fg={PICKER_COLORS.dim} height={1} wrapMode="none">
+        {/* Short, to fit one row of a narrow chat pane; the title shows the filter. */}
+        {query()
+          ? `↑↓ · Enter picks · Esc clears${more()}`
+          : `Type to filter · ↑↓ · Enter · Esc${more()}`}
       </text>
     </box>
   );

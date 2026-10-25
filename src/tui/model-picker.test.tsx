@@ -127,6 +127,31 @@ describe("/model in the TUI", () => {
     expect(fake.prompts).toEqual([]);
   });
 
+  test("at 80 columns: headings count toward the height, the footer fits one row", async () => {
+    const many = [
+      ...Array.from({ length: 7 }, (_, i) => info(`anthropic/model-a${i}`, `A ${i}`, 1, 2)),
+      ...Array.from({ length: 7 }, (_, i) => info(`openai/model-o${i}`, `O ${i}`, 1, 2)),
+    ];
+    const fake = fakeClient();
+    fake.client.models = async () => many;
+    setup = await testRender(
+      () => <App client={fake.client} snapshot={snapshot} approvalArmMs={0} />,
+      { width: 80, height: 30 },
+    );
+    await setup.renderOnce();
+    await setup.mockInput.typeText("/model");
+    setup.mockInput.pressEnter();
+    const frame = await setup.waitForFrame((f) => f.includes("Switch model"));
+    const lines = frame.split("\n");
+    const top = lines.findIndex((l) => l.includes("Switch model"));
+    const bottom = lines.findIndex((l, i) => i > top && l.trimStart().startsWith("└"));
+    // Eight list rows (headings included), the footer, the border.
+    expect(bottom - top + 1).toBe(8 + 1 + 2);
+    const footer = lines[bottom - 1] ?? "";
+    expect(footer).toContain("Esc");
+    expect(footer).toMatch(/\d+\/14/);
+  });
+
   test("/model provider/id switches directly, without the picker", async () => {
     const fake = fakeClient();
     const s = await render(fake.client);
