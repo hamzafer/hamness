@@ -86,7 +86,7 @@ async function render(
   snap: SessionSnapshot = snapshot,
   opts: { kittyKeyboard?: boolean } = {},
 ) {
-  setup = await testRender(() => <App client={client} snapshot={snap} />, {
+  setup = await testRender(() => <App client={client} snapshot={snap} approvalArmMs={0} />, {
     width: 100,
     height: 24,
     ...opts,

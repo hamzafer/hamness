@@ -89,6 +89,8 @@ export interface AppProps {
   animate?: boolean;
   /** `/copy`'s clipboard. Default: pbcopy, wl-copy or xclip, then OSC 52. */
   copy?: (text: string) => Promise<"system" | "terminal">;
+  /** How long an approval ignores keys after it shows. Default 400ms; tests pass 0. */
+  approvalArmMs?: number;
 }
 
 export function App(props: AppProps) {
@@ -227,6 +229,8 @@ export function App(props: AppProps) {
   const [help, setHelp] = createSignal(false);
   /** A command's pick list (`/resume`, `/fork`, `/thinking`, `/mode`) while it is open. */
   const [list, setList] = createSignal<PickerSpec | undefined>();
+  /** The open picker's filter: kept here so it survives an approval hiding the picker. */
+  const [pickQuery, setPickQuery] = createSignal("");
   /** The `/status` panel while it is open. */
   const [status, setStatus] = createSignal<SessionStatus | undefined>();
 
@@ -299,11 +303,14 @@ export function App(props: AppProps) {
     if (arg) return switchModel(arg);
     props.client
       .models()
-      .then((models) =>
-        models.length
-          ? setPicker(models)
-          : setState("notice", "No models available: add a key with `hamness keys set <provider>`"),
-      )
+      .then((models) => {
+        if (!models.length) {
+          setState("notice", "No models available: add a key with `hamness keys set <provider>`");
+          return;
+        }
+        setPickQuery("");
+        setPicker(models);
+      })
       .catch((err: Error) => setState("notice", err.message));
   };
 
@@ -313,7 +320,10 @@ export function App(props: AppProps) {
     session: () => state.session,
     say,
     patchSession: (patch) => setState("session", patch),
-    pick: (spec) => setList(spec),
+    pick: (spec) => {
+      setPickQuery("");
+      setList(spec);
+    },
     showHelp: () => setHelp(true),
     showStatus: (s) => setStatus(s),
     model: modelCommand,
@@ -444,7 +454,7 @@ export function App(props: AppProps) {
           paddingLeft={1}
           paddingRight={1}
         >
-          <box flexDirection="row" height={1}>
+          <box flexDirection="row" height={1} flexShrink={0}>
             <text fg={COLORS.muted}>hamness · </text>
             <Show when={state.session.name}>
               {(name: () => string) => <text fg={COLORS.assistant}>{`${name()} · `}</text>}
@@ -516,7 +526,12 @@ export function App(props: AppProps) {
           </Show>
           <Show when={state.approvals.length === 0 && list()}>
             {(spec: () => PickerSpec) => (
-              <Picker spec={spec()} onClose={() => setList(undefined)} />
+              <Picker
+                spec={spec()}
+                onClose={() => setList(undefined)}
+                query={pickQuery()}
+                onQuery={setPickQuery}
+              />
             )}
           </Show>
           <Show when={state.approvals.length === 0 && picker()}>
@@ -526,6 +541,8 @@ export function App(props: AppProps) {
                 current={state.session.model}
                 onPick={switchModel}
                 onClose={() => setPicker(undefined)}
+                query={pickQuery()}
+                onQuery={setPickQuery}
               />
             )}
           </Show>
@@ -534,6 +551,9 @@ export function App(props: AppProps) {
               <ApprovalPrompt
                 approval={first()}
                 queued={state.approvals.length}
+                width={chatWidth()}
+                maxHeight={Math.max(6, Math.floor(dims().height / 2))}
+                {...(props.approvalArmMs !== undefined ? { armMs: props.approvalArmMs } : {})}
                 onAnswer={(decision) =>
                   props.client
                     .answerApproval(first().id, decision)

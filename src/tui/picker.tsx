@@ -79,8 +79,23 @@ function typedChar(key: KeyEvent): string | undefined {
  * filters it, Backspace undoes a letter, Up/Down move, Enter picks, Esc clears the filter, then
  * closes. It owns the keyboard while it shows.
  */
-export function Picker(props: { spec: PickerSpec; onClose: () => void }) {
-  const [query, setQuery] = createSignal("");
+export function Picker(props: {
+  spec: PickerSpec;
+  onClose: () => void;
+  /**
+   * The filter, when the parent keeps it: the picker unmounts while an approval shows, and
+   * comes back with it. Without these it keeps its own.
+   */
+  query?: string;
+  onQuery?: (query: string) => void;
+}) {
+  const [own, setOwn] = createSignal("");
+  const query = () => props.query ?? own();
+  const setQuery = (next: (q: string) => string) => {
+    const q = next(query());
+    if (props.onQuery) props.onQuery(q);
+    else setOwn(q);
+  };
   /** Indexes into `spec.rows` that pass the filter. */
   const shown = createMemo(() =>
     props.spec.rows.flatMap((r, i) => (rowMatches(r, query()) ? [i] : [])),
@@ -99,7 +114,7 @@ export function Picker(props: { spec: PickerSpec; onClose: () => void }) {
   };
   useKeyboard((key) => {
     if (key.name === "escape") {
-      if (query()) setQuery("");
+      if (query()) setQuery(() => "");
       else props.onClose();
     } else if (key.name === "up" || (key.ctrl && key.name === "p")) move(-1);
     else if (key.name === "down" || (key.ctrl && key.name === "n")) move(1);

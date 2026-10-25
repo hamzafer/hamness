@@ -70,7 +70,7 @@ function fakeClient(opts: { failSwitch?: string } = {}) {
 }
 
 async function render(client: DaemonClient & SessionCommands) {
-  setup = await testRender(() => <App client={client} snapshot={snapshot} />, {
+  setup = await testRender(() => <App client={client} snapshot={snapshot} approvalArmMs={0} />, {
     width: 100,
     height: 24,
   });

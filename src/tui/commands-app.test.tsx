@@ -239,6 +239,7 @@ async function render(fake: ReturnType<typeof fakeClient>, opts: { onExit?: () =
         snapshot={snapshot}
         home="/home/user"
         animate={false}
+        approvalArmMs={0}
         copy={fake.copy}
         {...(opts.onExit ? { onExit: opts.onExit } : {})}
       />
@@ -448,6 +449,7 @@ describe("Enter in the menu, and what never reaches the model", () => {
           snapshot={snapshot}
           home="/home/user"
           animate={false}
+          approvalArmMs={0}
           copy={async () => "terminal"}
         />
       ),
@@ -478,6 +480,8 @@ describe("an approval comes first", () => {
     const s = await render(fake);
     await run(s, "/resume");
     await frameWhere(s, (f) => f.includes("Resume a session"));
+    await s.mockInput.typeText("release");
+    await frameWhere(s, (f) => f.includes("Resume a session · release"));
     fake.send({ type: "safety.approval.request", approval });
     const asked = await frameWhere(s, (f) => f.includes("approve this tool call"));
     expect(asked).not.toContain("Resume a session");
@@ -489,8 +493,12 @@ describe("an approval comes first", () => {
       decision: "deny",
       by: "user",
     });
-    // The picker is back, and Esc now only closes it.
-    await frameWhere(s, (f) => f.includes("Resume a session"));
+    // The picker is back with its filter, and Esc now only clears it, then closes it.
+    const back = await frameWhere(s, (f) => f.includes("Resume a session"));
+    expect(back).toContain("Resume a session · release");
+    expect(back).not.toContain("an old question");
+    s.mockInput.pressEscape();
+    await frameWhere(s, (f) => f.includes("an old question"));
     s.mockInput.pressEscape();
     await frameWhere(s, (f) => !f.includes("Resume a session"));
     expect(answers).toEqual(["deny"]);

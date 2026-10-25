@@ -79,7 +79,7 @@ function fakeClient() {
 }
 
 async function render(client: DaemonClient & SessionCommands, snapshot = snapshotWith()) {
-  setup = await testRender(() => <App client={client} snapshot={snapshot} />, {
+  setup = await testRender(() => <App client={client} snapshot={snapshot} approvalArmMs={0} />, {
     width: 100,
     height: 24,
   });
@@ -88,6 +88,57 @@ async function render(client: DaemonClient & SessionCommands, snapshot = snapsho
 }
 
 describe("approval prompt (headless)", () => {
+  test("at 80x24 a 600-character command stays within half the screen; the choices and input show", async () => {
+    const fake = fakeClient();
+    setup = await testRender(
+      () => <App client={fake.client} snapshot={snapshotWith()} approvalArmMs={0} />,
+      { width: 80, height: 24 },
+    );
+    await setup.renderOnce();
+    const command = `python3 -c "${"print('x'); ".repeat(60)}"`.slice(0, 600);
+    expect(command.length).toBe(600);
+    const reason = "The judge can't tell what this script does. ".repeat(8);
+    fake.send({
+      type: "safety.approval.request",
+      approval: pending({
+        args: { command },
+        reason,
+        suggestions: [{ tool: "bash", pattern: `python3 -c ${"x".repeat(80)}` }],
+      }),
+    });
+    const frame = await setup.waitForFrame((f) => f.includes("[n] deny"));
+    const lines = frame.split("\n");
+    const top = lines.findIndex((l) => l.includes("approve this tool call"));
+    const bottom = lines.findIndex((l, i) => i > top && l.trimStart().startsWith("└"));
+    expect(bottom - top + 1).toBeLessThanOrEqual(12);
+    expect(frame).toContain("[n] deny");
+    expect(frame).toContain("Ask hamness");
+    expect(frame).toContain("hamness · ");
+    expect(frame).toContain("python3 -c");
+    expect(frame).toContain("The judge can't tell");
+    // The choices row stays one row, the pattern cut short.
+    const choices = lines.find((l) => l.includes("[y] once")) ?? "";
+    expect(choices).toContain("…");
+  });
+
+  test("keys typed in the first moments after an approval shows don't answer it", async () => {
+    const fake = fakeClient();
+    setup = await testRender(() => <App client={fake.client} snapshot={snapshotWith()} />, {
+      width: 100,
+      height: 24,
+    });
+    await setup.renderOnce();
+    fake.send({ type: "safety.approval.request", approval: pending() });
+    await setup.waitForFrame((f) => f.includes("[y] allow once"));
+    setup.mockInput.pressKey("y");
+    await Bun.sleep(30);
+    expect(fake.answers).toEqual([]);
+    await Bun.sleep(450);
+    setup.mockInput.pressKey("y");
+    await setup.waitFor(() => fake.answers.length === 1);
+    expect(fake.answers).toEqual([["ap-1", "allow-once"]]);
+  });
+
   test("an approval request shows the call, why it asks and the choices", async () => {
     const fake = fakeClient();
     const s = await render(fake.client);

@@ -13,6 +13,9 @@ export interface ModelPickerProps {
   current: string;
   onPick: (model: string) => void;
   onClose: () => void;
+  /** The filter, kept by the parent (see `Picker`). */
+  query?: string;
+  onQuery?: (query: string) => void;
 }
 
 /**
@@ -42,6 +45,7 @@ export function ModelPicker(props: ModelPickerProps) {
         },
       }}
       onClose={props.onClose}
+      {...(props.onQuery ? { query: props.query ?? "", onQuery: props.onQuery } : {})}
     />
   );
 }
