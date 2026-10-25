@@ -255,6 +255,39 @@ suite("dashboard in a browser", () => {
   );
 
   test(
+    "an older view finishing late keeps the newer view marked as loading",
+    async () => {
+      const page = await open("light");
+      await page.locator("main .card").first().waitFor();
+      const nav = page.getByRole("navigation");
+      const hold = async (pattern: string) => {
+        let release = () => {};
+        const held = new Promise<void>((r) => {
+          release = r;
+        });
+        await page.route(pattern, async (route) => {
+          await held;
+          await route.continue();
+        });
+        return () => release();
+      };
+      const releaseTasks = await hold("**/v1/tasks**");
+      const releaseDecisions = await hold("**/v1/decisions**");
+      await nav.getByRole("button", { name: "Tasks", exact: true }).click();
+      await nav.getByRole("button", { name: "Decisions", exact: true }).click();
+      const main = page.locator("#main");
+      releaseTasks();
+      await page.waitForTimeout(200);
+      expect(await main.getAttribute("aria-busy")).toBe("true");
+      releaseDecisions();
+      await page.locator("main table tbody td.call").first().waitFor();
+      expect(await main.getAttribute("aria-busy")).toBeNull();
+      await page.close();
+    },
+    BROWSER_TIMEOUT,
+  );
+
+  test(
     "screenshots in light and dark; no sideways scroll at phone width",
     async () => {
       for (const scheme of ["light", "dark"] as const) {
