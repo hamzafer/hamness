@@ -3,6 +3,8 @@
 - **Daemon:** the long-running hamness process. It owns sessions, agents, the database and the event stream.
 - **Client:** anything that attaches to the daemon: the TUI or the web dashboard.
 - **Session:** a conversation with a main agent in one working directory.
+- **Launch:** how a TUI start picks its session: fresh by default, the folder's latest with `-c`, a given one with `-r <id>` (ADR 0023).
+- **Sleeping session:** an idle session a fresh launch in its folder stopped running: rows and Pi's file stay, and the next request to it wakes it under the same ids (ADR 0023).
 - **Agent:** one running Pi agent loop. The main agent belongs to a session; **subagents** are started by an agent, often in the background.
 - **Worktree:** a git worktree a subagent can run in, so parallel agents don't edit the same checkout.
 - **Task:** the unit of work and of accounting: goal, agents, cost, tokens, time, evidence, outcome. Opened by the agent (`task_start`) or the user (`/task`).
