@@ -9,8 +9,8 @@ import type { EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
  * clock as an argument, so tests drive it without rendering or waiting.
  */
 
-/** `done`: the last run finished cleanly. `idle`: no run yet. */
-export type RailStatus = "idle" | "running" | "done" | "error";
+/** `done`: the last run finished cleanly. `stopped`: the user stopped it. `idle`: no run yet. */
+export type RailStatus = "idle" | "running" | "done" | "stopped" | "error";
 
 export interface RailAgent {
   id: string;
@@ -30,6 +30,8 @@ export interface RailAgent {
   tokens: number;
   costMicros: number;
   error?: string;
+  /** The user stopped the current run (`agent.stopped`); it ends `stopped`, not `done`. */
+  stopped?: boolean;
   /** Tool calls still running, oldest first. */
   open: Array<{ id: string; tool: string; file?: string }>;
   /** Assistant text is arriving (for its orb). */
@@ -71,8 +73,10 @@ export interface RailCheck {
   endedAt?: number;
 }
 
-/** Checks kept on the rail: the newest few. */
+/** Checks shown beside the chat: the newest few. */
 export const RAIL_CHECKS = 3;
+/** Checks kept for the full-screen rail. */
+export const RAIL_CHECKS_KEPT = 20;
 
 export interface RailState {
   sessionId: string;
@@ -81,7 +85,10 @@ export interface RailState {
   agents: RailAgent[];
   checks: RailCheck[];
   context?: ContextFill;
+  /** The open task, else the last closed one (it stays until a new task opens). */
   task?: RailTask;
+  /** This session's tasks seen so far, oldest first; dropped turn tasks leave. */
+  tasks: RailTask[];
 }
 
 const MAIN_FALLBACK_ID = "main";
@@ -120,7 +127,8 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
       row.status = "running";
       row.startedAt = now;
     } else if (a.status === "done") row.status = "done";
-    else if (a.status === "error" || a.status === "aborted") row.status = "error";
+    else if (a.status === "aborted") row.status = "stopped";
+    else if (a.status === "error") row.status = "error";
     return row;
   });
   if (!agents.some((a) => a.id === mainAgentId)) {
@@ -132,9 +140,10 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
     seq: snapshot.seq,
     agents,
     checks: [],
+    tasks: [],
   };
   if (snapshot.context) state.context = { ...snapshot.context };
-  if (snapshot.task) state.task = railTask(snapshot.task);
+  if (snapshot.task) showTask(state, railTask(snapshot.task));
 
   const main = agentFor(state, mainAgentId);
   for (const a of snapshot.approvals ?? []) {
@@ -199,8 +208,9 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
         agent.startedAt = now;
         delete agent.endedAt;
         delete agent.error;
+        delete agent.stopped;
       } else if (agent.status === "running") {
-        agent.status = agent.error ? "error" : "done";
+        agent.status = agent.error ? "error" : agent.stopped ? "stopped" : "done";
         agent.endedAt = now;
         agent.open = [];
         agent.streaming = false;
@@ -245,18 +255,32 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
     case "agent.error":
       setError(agent, e.message, now);
       return;
+    case "agent.stopped":
+      agent.stopped = true;
+      if (agent.status !== "running" && !agent.error) {
+        agent.status = "stopped";
+        agent.endedAt ??= now;
+      }
+      return;
     case "task.start":
     case "task.end":
-      state.task = railTask(e.task);
+      showTask(state, railTask(e.task));
       return;
     case "task.evidence":
-      if (state.task?.id === e.taskId) {
-        state.task.evidence = e.evidence;
-        state.task.passed = e.passed;
+      for (const t of [state.task, state.tasks.find((t) => t.id === e.taskId)]) {
+        if (t?.id === e.taskId) {
+          t.evidence = e.evidence;
+          t.passed = e.passed;
+        }
       }
       return;
     case "task.drop":
-      if (state.task?.id === e.taskId) delete state.task;
+      state.tasks = state.tasks.filter((t) => t.id !== e.taskId);
+      if (state.task?.id === e.taskId) {
+        const last = state.tasks.findLast((t) => t.outcome !== "open");
+        if (last) state.task = { ...last };
+        else delete state.task;
+      }
       return;
     case "check.start":
       state.checks.push({
@@ -266,8 +290,8 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
         status: "running",
         startedAt: now,
       });
-      if (state.checks.length > RAIL_CHECKS)
-        state.checks.splice(0, state.checks.length - RAIL_CHECKS);
+      if (state.checks.length > RAIL_CHECKS_KEPT)
+        state.checks.splice(0, state.checks.length - RAIL_CHECKS_KEPT);
       return;
     case "check.end": {
       const check = state.checks.find((c) => c.id === e.evidenceId);
@@ -281,6 +305,14 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
     default:
       return;
   }
+}
+
+/** Shows `task` and records it in the session's list (by id: a later view replaces it). */
+function showTask(state: RailState, task: RailTask) {
+  state.task = task;
+  const i = state.tasks.findIndex((t) => t.id === task.id);
+  if (i >= 0) state.tasks[i] = { ...task };
+  else state.tasks.push({ ...task });
 }
 
 function setError(agent: RailAgent, message: string, now: number) {
@@ -342,5 +374,6 @@ export const RAIL_GLYPH: Record<RailStatus, string> = {
   idle: "○",
   running: "●",
   done: "✓",
+  stopped: "■",
   error: "✗",
 };

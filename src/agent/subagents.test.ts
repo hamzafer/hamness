@@ -379,6 +379,16 @@ describe("subagents", () => {
     await until(mainIdle(snap.session.id, snap.session.mainAgentId as string));
     await until(() => statuses().slow !== "running");
     expect(statuses()).toEqual({ slow: "aborted", later: "aborted" });
+    // A stop is not a failure: the rail hears `agent.stopped`, not an error.
+    const subIds = new Set(
+      events.filter((e) => e.type === "agent.start").map((e) => e.agentId as string),
+    );
+    expect(events.filter((e) => e.type === "agent.error" && subIds.has(e.agentId ?? ""))).toEqual(
+      [],
+    );
+    expect(
+      events.filter((e) => e.type === "agent.stopped" && subIds.has(e.agentId ?? "")),
+    ).toHaveLength(2);
     // The queued one never ran a model call.
     expect(fake.contexts.some((c) => firstUser(c as FakeContext) === "later")).toBe(false);
   });

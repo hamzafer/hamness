@@ -14,10 +14,12 @@ import type {
 import { ORB_LABEL } from "../orbs/activity.ts";
 import { ApprovalPrompt, YoloBanner } from "./approval.tsx";
 import {
+  addSystemLine,
   applyEvent,
   argSummary,
   initialState,
   STATUS_GLYPH,
+  type SystemLine,
   waitingForModel,
 } from "./chat-state.ts";
 import { COMMAND_WORDS, HelpPanel } from "./help.tsx";
@@ -27,7 +29,7 @@ import { ModelPicker } from "./model-picker.tsx";
 import { animationOff, ORB_FPS, ORB_ROWS, Orb } from "./orb.tsx";
 import { RAIL_WIDTH, Rail } from "./rail.tsx";
 import { applyRailEvent, initialRail, railOrbState } from "./rail-state.ts";
-import { parseTaskCommand } from "./task-commands.ts";
+import { parseTaskCommand, taskConfirmation } from "./task-commands.ts";
 
 const COLORS = {
   user: "#7aa2f7",
@@ -176,9 +178,12 @@ export function App(props: AppProps) {
     const taskAction = parseTaskCommand(text);
     if (taskAction) {
       if ("error" in taskAction) return setState("notice", taskAction.error);
+      const say = (text: string, tone: SystemLine["tone"]) =>
+        setState(produce((s) => addSystemLine(s, text, tone)));
       props.client
         .task(state.session.id, taskAction)
-        .catch((err: Error) => setState("notice", err.message));
+        .then((task) => say(taskConfirmation(taskAction, task), "ok"))
+        .catch((err: Error) => say(err.message, "error"));
       return;
     }
     // `/word ...` that isn't a command is a typo, not a prompt (a path like /src/x.ts is).
@@ -234,6 +239,8 @@ export function App(props: AppProps) {
             {(item) =>
               item.kind === "message" ? (
                 <MessageView message={item} markdown={md} />
+              ) : item.kind === "system" ? (
+                <SystemLineView line={item} />
               ) : (
                 <ToolLine tool={item} />
               )
@@ -341,6 +348,11 @@ function MessageView(props: { message: MessageItem; markdown: SyntaxStyle }) {
       </Show>
     </box>
   );
+}
+
+/** A line from hamness itself: a stop, or a task command's answer. */
+function SystemLineView(props: { line: SystemLine }) {
+  return <text fg={COLORS[props.line.tone]}>{`  ${props.line.text}`}</text>;
 }
 
 /** One line per tool call: status, tool, its main argument, then time or why it failed. */
