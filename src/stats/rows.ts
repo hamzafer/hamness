@@ -264,6 +264,11 @@ export interface DecisionListRow {
   sessionId: string | null;
   /** The source of the decision's session; null for a decision outside any session. */
   sessionSource: Source | null;
+  /**
+   * The session's folder: an absolute path for hamness sessions, the folder name for imported
+   * ones (ADR 0009). The dashboard shows paths inside it relative to it.
+   */
+  sessionCwd: string | null;
   tool: string;
   /** The call (redacted), cut short as `hamness audit` prints it. */
   call: string;
@@ -304,7 +309,7 @@ export function listDecisions(sqlite: Database, q: DecisionListQuery): Page<Deci
         number,
       ]
     >(
-      `SELECT d.id, d.session_id AS sessionId, s.source AS sessionSource, d.tool,
+      `SELECT d.id, d.session_id AS sessionId, s.source AS sessionSource, s.cwd AS sessionCwd, d.tool,
          d.args_json AS argsJson, d.verdict,
          d.source AS decidedBy, d.reason, d.rule, d.latency_ms AS latencyMs,
          d.cost_micros AS costMicros, d.created_at AS createdAt
