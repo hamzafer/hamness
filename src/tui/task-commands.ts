@@ -17,6 +17,7 @@ export function parseTaskCommand(text: string): TaskAction | { error: string } |
 export function taskConfirmation(action: TaskAction, task: TaskView): string {
   if (action.kind === "start") return `Task opened: ${task.goal}`;
   const reason = task.reason ?? action.reason;
-  const head = action.kind === "override" ? "Task accepted without proof" : "Task dropped";
+  // The rail's word for it, so both say the same.
+  const head = action.kind === "override" ? "Task accepted without proof" : "Task abandoned";
   return reason ? `${head}: ${reason}` : `${head}.`;
 }

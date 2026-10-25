@@ -77,7 +77,8 @@ function typedChar(key: KeyEvent): string | undefined {
 /**
  * A list to pick one row from (`/resume`, `/fork`, `/thinking`, `/mode`, `/model`). Typing
  * filters it, Backspace undoes a letter, Up/Down move, Enter picks, Esc clears the filter, then
- * closes. It owns the keyboard while it shows.
+ * closes. A `/` before any filter closes it and starts a command in the input box (`onSlash`),
+ * so a typed `/name x` is never swallowed. It owns the keyboard while it shows.
  */
 export function Picker(props: {
   spec: PickerSpec;
@@ -88,6 +89,12 @@ export function Picker(props: {
    */
   query?: string;
   onQuery?: (query: string) => void;
+  /**
+   * A `/` typed into an empty filter: the user is typing a command, not filtering. The picker
+   * closes first, then this gets the `/` for the input box. Without it `/` filters like any
+   * character.
+   */
+  onSlash?: (text: string) => void;
 }) {
   const [own, setOwn] = createSignal("");
   const query = () => props.query ?? own();
@@ -128,7 +135,12 @@ export function Picker(props: {
     } else if (key.name === "backspace") setQuery((q) => q.slice(0, -1));
     else {
       const ch = typedChar(key);
-      if (ch !== undefined) setQuery((q) => q + ch);
+      if (ch === "/" && !query() && props.onSlash) {
+        key.preventDefault();
+        const hand = props.onSlash;
+        props.onClose();
+        hand(ch);
+      } else if (ch !== undefined) setQuery((q) => q + ch);
     }
   });
   const lines = () => alignRows(props.spec.rows);

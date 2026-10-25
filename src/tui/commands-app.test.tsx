@@ -770,8 +770,8 @@ describe("session commands", () => {
     await run(s, "/mcp");
     const frame = await frameWhere(s, (f) => f.includes("spawn ENOENT"));
     expect(frame).toContain("Skills (1):");
-    expect(frame).toMatch(/docs\s+connected/);
-    expect(frame).toMatch(/db\s+failed: spawn ENOENT/);
+    expect(frame).toMatch(/docs\s+· connected/);
+    expect(frame).toMatch(/db\s+· failed: spawn ENOENT/);
   });
 
   test("/exit and /quit leave", async () => {
@@ -990,5 +990,157 @@ describe("session.replaced", () => {
     await run(s, "/new");
     await frameWhere(s, (f) => f.includes("Early."));
     expect(s.captureCharFrame()).toContain("Early.");
+  });
+});
+
+describe("e2e round 3: command answers", () => {
+  test("/mcp shows each started server's tool count, and 'not connected' at 0", async () => {
+    const fake = fakeClient();
+    fake.client.compat = async () => ({
+      skills: [],
+      mcpServers: [
+        { name: "playwright", scope: "user", status: "start", tools: 25 },
+        { name: "echo", scope: "project", status: "start", tools: 0 },
+        { name: "solo", scope: "user", status: "start", tools: 1 },
+        { name: "db", scope: "project", status: "disabled" },
+      ],
+    });
+    const s = await render(fake);
+    await run(s, "/mcp");
+    const frame = await frameWhere(s, (f) => f.includes("MCP servers (4):"));
+    expect(frame).toMatch(/playwright\s+· 25 tools\s+\(user\)/);
+    expect(frame).toMatch(/echo\s+· not connected\s+\(project\)/);
+    expect(frame).toMatch(/solo\s+· 1 tool\s+\(user\)/);
+    expect(frame).toMatch(/db\s+· disabled\s+\(project\)/);
+  });
+
+  test("/status on the plan shows the tier, $0 (plan) and assistant messages", async () => {
+    const fake = fakeClient();
+    fake.client.status = async () => ({
+      ...STATUS,
+      model: "openai-codex/gpt-6.1-sol",
+      billing: "plan",
+      planTier: "team",
+      costMicros: 0,
+      planCalls: 0,
+      messages: { user: 1, assistant: 4, toolCalls: 3 },
+    });
+    const s = await render(fake);
+    await run(s, "/status");
+    const frame = await frameWhere(s, (f) => f.includes("Status"));
+    expect(frame).toMatch(/ChatGPT plan\s+Team/);
+    expect(frame).toMatch(/Cost\s+\$0 \(plan\)/);
+    expect(frame).not.toContain("$0.0000");
+    expect(frame).toContain("1 prompt, 4 assistant messages, 3 tool calls");
+  });
+
+  test("/status without a tier has no plan row", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/status");
+    const frame = await frameWhere(s, (f) => f.includes("Status"));
+    expect(frame).not.toContain("ChatGPT plan");
+  });
+
+  test("/abandon says 'Task abandoned', as the rail does", async () => {
+    const fake = fakeClient();
+    fake.client.task = async () => ({ ...task, outcome: "abandoned", reason: "wrong approach" });
+    const s = await render(fake);
+    await run(s, "/abandon wrong approach");
+    const frame = await frameWhere(s, (f) => f.includes("Task abandoned"));
+    expect(frame).toContain("Task abandoned: wrong approach");
+    expect(frame).not.toContain("Task dropped");
+  });
+
+  test("/compact on a small session says there is nothing to compact yet, not a failure", async () => {
+    const fake = fakeClient();
+    fake.client.compact = async () => {
+      fake.send({
+        type: "agent.compaction.end",
+        reason: "manual",
+        aborted: false,
+        error: "Nothing to compact (session too small)",
+      });
+      throw new DaemonError("Nothing to compact (session too small)", 400);
+    };
+    const s = await render(fake);
+    await run(s, "/compact");
+    await frameWhere(s, (f) => f.includes("Nothing to compact yet"));
+    await Bun.sleep(30);
+    const frame = await frameWhere(s, () => true);
+    expect(frame.match(/Nothing to compact yet \(the session is small\)\./g)?.length).toBe(1);
+    expect(frame).not.toContain("Compaction failed");
+  });
+
+  test("typing / in a picker closes it and hands the command to the input box", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/thinking");
+    await frameWhere(s, (f) => f.includes("Thinking level"));
+    await s.mockInput.typeText("/name quick");
+    const frame = await frameWhere(s, (f) => !f.includes("Thinking level"));
+    expect(frame).not.toContain("Thinking level");
+    expect(frame).toContain("│/name quick");
+    s.mockInput.pressEnter();
+    await frameWhere(s, (f) => f.includes("Named: quick"));
+    expect(fake.calls).toEqual(["name quick"]);
+  });
+
+  test("the /resume picker lists sessions by the same 'latest' as -c (picked_at)", async () => {
+    const fake = fakeClient();
+    const [current, old, gone] = SESSIONS as [SessionListItem, SessionListItem, SessionListItem];
+    // The gone one was picked after the other, though that was active more recently.
+    fake.client.listSessions = async () => [
+      { ...current, pickedAt: Date.now() },
+      { ...old, pickedAt: Date.now() - 50 * HOUR },
+      { ...gone, pickedAt: Date.now() - 10 * HOUR },
+    ];
+    const s = await render(fake);
+    await run(s, "/resume");
+    const frame = await frameWhere(s, (f) => f.includes("Resume a session"));
+    const lines = frame.split("\n");
+    const at = (text: string) => lines.findIndex((l) => l.includes(text));
+    expect(at("find the parser bug")).toBeLessThan(at("an old question"));
+    expect(at("an old question")).toBeLessThan(at("release notes"));
+  });
+
+  test("/resume shows a plan session's cost as $0 (plan), an API one in dollars", async () => {
+    const fake = fakeClient();
+    const [current, old] = SESSIONS as [SessionListItem, SessionListItem];
+    fake.client.listSessions = async () => [
+      { ...current, costMicros: 0, planCalls: 5 },
+      { ...old, costMicros: 0 },
+    ];
+    const s = await render(fake);
+    await run(s, "/resume");
+    const frame = await frameWhere(s, (f) => f.includes("Resume a session"));
+    const row = (text: string) =>
+      frame.split("\n").find((l) => l.includes(text) && l.includes("messages")) ?? "";
+    expect(row("find the parser bug")).toContain("$0 (plan)");
+    expect(row("release notes")).toContain("$0.00");
+    expect(frame).not.toContain("$0.0000");
+  });
+
+  test("/fork keeps the session's name, marked as the fork", async () => {
+    const fake = fakeClient();
+    const named = { ...snapshot, session: { ...snapshot.session, name: "parser work" } };
+    const s = await render(fake, { snapshot: named });
+    await run(s, "/fork");
+    await frameWhere(s, (f) => f.includes("Fork from a prompt"));
+    s.mockInput.pressEnter();
+    const frame = await frameWhere(s, (f) => f.includes("parser work (fork)"));
+    expect(frame).toContain("hamness · parser work (fork) · ");
+    expect(fake.calls).toEqual([`fork ${SID} u2`, "name parser work (fork)"]);
+  });
+
+  test("a fork of an unnamed session stays unnamed", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/fork");
+    await frameWhere(s, (f) => f.includes("Fork from a prompt"));
+    s.mockInput.pressEnter();
+    await frameWhere(s, (f) => f.includes("Forked."));
+    await Bun.sleep(20);
+    expect(fake.calls).toEqual([`fork ${SID} u2`]);
   });
 });

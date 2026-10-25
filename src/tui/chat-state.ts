@@ -6,6 +6,7 @@ import type {
   SessionSnapshot,
   TranscriptItem,
 } from "../events/types.ts";
+import { redactSecrets } from "../safety/redact.ts";
 import { plural } from "./layout.ts";
 import { formatTokens } from "./rail-state.ts";
 
@@ -36,6 +37,8 @@ export interface ChatState {
   approvals: PendingApproval[];
   /** True while Pi compacts the context (`/compact`, or on its own). */
   compacting?: boolean;
+  /** The daemon's words for the yolo banner (`safety.mode`'s `warning`), once one came. */
+  yoloWarning?: string;
 }
 
 export function initialState(snapshot: SessionSnapshot): ChatState {
@@ -96,7 +99,9 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
         m = { kind: "message", id: e.messageId, role: e.role, text: "" };
         state.items.push(m);
       }
-      m.text = e.text;
+      // The daemon echoes a prompt as typed (it stores it redacted): the same live redaction
+      // as a reply's, so a pasted key never shows. Replies arrive redacted already.
+      m.text = e.role === "user" ? redactSecrets(e.text) : e.text;
       m.streaming = false;
       if (e.error) m.error = e.error;
       return;
@@ -156,6 +161,7 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
       return;
     case "safety.mode":
       state.session.mode = e.mode;
+      if (e.warning) state.yoloWarning = e.warning;
       return;
     case "agent.compaction.start":
       state.compacting = true;
@@ -201,12 +207,16 @@ export function readableError(raw: string): string {
 
 const ERROR_MAX = 200;
 
+/** Pi's refusal to compact a session that has too little to summarize: not a failure. */
+export const NOTHING_TO_COMPACT = "Nothing to compact yet (the session is small).";
+
 /** `Compaction failed: …` once: the event and the command's own rejection say the same thing. */
 export function addCompactionFailure(state: ChatState, raw: string): void {
-  const text = `Compaction failed: ${readableError(raw)}`;
+  const small = /nothing to compact/i.test(raw);
+  const text = small ? NOTHING_TO_COMPACT : `Compaction failed: ${readableError(raw)}`;
   const recent = state.items.slice(-3);
   if (recent.some((i) => i.kind === "system" && i.text === text)) return;
-  addSystemLine(state, text, "error");
+  addSystemLine(state, text, small ? "muted" : "error");
 }
 
 export const JUDGE_BACK_ON = "The judge is back on.";

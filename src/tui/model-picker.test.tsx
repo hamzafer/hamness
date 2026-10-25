@@ -107,7 +107,7 @@ describe("billing labels (ADR 0024)", () => {
     expect(setup.captureCharFrame()).toContain("openai-codex/gpt-5.6-terra · plan");
     await setup.mockInput.typeText("/model");
     setup.mockInput.pressEnter();
-    const frame = await setup.waitForFrame((f) => f.includes("$0 (plan)"));
+    const frame = await setup.waitForFrame((f) => f.includes("Switch model"));
     expect(frame).toContain("API (pay per token, from OPENAI_API_KEY)");
     // Plan models first, as the daemon sends them.
     expect(frame.indexOf("openai-codex/gpt-5.6-terra")).toBeLessThan(

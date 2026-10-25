@@ -40,7 +40,7 @@ import {
   parseSlash,
 } from "./commands.ts";
 import { HelpPanel } from "./help.tsx";
-import { promptHint, shortPath, welcomeLine, wrappedRows } from "./layout.ts";
+import { headerParts, promptHint, welcomeLine, wrappedRows } from "./layout.ts";
 import { markdownStyle } from "./markdown.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { animationOff, ORB_FPS, ORB_ROWS, Orb } from "./orb.tsx";
@@ -210,26 +210,28 @@ export function App(props: AppProps) {
   /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
   const chatWidth = () => Math.max(20, dims().width - RAIL_WIDTH - 2);
   const home = props.home ?? homedir();
-  /** The model and how it is billed: `openai-codex/gpt-5.6-terra · plan`, `anthropic/… · API`. */
-  const modelLabel = () =>
-    state.session.billing
-      ? `${state.session.model} · ${billingLabel({ kind: state.session.billing })}`
-      : state.session.model;
   /** The judge's state for the header: in `auto`, and in `yolo` (it's back on `/mode auto`). */
   const judgeShown = () =>
     state.session.mode === "auto" || state.session.mode === "yolo"
       ? state.session.judge
       : undefined;
-  /** The cwd in the header's room left after its other parts. */
-  const headerPath = () => {
+  /** The header row's parts, fit to the pane: cut in priority order, never overlapping. */
+  const header = () => {
     const judge = judgeShown();
-    const rest =
-      `hamness ·  · ${modelLabel()}`.length +
-      (state.session.name ? `${state.session.name} · `.length : 0) +
-      (judge ? ` · ${JUDGE_LABEL[judge]}`.length : 0) +
-      (state.session.busy ? " · working…".length : 0);
-    return shortPath(state.session.cwd, home, chatWidth() - rest);
+    return headerParts(
+      {
+        name: state.session.name,
+        cwd: state.session.cwd,
+        home,
+        model: state.session.model,
+        billing: state.session.billing ? billingLabel({ kind: state.session.billing }) : undefined,
+        judge: judge ? { text: JUDGE_LABEL[judge], warn: judge !== "on" } : undefined,
+        busy: state.session.busy,
+      },
+      chatWidth(),
+    );
   };
+  const HEADER_TONE = { muted: COLORS.muted, name: COLORS.assistant, warn: COLORS.warn };
   let input: TextareaRenderable | undefined;
   /** Rows the prompt box shows: it grows with its lines, up to `PROMPT_MAX_ROWS`. */
   const [promptRows, setPromptRows] = createSignal(1);
@@ -481,7 +483,7 @@ export function App(props: AppProps) {
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0}>
       <Show when={state.session.mode === "yolo"}>
-        <YoloBanner />
+        <YoloBanner warning={state.yoloWarning} />
       </Show>
       <box flexDirection="row" flexGrow={1} minHeight={0}>
         <box
@@ -492,24 +494,14 @@ export function App(props: AppProps) {
           paddingLeft={1}
           paddingRight={1}
         >
-          <box flexDirection="row" height={1} flexShrink={0}>
-            <text fg={COLORS.muted}>hamness · </text>
-            <Show when={state.session.name}>
-              {(name: () => string) => <text fg={COLORS.assistant}>{`${name()} · `}</text>}
-            </Show>
-            <text fg={COLORS.muted}>
-              {headerPath()} · {modelLabel()}
-            </text>
-            <Show when={judgeShown()}>
-              {(judge: () => JudgeState) => (
-                <text fg={judge() === "on" ? COLORS.muted : COLORS.warn}>
-                  {` · ${JUDGE_LABEL[judge()]}`}
+          <box flexDirection="row" height={1} flexShrink={0} overflow="hidden">
+            <For each={header()}>
+              {(part) => (
+                <text fg={HEADER_TONE[part.tone]} flexShrink={0} wrapMode="none">
+                  {part.text}
                 </text>
               )}
-            </Show>
-            <Show when={state.session.busy}>
-              <text fg={COLORS.warn}> · working…</text>
-            </Show>
+            </For>
           </box>
           {/* The scrollbar keeps its column even while it has nothing to scroll: text wraps short
               of it, so it never covers a line's last character when it appears. */}
@@ -568,6 +560,7 @@ export function App(props: AppProps) {
               <Picker
                 spec={spec()}
                 onClose={() => setList(undefined)}
+                onSlash={setInput}
                 query={pickQuery()}
                 onQuery={setPickQuery}
               />
@@ -580,6 +573,7 @@ export function App(props: AppProps) {
                 current={state.session.model}
                 onPick={switchModel}
                 onClose={() => setPicker(undefined)}
+                onSlash={setInput}
                 query={pickQuery()}
                 onQuery={setPickQuery}
               />
