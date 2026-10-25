@@ -812,6 +812,19 @@ describe("session commands", () => {
     expect(forced).toEqual([false, true]);
   });
 
+  test("/judge resume that didn't bring the judge back says why, without contradicting itself", async () => {
+    const fake = fakeClient();
+    let next: "paused" | "no-key" = "paused";
+    fake.client.resumeJudge = async () => next;
+    const s = await render(fake);
+    await run(s, "/judge resume");
+    await frameWhere(s, (f) => f.includes("The judge is still paused. Try /judge resume again."));
+    next = "no-key";
+    await run(s, "/judge resume");
+    const frame = await frameWhere(s, (f) => f.includes("off without an Anthropic API key"));
+    expect(frame).not.toContain("isn't paused: it is still paused");
+  });
+
   test("a failed /compact says so once, in one readable line", async () => {
     const fake = fakeClient();
     const raw =

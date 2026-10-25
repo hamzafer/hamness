@@ -104,9 +104,18 @@ export function parseExportArgs(arg: string): {
   path?: string;
   force?: true;
 } {
-  const words = arg.trim().split(/\s+/).filter(Boolean);
-  const force = words.includes("--force");
-  const rest = words.filter((w) => w !== "--force").join(" ");
+  // `--force` counts only as the first or the last word, cut out of the text as typed.
+  let rest = arg.trim();
+  let force = false;
+  const head = /^--force(?:\s+|$)/.exec(rest);
+  const tail = /(?:^|\s+)--force$/.exec(rest);
+  if (head) {
+    rest = rest.slice(head[0].length);
+    force = true;
+  } else if (tail) {
+    rest = rest.slice(0, tail.index);
+    force = true;
+  }
   const out = ((): { format: "html" | "jsonl"; path?: string } => {
     const m = /^(html|jsonl)(?:\s+([\s\S]+))?$/.exec(rest);
     if (m)
@@ -116,7 +125,7 @@ export function parseExportArgs(arg: string): {
     if (!rest) return { format: "html" };
     return { format: rest.endsWith(".jsonl") ? "jsonl" : "html", path: rest };
   })();
-  return force ? { ...out, force } : out;
+  return force ? { ...out, force: true } : out;
 }
 
 /** The daemon's refusal to replace a file (`… exists; send overwrite: true …`), said for the TUI. */
@@ -133,11 +142,11 @@ function exportExistsLine(
   return `${name} exists. Use /export ${format} ${target} --force to replace it.`;
 }
 
-/** `/judge resume` when the judge is off for another reason than a pause. */
-const JUDGE_NOT_PAUSED: Record<Exclude<JudgeState, "on">, string> = {
-  paused: "it is still paused",
-  "over-budget": "it is over today's budget",
-  "no-key": "it is off without an Anthropic API key",
+/** `/judge resume` when the judge didn't come back on: still paused, or off for another reason. */
+const JUDGE_NOT_ON: Record<Exclude<JudgeState, "on">, string> = {
+  paused: "The judge is still paused. Try /judge resume again.",
+  "over-budget": "The judge isn't paused: it is over today's budget.",
+  "no-key": "The judge isn't paused: it is off without an Anthropic API key.",
 };
 
 const MODES: ReadonlyArray<readonly [SafetyMode, string]> = [
@@ -421,7 +430,7 @@ export const COMMANDS: readonly SlashCommand[] = [
           // The judge's own event (`safety.judge`) says "back on" when it gets here first.
           if (judge === "on" && ctx.session().judge === "paused") ctx.say(JUDGE_BACK_ON);
           else if (judge === "on" && before !== "paused") ctx.say("The judge is already on.");
-          else if (judge !== "on") ctx.say(`The judge isn't paused: ${JUDGE_NOT_PAUSED[judge]}.`);
+          else if (judge !== "on") ctx.say(JUDGE_NOT_ON[judge], "warn");
           ctx.patchSession({ judge });
         })
         .catch(fail(ctx));

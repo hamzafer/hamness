@@ -170,6 +170,16 @@ describe("helpers", () => {
       path: "notes.html",
       force: true,
     });
+    // Only as the first or last word; the path keeps its spaces as typed.
+    expect(parseExportArgs("html my  notes.html --force")).toEqual({
+      format: "html",
+      path: "my  notes.html",
+      force: true,
+    });
+    expect(parseExportArgs("html a --force b.html")).toEqual({
+      format: "html",
+      path: "a --force b.html",
+    });
   });
 
   test("relativeTime reads like a person would say it", () => {
