@@ -35,22 +35,30 @@ This links `hamness` into Bun's global bin dir (`~/.bun/bin`; add it to your `PA
 
 A global install resolves dependencies afresh: it doesn't read hamness's `bun.lock` or `bunfig.toml`. Direct dependencies are exact pins either way, but their own dependencies take the newest version their ranges allow. For the exact locked set, install from a clone as above. To hold a global install to a minimum release age too, put `[install]` `minimumReleaseAge = 259200` in `~/.bunfig.toml`.
 
-**2. Add a key.** Chat uses Claude through an Anthropic API key (Claude subscriptions are not used, see ADR 0011):
+**2. Sign in with your ChatGPT plan.** hamness runs on your ChatGPT subscription, not on pay-per-token API keys (ADR 0024):
 
 ```sh
-hamness keys set anthropic        # hidden prompt, saved with mode 0600
+hamness login openai      # opens the ChatGPT sign-in (or a device code); stored in hamness's data dir
+```
+
+The plan's models then become the default: `gpt-6.1-sol` on Plus, Pro, Team and Business, `gpt-5.6-terra` on Go, with the judge on `gpt-5.6-luna`. Their calls show as **$0 (plan)**; tokens are still counted.
+
+*Optional:* pay-per-token API models. A key is only used for a model you pick (`HAMNESS_MODEL`, `defaultModel` in the config, or `/model`); an `OPENAI_API_KEY` in your shell never becomes the default. Claude subscriptions can't be used outside Anthropic's apps, so Claude needs an API key (ADR 0011):
+
+```sh
+hamness keys set anthropic        # hidden prompt, saved with mode 0600; `hamness keys remove` deletes it
 # or: export ANTHROPIC_API_KEY=...  (an env var wins over the key file)
 ```
 
 **3. Check, then run.**
 
 ```sh
-hamness doctor    # Bun, key, mode, daemon, data dir, gh, Claude Code setup
+hamness doctor    # Bun, model and how it's billed, mode, daemon, data dir, gh, Claude Code setup
 cd your/repo
 hamness           # opens the chat; starts the daemon if needed
 ```
 
-With no key, `hamness` prints a short setup instead of the chat. Ask for something small, like "add a test for the parser and make it pass". The agent opens a task, does the work, proves it with a command hamness re-runs, and the rail shows the task **verified**.
+Not signed in, `hamness` prints a short setup instead of the chat. Ask for something small, like "add a test for the parser and make it pass". The agent opens a task, does the work, proves it with a command hamness re-runs, and the rail shows the task **verified**.
 
 ## The TUI
 
@@ -118,7 +126,7 @@ Every tool call passes **allow / ask / deny rules** before it runs (ADR 0006). T
 | `ask` | you decide |
 | `yolo` | allowed, with a red banner that says so; `ask` rules are skipped too. Deny rules (the defaults and yours) still block direct references to secrets, and a call hamness can't see past (a recursive search over a folder holding secrets, a heredoc, a path in a variable, a glob too big to check) still asks. yolo can't see inside scripts and interpreters (`python3 -c`, `xargs`, `tar`). |
 
-**The judge** (auto mode) is Claude Haiku 5.5, keyed like chat. It sees the call (secrets redacted) as untrusted data and answers `allow`, or `ask` with a reason and a risk category. An error, an 8 s timeout, a refusal or an answer that does not parse means you are asked. Its spend is capped per day (default $1); after 3 asks in a row it pauses for the session until you type `/judge resume`. With no Anthropic key it is off and undecided calls ask you. The TUI header shows its state.
+**The judge** (auto mode) is your ChatGPT plan's `gpt-5.6-luna` at low thinking (or `safety.judge.model`; Claude Haiku 5.5 when you chose an API model and have an Anthropic key). It sees the call (secrets redacted) as untrusted data and answers `allow`, or `ask` with a reason and a risk category. An error, an 8 s timeout, a refusal or an answer that does not parse means you are asked. On the plan it is capped at 500 calls a day (`safety.judge.dailyCalls`); on an API key its spend is capped per day (default $1); after 3 asks in a row it pauses for the session until you type `/judge resume`. With neither it is off and undecided calls ask you. The TUI header shows its state.
 
 **Approvals** show above the input: `y` allows once, `a` allows always (saves the suggested pattern to the project config), `n` or Esc denies. No answer before the timeout (15 minutes) is a deny. Every decision is stored with its source (`rule`, `judge`, `hook`, `user`, `mode`) and reason; `hamness audit` lists them.
 
@@ -182,8 +190,8 @@ Imported history has no tasks, and its cost is estimated from token counts. The 
 |---|---|
 | `hamness` | chat in the terminal (same as `hamness tui`) |
 | `hamness doctor` | check the setup and say what to fix |
-| `hamness keys set <provider>`, `hamness keys list` | store an API key; show which providers have one (never the key) |
-| `hamness login openai`, `hamness logout <provider>` | sign in with a ChatGPT plan; remove a sign-in |
+| `hamness keys set <provider>`, `hamness keys remove <provider>`, `hamness keys list` | optional pay-per-token API keys: store, delete, show which providers have one (never the key) |
+| `hamness login openai`, `hamness logout <provider>` | sign in with your ChatGPT plan (the default); remove a sign-in |
 | `hamness models [--all]` | the models you can switch to, with prices |
 | `hamness status`, `hamness stop [--all]` | is the daemon running (and any stray daemon processes); stop it and wait for it to exit (restart it this way after adding a key). `--all` also stops strays |
 | `hamness daemon` | run the daemon in the foreground |
@@ -211,8 +219,8 @@ Everything hamness keeps is in its **data dir**: `~/Library/Application Support/
 
 | Env var | Does |
 |---|---|
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ... | provider keys |
-| `HAMNESS_MODEL` | model for new sessions, as `provider/id` (default `anthropic/claude-opus-5-5`) |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ... | optional pay-per-token provider keys, used only by API models you pick |
+| `HAMNESS_MODEL` | model for new sessions, as `provider/id` (default: your ChatGPT plan's model; `defaultModel` in `config.json` does the same) |
 | `HAMNESS_HOME` | the data dir |
 | `HAMNESS_PORT` | the daemon's API port (default 7357; 0 picks a free one) |
 | `HAMNESS_DEBUG` | `1` prints stack traces with errors |

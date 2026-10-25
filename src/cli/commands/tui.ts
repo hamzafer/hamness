@@ -16,7 +16,7 @@ export const TUI_USAGE = [
 export async function tuiCommand({ dataDir, env, io }: CliContext): Promise<number> {
   const cwd = process.cwd();
   const cred = await defaultModelCredential({ dataDir, env });
-  if (cred.source === "none") {
+  if (!cred.model || !cred.billing) {
     let mode = DEFAULT_MODE;
     try {
       mode = loadSafetyConfig(dataDir, cwd).mode;

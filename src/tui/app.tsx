@@ -3,6 +3,7 @@ import type { KeyBinding, SyntaxStyle, TextareaRenderable } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
+import { billingLabel } from "../agent/billing.ts";
 import type { ModelInfo } from "../agent/models.ts";
 import type { SessionStatus } from "../agent/session-hub.ts";
 import type { DaemonClient, SessionCommands } from "../client/client.ts";
@@ -201,6 +202,11 @@ export function App(props: AppProps) {
   /** Columns inside the chat pane: the terminal less the rail and the pane's padding. */
   const chatWidth = () => Math.max(20, dims().width - RAIL_WIDTH - 2);
   const home = props.home ?? homedir();
+  /** The model and how it is billed: `openai-codex/gpt-5.6-terra · plan`, `anthropic/… · API`. */
+  const modelLabel = () =>
+    state.session.billing
+      ? `${state.session.model} · ${billingLabel({ kind: state.session.billing })}`
+      : state.session.model;
   /** The judge's state for the header: in `auto`, and in `yolo` (it's back on `/mode auto`). */
   const judgeShown = () =>
     state.session.mode === "auto" || state.session.mode === "yolo"
@@ -210,7 +216,7 @@ export function App(props: AppProps) {
   const headerPath = () => {
     const judge = judgeShown();
     const rest =
-      `hamness ·  · ${state.session.model}`.length +
+      `hamness ·  · ${modelLabel()}`.length +
       (state.session.name ? `${state.session.name} · `.length : 0) +
       (judge ? ` · ${JUDGE_LABEL[judge]}`.length : 0) +
       (state.session.busy ? " · working…".length : 0);
@@ -303,7 +309,10 @@ export function App(props: AppProps) {
     setPicker(undefined);
     props.client
       .setModel(state.session.id, model)
-      .then((snap) => setState("session", "model", snap.session.model))
+      .then((snap) => {
+        setState("session", "model", snap.session.model);
+        if (snap.session.billing) setState("session", "billing", snap.session.billing);
+      })
       .catch((err: Error) => setState("notice", err.message));
   };
 
@@ -474,7 +483,7 @@ export function App(props: AppProps) {
               {(name: () => string) => <text fg={COLORS.assistant}>{`${name()} · `}</text>}
             </Show>
             <text fg={COLORS.muted}>
-              {headerPath()} · {state.session.model}
+              {headerPath()} · {modelLabel()}
             </text>
             <Show when={judgeShown()}>
               {(judge: () => JudgeState) => (

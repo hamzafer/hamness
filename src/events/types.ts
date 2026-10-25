@@ -10,6 +10,8 @@ export interface SessionInfo {
   cwd: string;
   /** `provider/model`. */
   model: string;
+  /** How the model is paid for: `plan` (ChatGPT subscription) or `api` (pay per token). */
+  billing?: Billing;
   busy: boolean;
   /** The safety mode for this session's tool calls (ADR 0006). Absent when no rules apply (tests). */
   mode?: SafetyMode;
@@ -30,6 +32,9 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type CompactionReason = "manual" | "threshold" | "overflow";
 
 /** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: deny rules, then allow. */
+/** `plan`: the ChatGPT plan login. `subscription`: another subscription login. `api`: a pay-per-token API key. */
+export type Billing = "plan" | "subscription" | "api";
+
 export type SafetyMode = "ask" | "auto" | "yolo";
 
 /**
@@ -168,6 +173,8 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
       costMicros: number;
       /** False when hamness's price table has no entry and the cost is Pi's estimate. */
       priced: boolean;
+      /** `plan`: billed to the ChatGPT plan, so `costMicros` is 0. */
+      billing?: "plan";
     }
   | ({ type: "agent.context" } & ContextFill)
   | { type: "agent.error"; message: string }
@@ -184,7 +191,7 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
   /** The session's judge changed state (paused, over budget, no key, back on). */
   | { type: "safety.judge"; state: JudgeState; reason: string }
   /** The session switched models (`provider/id`); the next model call uses it. */
-  | { type: "agent.model"; model: string }
+  | { type: "agent.model"; model: string; billing?: Billing }
   /**
    * A subagent was started (queued until a slot is free); `agentId` is the new agent.
    * Its runs then show as `agent.status`, and a failure as `agent.error` before the last one.

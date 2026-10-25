@@ -50,6 +50,8 @@ export async function spawnDaemon(
       // As `ensureDaemon` starts it, so a scan can find it.
       HAMNESS_DAEMON: "1",
       CLAUDE_CONFIG_DIR: claude,
+      // No plan login here, so name a model or attaching is "not set up". No prompt is sent.
+      HAMNESS_MODEL: "anthropic/claude-haiku-5-5",
       ...opts.env,
     },
     stdin: "ignore",

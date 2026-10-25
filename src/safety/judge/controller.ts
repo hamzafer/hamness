@@ -39,7 +39,8 @@ const STATE_REASON: Record<JudgeState, string> = {
   on: "the judge is on",
   paused: `the judge asked ${BACK_OFF} times in a row, so it is paused for this session (/judge resume)`,
   "over-budget": `${BUDGET_REACHED} for today (safety.judge.dailyBudgetUsd)`,
-  "no-key": "no Anthropic API key, so the judge is off and undecided calls ask",
+  "no-key":
+    "no ChatGPT plan login (hamness login openai) or judge API key, so the judge is off and undecided calls ask",
 };
 
 /**
@@ -59,6 +60,16 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
   const paused = new Set<string>();
   const shown = new Map<string, JudgeState>();
 
+  /** Plan judge calls in flight, counted against the daily call cap like `reserved`. */
+  let reservedCalls = 0;
+  const callsToday = () =>
+    opts.db.sqlite
+      .query<{ n: number }, [number]>(
+        "SELECT count(*) AS n FROM decisions WHERE source = 'judge' AND created_at >= ?",
+      )
+      .get(startOfDay(now()))?.n ?? 0;
+  const onPlan = () => opts.backend?.billing === "plan";
+
   const spentToday = () =>
     opts.db.sqlite
       .query<{ spent: number | null }, [number]>(
@@ -71,12 +82,23 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
     if (paused.has(sessionId)) return "paused";
     let budget: number;
     let model: string;
+    let cap: number;
     try {
       const config = loadJudgeConfig(opts.dataDir);
       budget = config.dailyBudgetMicros;
-      model = config.model;
+      model = opts.backend.model ?? config.model;
+      cap = config.dailyCallCap;
     } catch {
       return "on"; // the judge call reports the config error
+    }
+    // A ChatGPT plan call costs $0, so the cap is on calls (ADR 0024).
+    if (onPlan()) {
+      if (callsToday() + reservedCalls >= cap) {
+        unpricedReason = `${BUDGET_REACHED}: ${cap} judge calls today on the ChatGPT plan (safety.judge.dailyCalls)`;
+        return "over-budget";
+      }
+      unpricedReason = undefined;
+      return "on";
     }
     // With no price hamness can't know what the judge spends, so it can't keep the budget.
     if (!priceFor(model)) {
@@ -88,9 +110,10 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
   }
 
   function estimate(req: JudgeRequest): number {
+    if (onPlan()) return 0;
     let model: string;
     try {
-      model = loadJudgeConfig(opts.dataDir).model;
+      model = opts.backend?.model ?? loadJudgeConfig(opts.dataDir).model;
     } catch {
       return 0;
     }
@@ -124,7 +147,7 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
         }, timeoutMs);
       });
       return await Promise.race([
-        backend(req, { signal: ac.signal, model: config.model }),
+        backend(req, { signal: ac.signal, model: backend.model ?? config.model }),
         timedOut,
       ]);
     } catch (err) {
@@ -154,6 +177,7 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
 
     const hold = estimate(req);
     reserved += hold;
+    reservedCalls++;
     let v: JudgeVerdict;
     try {
       v = await call(backend, req);
@@ -161,6 +185,7 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
       // The safety service stores this call's decision row (with its cost) as soon as it
       // returns, so the reservation can go now.
       reserved -= hold;
+      reservedCalls--;
     }
     if (v.verdict === "allow") {
       asksInARow.delete(req.sessionId);

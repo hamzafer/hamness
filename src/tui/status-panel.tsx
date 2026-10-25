@@ -1,3 +1,4 @@
+import { billingLabel } from "../agent/billing.ts";
 import type { SessionStatus } from "../agent/session-hub.ts";
 import { oneLine } from "./commands.ts";
 import { plural, shortPath } from "./layout.ts";
@@ -21,11 +22,11 @@ export function statusRows(s: SessionStatus, home: string): Array<readonly [stri
   const rows: Array<readonly [string, string]> = [];
   if (s.name) rows.push(["Session", s.name]);
   rows.push(
-    ["Model", s.model],
+    ["Model", s.billing ? `${s.model} · ${billingLabel({ kind: s.billing })}` : s.model],
     ["Thinking", s.thinkingLevel],
     ["Context", context],
     ["Tokens", tokens],
-    ["Cost", formatCost(s.costMicros)],
+    ["Cost", s.planCalls && !s.costMicros ? "$0 (plan)" : formatCost(s.costMicros)],
     [
       "Messages",
       [

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { dataPaths } from "../../config/paths.ts";
 import { openDatabase } from "../../db/open.ts";
-import { count, duration, money } from "../../stats/format.ts";
+import { count, duration, modelCost, money } from "../../stats/format.ts";
 import {
   RANGES,
   type Range,
@@ -208,7 +208,7 @@ export function renderStats(reports: StatsReport[], detail: number): string {
         ...d.models.map((m) => [
           m.priced ? m.model : `${m.model} *`,
           count(m.calls),
-          money(m.costMicros),
+          modelCost(m),
           count(m.tokens.prompt + m.tokens.output),
         ]),
       ]),
@@ -254,6 +254,11 @@ export function renderStats(reports: StatsReport[], detail: number): string {
   const notes: string[] = [];
   if (reports.some((r) => r.kpis.pricing.estimated))
     notes.push("Cost of imported history is estimated from token counts.");
+  const planCalls = reports.at(-1)?.kpis.pricing.planCalls ?? 0;
+  if (planCalls > 0)
+    notes.push(
+      `${count(planCalls)} model calls were billed to the ChatGPT plan: $0 (plan), tokens still counted.`,
+    );
   const widest = reports.at(-1);
   const pricing = widest?.kpis.pricing;
   if (widest && pricing && pricing.unpricedCalls > 0) {
