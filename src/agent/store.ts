@@ -15,6 +15,64 @@ export interface RowIds {
   agentId: string;
   taskId?: string | undefined;
 }
+/** A stored hamness session, enough to start it again. */
+export interface StoredSession {
+  sessionId: string;
+  agentId: string;
+  cwd: string;
+  model: string | null;
+  piSessionId: string;
+  name?: string;
+  thinkingLevel?: string;
+  safetyMode?: string;
+}
+
+interface StoredSessionRow {
+  id: string;
+  agent_id: string;
+  cwd: string;
+  model: string | null;
+  external_id: string;
+  title: string | null;
+  thinking_level: string | null;
+  safety_mode: string | null;
+}
+
+const STORED_SESSION = `SELECT s.id, a.id AS agent_id, s.cwd, s.model, s.external_id, s.title,
+    s.thinking_level, s.safety_mode
+  FROM sessions s JOIN agents a ON a.session_id = s.id AND a.kind = 'main'`;
+
+function storedSession(r: StoredSessionRow): StoredSession {
+  return {
+    sessionId: r.id,
+    agentId: r.agent_id,
+    cwd: r.cwd,
+    model: r.model,
+    piSessionId: r.external_id,
+    ...(r.title !== null ? { name: r.title } : {}),
+    ...(r.thinking_level !== null ? { thinkingLevel: r.thinking_level } : {}),
+    ...(r.safety_mode !== null ? { safetyMode: r.safety_mode } : {}),
+  };
+}
+
+/** One row of `GET /v1/sessions?cwd=`, before the hub adds what only it knows. */
+export interface SessionListRow {
+  id: string;
+  name?: string;
+  piSessionId: string | null;
+  startedAt: number;
+  lastActivityAt: number;
+  /** The main agent's user and assistant messages. */
+  messageCount: number;
+  /** All the session's model calls, subagents included. */
+  costMicros: number;
+}
+
+export interface SessionUsage {
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  costMicros: number;
+}
+
 export class ChatStore {
   constructor(private readonly db: HamnessDb) {}
 
@@ -56,21 +114,289 @@ export class ChatStore {
    * The cwd's most recent hamness session that has a message and a Pi session id:
    * the one to resume after a daemon restart.
    */
-  latestSession(
-    cwd: string,
-  ): { sessionId: string; agentId: string; model: string | null; piSessionId: string } | undefined {
+  latestSession(cwd: string): StoredSession | undefined {
     const row = this.sql
-      .query<{ id: string; agent_id: string; model: string | null; external_id: string }, [string]>(
-        `SELECT s.id, a.id AS agent_id, s.model, s.external_id
-         FROM sessions s JOIN agents a ON a.session_id = s.id AND a.kind = 'main'
+      .query<StoredSessionRow, [string]>(
+        `${STORED_SESSION}
          WHERE s.source = 'hamness' AND s.cwd = ? AND s.external_id IS NOT NULL
            AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)
-         ORDER BY s.started_at DESC, s.id DESC LIMIT 1`,
+         ORDER BY s.updated_at DESC, s.id DESC LIMIT 1`,
       )
       .get(cwd);
+    return row ? storedSession(row) : undefined;
+  }
+
+  /** A hamness session's row, to resume it by id. */
+  session(sessionId: string): StoredSession | undefined {
+    const row = this.sql
+      .query<StoredSessionRow, [string]>(
+        `${STORED_SESSION} WHERE s.source = 'hamness' AND s.id = ? AND s.external_id IS NOT NULL`,
+      )
+      .get(sessionId);
+    return row ? storedSession(row) : undefined;
+  }
+
+  /** The cwd's hamness sessions that hold a message or a name, the most recently active first. */
+  listSessions(cwd: string): SessionListRow[] {
+    return this.sql
+      .query<
+        {
+          id: string;
+          title: string | null;
+          external_id: string | null;
+          started_at: number | null;
+          created_at: number;
+          last_at: number | null;
+          messages: number;
+          cost: number;
+        },
+        [string]
+      >(
+        `SELECT s.id, s.title, s.external_id, s.started_at, s.created_at,
+           (SELECT max(m.created_at) FROM messages m WHERE m.session_id = s.id) AS last_at,
+           (SELECT count(*) FROM messages m WHERE m.session_id = s.id
+              AND m.role IN ('user', 'assistant')
+              AND m.agent_id = (SELECT a.id FROM agents a WHERE a.session_id = s.id
+                                AND a.kind = 'main')) AS messages,
+           (SELECT coalesce(sum(mc.cost_micros), 0) FROM model_calls mc
+              WHERE mc.session_id = s.id) AS cost
+         FROM sessions s
+         WHERE s.source = 'hamness' AND s.cwd = ?
+           AND (s.title IS NOT NULL OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id))
+         ORDER BY coalesce(last_at, s.started_at, s.created_at) DESC, s.id DESC`,
+      )
+      .all(cwd)
+      .map((r) => {
+        const startedAt = r.started_at ?? r.created_at;
+        return {
+          id: r.id,
+          ...(r.title !== null ? { name: r.title } : {}),
+          piSessionId: r.external_id,
+          startedAt,
+          lastActivityAt: r.last_at ?? startedAt,
+          messageCount: r.messages,
+          costMicros: r.cost,
+        };
+      });
+  }
+
+  /** The session ended (`/new`, `/resume` of another, `/fork`): its main agent is done. */
+  endSession(ids: { sessionId: string; agentId: string }): void {
+    const now = Date.now();
+    this.sql.transaction(() => {
+      this.sql
+        .query("UPDATE sessions SET ended_at = ?, updated_at = ? WHERE id = ?")
+        .run(now, now, ids.sessionId);
+      this.sql
+        .query("UPDATE agents SET status = 'done', ended_at = ? WHERE id = ?")
+        .run(now, ids.agentId);
+    })();
+  }
+
+  /** A resumed session is the cwd's current one again (the one a daemon restart picks). */
+  reopenSession(ids: { sessionId: string; agentId: string }): void {
+    const now = Date.now();
+    this.sql.transaction(() => {
+      this.sql.query("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, ids.sessionId);
+      this.sql
+        .query("UPDATE agents SET status = 'running', ended_at = NULL WHERE id = ?")
+        .run(ids.agentId);
+    })();
+  }
+
+  /** The user's settings for a session: its name, thinking level and safety mode. */
+  setSessionSettings(
+    sessionId: string,
+    s: { name?: string; thinkingLevel?: string; safetyMode?: string },
+  ): void {
+    const set = (column: string, value: string | undefined) => {
+      if (value === undefined) return;
+      this.sql
+        .query(`UPDATE sessions SET ${column} = ?, updated_at = ? WHERE id = ?`)
+        .run(value, Date.now(), sessionId);
+    };
+    set("title", s.name);
+    set("thinking_level", s.thinkingLevel);
+    set("safety_mode", s.safetyMode);
+  }
+
+  /** Pi's session entry id for a user message (`/fork`). */
+  setMessageExternalId(messageId: string, externalId: string): void {
+    this.sql.query("UPDATE messages SET external_id = ? WHERE id = ?").run(externalId, messageId);
+  }
+
+  /** One of the main agent's messages, for `/fork`. */
+  mainMessage(
+    ids: { sessionId: string; agentId: string },
+    messageId: string,
+  ): { role: string; text: string; externalId: string | null } | undefined {
+    const row = this.sql
+      .query<
+        { role: string; content: string | null; external_id: string | null },
+        [string, string, string]
+      >(
+        "SELECT role, content, external_id FROM messages WHERE id = ? AND session_id = ? AND agent_id = ?",
+      )
+      .get(messageId, ids.sessionId, ids.agentId);
     return row
-      ? { sessionId: row.id, agentId: row.agent_id, model: row.model, piSessionId: row.external_id }
+      ? { role: row.role, text: row.content ?? "", externalId: row.external_id }
       : undefined;
+  }
+
+  /**
+   * Copies the main agent's messages and tool calls before `beforeId` into a forked session, so
+   * its transcript shows the history it continues. Model calls stay with the original: the
+   * spend happened once.
+   */
+  copyTranscript(
+    from: { sessionId: string; agentId: string },
+    to: { sessionId: string; agentId: string },
+    beforeId: string,
+  ): void {
+    const messages = this.sql
+      .query<
+        {
+          id: string;
+          role: string;
+          content: string | null;
+          external_id: string | null;
+          created_at: number;
+        },
+        [string, string, string]
+      >(
+        `SELECT id, role, content, external_id, created_at FROM messages
+         WHERE session_id = ? AND agent_id = ? AND id < ? ORDER BY id`,
+      )
+      .all(from.sessionId, from.agentId, beforeId);
+    const tools = this.sql
+      .query<
+        {
+          id: string;
+          message_id: string | null;
+          tool: string;
+          args_json: string | null;
+          status: string;
+          result_summary: string | null;
+          duration_ms: number | null;
+          started_at: number | null;
+          ended_at: number | null;
+        },
+        [string, string, string]
+      >(
+        `SELECT id, message_id, tool, args_json, status, result_summary, duration_ms, started_at,
+           ended_at FROM tool_calls WHERE session_id = ? AND agent_id = ? AND id < ? ORDER BY id`,
+      )
+      .all(from.sessionId, from.agentId, beforeId);
+    // New ids in the original order: the transcript sorts by id.
+    const rows = [
+      ...messages.map((m) => ({ kind: "m" as const, id: m.id, m })),
+      ...tools.map((t) => ({ kind: "t" as const, id: t.id, t })),
+    ].sort((a, b) => (a.id < b.id ? -1 : 1));
+    const now = Date.now();
+    const newIds = new Map<string, string>();
+    this.sql.transaction(() => {
+      for (const r of rows) {
+        const id = newId();
+        newIds.set(r.id, id);
+        if (r.kind === "m") {
+          this.sql
+            .query(
+              `INSERT INTO messages (id, session_id, agent_id, role, content, external_id,
+                 created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              id,
+              to.sessionId,
+              to.agentId,
+              r.m.role,
+              r.m.content,
+              r.m.external_id,
+              r.m.created_at,
+              now,
+            );
+        } else {
+          const t = r.t;
+          this.sql
+            .query(
+              `INSERT INTO tool_calls (id, session_id, agent_id, message_id, tool, args_json, status,
+                 result_summary, duration_ms, started_at, ended_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              id,
+              to.sessionId,
+              to.agentId,
+              t.message_id ? (newIds.get(t.message_id) ?? null) : null,
+              t.tool,
+              t.args_json,
+              // A call still running in the original is not running here.
+              t.status === "running" || t.status === "pending" ? "error" : t.status,
+              t.result_summary,
+              t.duration_ms,
+              t.started_at,
+              t.ended_at,
+              now,
+              now,
+            );
+        }
+      }
+    })();
+  }
+
+  hasOpenExplicitTask(sessionId: string): boolean {
+    return !!this.sql
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM tasks WHERE session_id = ? AND outcome = 'open' AND implicit = 0 LIMIT 1",
+      )
+      .get(sessionId);
+  }
+
+  /** The session's open task moves to another session (`/new`, `/fork`; ADR 0021). */
+  moveOpenTask(fromSessionId: string, toSessionId: string): string | undefined {
+    const row = this.sql
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM tasks WHERE session_id = ? AND outcome = 'open' AND implicit = 0 LIMIT 1",
+      )
+      .get(fromSessionId);
+    if (!row) return undefined;
+    this.sql.query("UPDATE tasks SET session_id = ? WHERE id = ?").run(toSessionId, row.id);
+    return row.id;
+  }
+
+  /** The session's stored usage over all its agents, and its main agent's message counts. */
+  sessionUsage(sessionId: string): SessionUsage {
+    const t = this.sql
+      .query<
+        {
+          input: number;
+          output: number;
+          cache_read: number;
+          cache_write: number;
+          cost: number;
+        },
+        [string]
+      >(
+        `SELECT coalesce(sum(input_tokens), 0) AS input, coalesce(sum(output_tokens), 0) AS output,
+           coalesce(sum(cache_read_tokens), 0) AS cache_read,
+           coalesce(sum(cache_write_tokens), 0) AS cache_write,
+           coalesce(sum(cost_micros), 0) AS cost
+         FROM model_calls WHERE session_id = ?`,
+      )
+      .get(sessionId);
+    const input = t?.input ?? 0;
+    const output = t?.output ?? 0;
+    const cacheRead = t?.cache_read ?? 0;
+    const cacheWrite = t?.cache_write ?? 0;
+    return {
+      tokens: {
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+        total: input + output + cacheRead + cacheWrite,
+      },
+      costMicros: t?.cost ?? 0,
+    };
   }
 
   /** A subagent row, queued until it starts. */
@@ -166,7 +492,8 @@ export class ChatStore {
   addModelCall(
     ids: RowIds,
     call: {
-      messageId: string;
+      /** The reply it made; none for a compaction summary. */
+      messageId?: string | undefined;
       provider: string;
       model: string;
       usage: TokenUsage;
@@ -188,7 +515,7 @@ export class ChatStore {
         ids.sessionId,
         ids.agentId,
         ids.taskId ?? null,
-        call.messageId,
+        call.messageId ?? null,
         call.provider,
         call.model,
         call.usage.input,
