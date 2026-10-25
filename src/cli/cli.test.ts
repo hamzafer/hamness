@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempHome } from "../../test/support/temp-home.ts";
 
@@ -62,6 +62,25 @@ afterEach(async () => {
 });
 
 describe("hamness CLI", () => {
+  test("runs in a folder whose bunfig.toml preloads something missing", async () => {
+    // Bun applies the cwd's bunfig.toml to any script, the global hamness included.
+    writeFileSync(join(home.dir, "bunfig.toml"), 'preload = ["./missing.ts"]\n');
+    const proc = Bun.spawn([MAIN, "--help"], {
+      cwd: home.dir,
+      env: env(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(stderr).not.toContain("preload not found");
+    expect(code).toBe(0);
+    expect(stdout).toContain("Usage: hamness");
+  });
+
   test("status says not running when no daemon is up", async () => {
     const r = await run("status");
     expect(r.code).toBe(1);

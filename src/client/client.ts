@@ -51,7 +51,8 @@ export async function ensureDaemon(
   const logPath = join(dataDir, "daemon.log");
   const log = openSync(logPath, "a", 0o600);
   const logStart = statSync(logPath).size;
-  const child = spawn(process.execPath, [MAIN, "daemon"], {
+  // Like main.ts's shebang: ignore the bunfig.toml of the folder the child inherits.
+  const child = spawn(process.execPath, ["--config=/dev/null", MAIN, "daemon"], {
     detached: true,
     stdio: ["ignore", log, log],
     env: { ...(opts.env ?? process.env), HAMNESS_HOME: dataDir },

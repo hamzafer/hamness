@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeModel } from "../../test/support/fake-model.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
@@ -36,6 +36,27 @@ describe("ensureDaemon", () => {
     const second = await ensureDaemon(dataDir, { env: { ...process.env, HAMNESS_PORT: "0" } });
     expect(second.started).toBe(false);
     expect(second.url).toBe(first.url);
+  }, 15_000);
+
+  test("starts the daemon from a folder whose bunfig.toml preloads something missing", async () => {
+    // The child inherits the cwd, and Bun applies that folder's bunfig.toml to it.
+    const dataDir = join(home.dir, "data");
+    const project = join(home.dir, "project");
+    mkdirSync(project);
+    writeFileSync(join(project, "bunfig.toml"), 'preload = ["./missing.ts"]\n');
+    const before = process.cwd();
+    process.chdir(project);
+    try {
+      await ensureDaemon(dataDir, { env: { ...process.env, HAMNESS_PORT: "0" } });
+    } finally {
+      process.chdir(before);
+    }
+    const status = await getStatus(dataDir);
+    if (!status.running) throw new Error("daemon not running");
+    cleanups.push(async () => {
+      process.kill(status.pid, "SIGTERM");
+      for (let i = 0; i < 100 && (await getStatus(dataDir)).running; i++) await Bun.sleep(20);
+    });
   }, 15_000);
 
   test("a daemon that can't start says why in one line", async () => {
