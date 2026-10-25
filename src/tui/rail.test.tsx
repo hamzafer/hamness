@@ -145,6 +145,23 @@ describe("side rail (headless)", () => {
     expect(frame).toContain("Thinking");
   });
 
+  test("full screen keeps the orb and its words beside a running agent's wide row", async () => {
+    const state = stateAfter([
+      [1_000, { type: "agent.status", busy: true }],
+      [1_500, { type: "agent.tool.start", toolCallId: "t1", tool: "grep", args: { path: "a.ts" } }],
+    ]);
+    setup = await testRender(() => <Rail state={state} now={3_000} full width={90} />, {
+      width: 96,
+      height: 16,
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    const [row] = rowLines(frame);
+    expect(row).toMatch(/[⠁-⣿]/);
+    expect(row).toMatch(/● main +grep +a\.ts +2s/);
+    expect(frame).toContain("Searching the code");
+  });
+
   test("unknown context fill shows a question mark instead of a gauge", async () => {
     const state = initialRail(
       { ...snapshot, context: { tokens: null, contextWindow: 1, percent: null } },

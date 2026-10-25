@@ -185,19 +185,19 @@ function AgentRow(props: {
   const totals = () => `${formatTokens(a().tokens)} tok  ${formatCost(a().costMicros)}`;
   return (
     <box flexDirection="column" paddingTop={1}>
-      <Show
-        when={props.full}
-        fallback={
-          <>
-            <box flexDirection="row">
-              <Show when={props.orb}>
-                {(orb: () => OrbState) => (
-                  <box paddingRight={1} flexShrink={0}>
-                    <Orb state={orb()} seconds={props.orbSeconds} />
-                  </box>
-                )}
-              </Show>
-              <box flexDirection="column" flexGrow={1}>
+      <box flexDirection="row">
+        <Show when={props.orb}>
+          {(orb: () => OrbState) => (
+            <box paddingRight={1} flexShrink={0}>
+              <Orb state={orb()} seconds={props.orbSeconds} />
+            </box>
+          )}
+        </Show>
+        <box flexDirection="column" flexGrow={1}>
+          <Show
+            when={props.full}
+            fallback={
+              <>
                 <text fg={failed() ? COLORS.error : COLORS.text}>
                   {spread(head(), elapsed(), textWidth())}
                 </text>
@@ -206,20 +206,26 @@ function AgentRow(props: {
                     {clip(props.orb ? detail() : `  ${detail()}`, textWidth())}
                   </text>
                 </Show>
-              </box>
-            </box>
-            <text fg={COLORS.muted}>{clip(`  ${totals()}`, props.width)}</text>
-          </>
-        }
-      >
-        <text fg={failed() ? COLORS.error : COLORS.text}>
-          {clip(
-            [head().padEnd(16), tool().padEnd(36), elapsed().padStart(7), `  ${totals()}`].join(
-              "  ",
-            ),
-            props.width,
-          )}
-        </text>
+              </>
+            }
+          >
+            <text fg={failed() ? COLORS.error : COLORS.text}>
+              {clip(
+                [head().padEnd(16), tool().padEnd(36), elapsed().padStart(7), `  ${totals()}`].join(
+                  "  ",
+                ),
+                textWidth(),
+              )}
+            </text>
+            {/* One wide line already names the tool: under it, only the orb's words. */}
+            <Show when={props.orb}>
+              {(orb: () => OrbState) => <text fg={COLORS.muted}>{ORB_LABEL[orb()]}</text>}
+            </Show>
+          </Show>
+        </box>
+      </box>
+      <Show when={!props.full}>
+        <text fg={COLORS.muted}>{clip(`  ${totals()}`, props.width)}</text>
       </Show>
       <Show when={a().error}>
         <text fg={COLORS.error}>
