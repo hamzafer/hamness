@@ -68,7 +68,7 @@ describe("TUI side rail (headless)", () => {
       tool: "read",
       args: { path: "/work/demo/notes.txt" },
     });
-    await s.waitForFrame((f) => f.includes("● main") && /read +notes\.txt/.test(f));
+    await s.waitForFrame((f) => f.includes("● main") && /Searching the code/.test(f));
 
     fake.send({
       type: "agent.usage",

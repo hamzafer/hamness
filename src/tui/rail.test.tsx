@@ -75,7 +75,7 @@ describe("side rail (headless)", () => {
     const frame = await frameOf(state, 65_000);
     const [row] = rowLines(frame);
     expect(row).toMatch(/● main +1m04s/);
-    expect(frame).toMatch(/edit +app\.tsx/);
+    expect(frame).toMatch(/Editing files +app\.tsx/);
     expect(frame).not.toContain("/work/demo/src");
   });
 
@@ -130,6 +130,36 @@ describe("side rail (headless)", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]).toContain("○ main");
     expect(rows[1]).toMatch(/● xyz123 +2s/);
+  });
+
+  test("a running agent gets a thinking orb beside its row; an idle one doesn't", async () => {
+    const braille = /[⠁-⣿]/;
+    expect(await frameOf(stateAfter([]), 0)).not.toMatch(braille);
+    await setup?.dispose();
+    setup = undefined;
+    const state = stateAfter([[1_000, { type: "agent.status", busy: true }]]);
+    const frame = await frameOf(state, 3_000);
+    const [row] = rowLines(frame);
+    expect(row).toMatch(braille);
+    expect(row).toMatch(/● main +2s/);
+    expect(frame).toContain("Thinking");
+  });
+
+  test("full screen keeps the orb and its words beside a running agent's wide row", async () => {
+    const state = stateAfter([
+      [1_000, { type: "agent.status", busy: true }],
+      [1_500, { type: "agent.tool.start", toolCallId: "t1", tool: "grep", args: { path: "a.ts" } }],
+    ]);
+    setup = await testRender(() => <Rail state={state} now={3_000} full width={90} />, {
+      width: 96,
+      height: 16,
+    });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    const [row] = rowLines(frame);
+    expect(row).toMatch(/[⠁-⣿]/);
+    expect(row).toMatch(/● main +grep +a\.ts +2s/);
+    expect(frame).toContain("Searching the code");
   });
 
   test("unknown context fill shows a question mark instead of a gauge", async () => {

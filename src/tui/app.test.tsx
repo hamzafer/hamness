@@ -151,17 +151,17 @@ describe("TUI chat layout (headless)", () => {
     );
     await setup.renderOnce();
     const s = setup;
-    expect(s.captureCharFrame()).not.toContain("thinking");
+    expect(s.captureCharFrame()).not.toContain("Thinking…");
     fake.send({ type: "agent.message.start", messageId: "u2", role: "user" });
     fake.send({ type: "agent.message.end", messageId: "u2", role: "user", text: "next?" });
     fake.send({ type: "agent.status", busy: true });
-    await s.waitForFrame((f) => /thinking… 0s/.test(f));
+    await s.waitForFrame((f) => /Thinking… 0s/.test(f));
     clock.t = 3_000;
     fake.send({ type: "agent.context", tokens: 1, contextWindow: 10, percent: 10 });
-    await s.waitForFrame((f) => /thinking… 3s/.test(f));
+    await s.waitForFrame((f) => /Thinking… 3s/.test(f));
     fake.send({ type: "agent.message.start", messageId: "m4", role: "assistant" });
     fake.send({ type: "agent.message.delta", messageId: "m4", text: "First token." });
-    await frameWhere(s, (f) => f.includes("First token.") && !f.includes("thinking"));
+    await frameWhere(s, (f) => f.includes("First token.") && !f.includes("Thinking…"));
     fake.send({
       type: "agent.message.end",
       messageId: "m4",
@@ -174,12 +174,97 @@ describe("TUI chat layout (headless)", () => {
       tool: "bash",
       args: { command: "ls" },
     });
-    await s.waitForFrame((f) => /bash +ls/.test(f) && !f.includes("thinking"));
+    await s.waitForFrame((f) => /bash +ls/.test(f) && !f.includes("Thinking…"));
     clock.t = 5_000;
     fake.send({ type: "agent.tool.end", toolCallId: "t9", status: "ok", summary: "" });
-    await s.waitForFrame((f) => /thinking… 0s/.test(f));
+    await s.waitForFrame((f) => /Thinking… 0s/.test(f));
     fake.send({ type: "agent.status", busy: false });
-    await s.waitForFrame((f) => !f.includes("thinking"));
+    await s.waitForFrame((f) => !f.includes("Thinking…"));
+  });
+
+  test("thinking orbs animate while the agent works and leave when it is idle", async () => {
+    const fake = fakeClient();
+    const clock = { t: 0 };
+    setup = await testRender(
+      () => <App client={fake.client} snapshot={snapshot} now={() => clock.t} />,
+      { width: 100, height: 24 },
+    );
+    await setup.renderOnce();
+    const s = setup;
+    const braille = /[⠁-⣿]/;
+    /** The chat pane's thinking line and the one under it (the orb is two rows). */
+    const orbRows = (f: string) => {
+      const lines = f.split("\n");
+      const at = lines.findIndex((l) => l.includes("Thinking…"));
+      return at < 0
+        ? ""
+        : lines
+            .slice(at, at + 2)
+            .map((l) => l.slice(0, 10))
+            .join("\n");
+    };
+    expect(s.captureCharFrame()).not.toMatch(braille);
+    fake.send({ type: "agent.status", busy: true });
+    const first = orbRows(await s.waitForFrame((f) => braille.test(orbRows(f))));
+    // No event comes in: the orb's own tick moves it.
+    clock.t = 400;
+    const moved = orbRows(await frameWhere(s, (f) => orbRows(f) !== first));
+    expect(moved).toMatch(braille);
+    expect(moved).not.toBe(first);
+    fake.send({ type: "agent.status", busy: false });
+    const idle = await s.waitForFrame((f) => !f.includes("Thinking…"));
+    expect(idle).not.toMatch(braille);
+  });
+
+  test("the orb timer starts once per busy spell, not on every rail change", async () => {
+    const real = globalThis.setInterval;
+    let orbTimers = 0;
+    globalThis.setInterval = ((fn: () => void, ms?: number) => {
+      if (ms !== undefined && ms < 1000) orbTimers++;
+      return real(fn, ms);
+    }) as typeof setInterval;
+    try {
+      const fake = fakeClient();
+      setup = await testRender(() => <App client={fake.client} snapshot={snapshot} />, {
+        width: 100,
+        height: 24,
+      });
+      await setup.renderOnce();
+      const s = setup;
+      fake.send({ type: "agent.status", busy: true });
+      await s.waitForFrame((f) => f.includes("Thinking…"));
+      for (let i = 0; i < 3; i++) {
+        fake.send({ type: "agent.tool.start", toolCallId: `t${i}`, tool: "read", args: {} });
+        fake.send({ type: "agent.tool.end", toolCallId: `t${i}`, status: "ok", summary: "" });
+      }
+      fake.send({ type: "agent.context", tokens: 1, contextWindow: 10, percent: 10 });
+      await s.renderOnce();
+      expect(orbTimers).toBe(1);
+    } finally {
+      globalThis.setInterval = real;
+    }
+  });
+
+  test("HAMNESS_NO_ANIMATION: a still orb that doesn't change with the clock", async () => {
+    const fake = fakeClient();
+    const clock = { t: 0 };
+    setup = await testRender(
+      () => <App client={fake.client} snapshot={snapshot} now={() => clock.t} animate={false} />,
+      { width: 100, height: 24 },
+    );
+    await setup.renderOnce();
+    const s = setup;
+    fake.send({ type: "agent.status", busy: true });
+    const orbOf = (f: string) => {
+      const lines = f.split("\n");
+      const at = lines.findIndex((l) => l.includes("Thinking…"));
+      return lines.slice(at, at + 2).map((l) => l.slice(0, 6));
+    };
+    const before = orbOf(await s.waitForFrame((f) => /Thinking… 0s/.test(f)));
+    expect(before.join("")).toMatch(/[⠁-⣿]/);
+    clock.t = 2_000;
+    fake.send({ type: "agent.context", tokens: 1, contextWindow: 10, percent: 10 });
+    expect(orbOf(await s.waitForFrame((f) => /Thinking… 2s/.test(f)))).toEqual(before);
   });
 
   test("at a normal width the header path and the input hint fit, cut only between words", async () => {

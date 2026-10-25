@@ -1,4 +1,6 @@
 import type { ContextFill, HamnessEvent, SessionSnapshot } from "../events/types.ts";
+import { activityOrbState } from "../orbs/activity.ts";
+import type { OrbState } from "../orbs/index.ts";
 import type { EvidenceKind, EvidenceStatus, TaskView } from "../tasks/types.ts";
 
 /**
@@ -30,6 +32,10 @@ export interface RailAgent {
   error?: string;
   /** Tool calls still running, oldest first. */
   open: Array<{ id: string; tool: string; file?: string }>;
+  /** Assistant text is arriving (for its orb). */
+  streaming: boolean;
+  /** Its approvals waiting for the user. */
+  approvals: string[];
 }
 
 /** The session's current (or last) task, from the snapshot and `task.*` events. */
@@ -90,7 +96,18 @@ export function fileOf(args: Record<string, unknown>): string | undefined {
 }
 
 function newAgent(id: string, kind: RailAgent["kind"], name: string): RailAgent {
-  return { id, kind, name, status: "idle", toolRunning: false, tokens: 0, costMicros: 0, open: [] };
+  return {
+    id,
+    kind,
+    name,
+    status: "idle",
+    toolRunning: false,
+    tokens: 0,
+    costMicros: 0,
+    open: [],
+    streaming: false,
+    approvals: [],
+  };
 }
 
 export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
@@ -120,6 +137,9 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
   if (snapshot.task) state.task = railTask(snapshot.task);
 
   const main = agentFor(state, mainAgentId);
+  for (const a of snapshot.approvals ?? []) {
+    agentFor(state, a.agentId ?? mainAgentId).approvals.push(a.id);
+  }
   if (snapshot.session.busy) {
     main.status = "running";
     main.startedAt = now;
@@ -183,8 +203,21 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
         agent.status = agent.error ? "error" : "done";
         agent.endedAt = now;
         agent.open = [];
+        agent.streaming = false;
         clearTool(agent);
       }
+      return;
+    case "agent.message.start":
+      agent.streaming = false;
+      return;
+    case "agent.message.delta":
+      agent.streaming = true;
+      return;
+    case "safety.approval.request":
+      if (!agent.approvals.includes(e.approval.id)) agent.approvals.push(e.approval.id);
+      return;
+    case "safety.approval.resolved":
+      for (const a of state.agents) a.approvals = a.approvals.filter((id) => id !== e.approvalId);
       return;
     case "agent.tool.start":
       startTool(agent, e.toolCallId, e.tool, e.args);
@@ -206,6 +239,7 @@ export function applyRailEvent(state: RailState, e: HamnessEvent, now: number): 
       }
       return;
     case "agent.message.end":
+      agent.streaming = false;
       if (e.error) setError(agent, e.error, now);
       return;
     case "agent.error":
@@ -255,6 +289,17 @@ function setError(agent: RailAgent, message: string, now: number) {
     agent.status = "error";
     agent.endedAt ??= now;
   }
+}
+
+/** The agent's thinking orb (see `activityOrbState`); proof checks count for the main agent. */
+export function railOrbState(state: RailState, agent: RailAgent): OrbState | undefined {
+  return activityOrbState({
+    running: agent.status === "running",
+    approvals: agent.approvals.length,
+    ...(agent.toolRunning && agent.tool ? { tool: agent.tool } : {}),
+    streaming: agent.streaming,
+    checking: agent.id === state.mainAgentId && state.checks.some((c) => c.status === "running"),
+  });
 }
 
 export function sessionCostMicros(state: RailState): number {
