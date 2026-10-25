@@ -173,24 +173,20 @@ export function Picker(props: {
             return <text fg={PICKER_COLORS.dim}>{row.heading}</text>;
           }
           return (
-            <>
-              <box
-                flexDirection="row"
-                height={1}
-                backgroundColor={on() ? PICKER_COLORS.highlight : "transparent"}
+            <box
+              flexDirection="row"
+              height={1}
+              backgroundColor={on() ? PICKER_COLORS.highlight : "transparent"}
+            >
+              <text flexShrink={0} fg={r()?.current ? PICKER_COLORS.accent : PICKER_COLORS.dim}>
+                {r()?.current ? "● " : "  "}
+              </text>
+              <text
+                fg={r()?.dim ? PICKER_COLORS.dim : on() ? PICKER_COLORS.text : PICKER_COLORS.muted}
               >
-                <text flexShrink={0} fg={r()?.current ? PICKER_COLORS.accent : PICKER_COLORS.dim}>
-                  {r()?.current ? "● " : "  "}
-                </text>
-                <text
-                  fg={
-                    r()?.dim ? PICKER_COLORS.dim : on() ? PICKER_COLORS.text : PICKER_COLORS.muted
-                  }
-                >
-                  {row.text}
-                </text>
-              </box>
-            </>
+                {row.text}
+              </text>
+            </box>
           );
         }}
       </For>
