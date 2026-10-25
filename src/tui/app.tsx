@@ -446,7 +446,15 @@ export function App(props: AppProps) {
               <text fg={COLORS.warn}> · working…</text>
             </Show>
           </box>
-          <scrollbox stickyScroll stickyStart="bottom" flexGrow={1} minHeight={0}>
+          {/* The scrollbar keeps its column even while it has nothing to scroll: text wraps short
+              of it, so it never covers a line's last character when it appears. */}
+          <scrollbox
+            stickyScroll
+            stickyStart="bottom"
+            flexGrow={1}
+            minHeight={0}
+            contentOptions={{ paddingRight: 1 }}
+          >
             <For each={state.items}>
               {(item) =>
                 item.kind === "message" ? (

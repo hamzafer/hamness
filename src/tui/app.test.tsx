@@ -110,6 +110,32 @@ async function frameWhere(s: Setup, pred: (frame: string) => boolean): Promise<s
 }
 
 describe("TUI chat layout (headless)", () => {
+  test("the scrollbar never covers the last character of a wrapped line", async () => {
+    // A token too long for one line wraps to full-width rows; earlier lines overflow the pane
+    // so the scrollbar shows.
+    const token = Array.from({ length: 60 }, (_, i) => String(i).padStart(3, "0")).join("");
+    const filler = Array.from({ length: 30 }, (_, i) => `- line ${i}`).join("\n");
+    const long: SessionSnapshot = {
+      ...snapshot,
+      items: [
+        { kind: "message", id: "m1", role: "user", text: "tell me a lot" },
+        { kind: "message", id: "m2", role: "assistant", text: filler },
+        { kind: "message", id: "m3", role: "user", text: token },
+        { kind: "message", id: "m4", role: "assistant", text: token },
+      ],
+    };
+    const s = await render(fakeClient().client, long);
+    const frame = await frameWhere(s, (f) => f.split("059").length > 2);
+    // The chat pane's digit rows, left of the rail: put back together, the token is whole.
+    const rows = frame
+      .split("\n")
+      .map((l) => l.slice(0, 100 - 32))
+      .filter((l) => /^ *(› )?\d{6,}/.test(l));
+    expect(rows.length).toBeGreaterThan(1);
+    // A user prompt (plain text) and a reply (Markdown).
+    expect(rows.map((l) => (l.match(/\d+/) ?? [""])[0]).join("")).toBe(`${token}${token}`);
+  });
+
   test("renders the transcript, a compact tool line, the input box and the rail placeholder", async () => {
     const s = await render(fakeClient().client);
     const frame = await frameWhere(s, (f) => f.includes("The word is fig."));
