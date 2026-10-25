@@ -35,6 +35,8 @@ interface Asset {
   type: string;
 }
 
+const ORBS_NOTICE = "/*! thinking-orbs (c) 2026 Jakub Antalik, MIT, see src/orbs/LICENSE */";
+
 let bundle: Promise<Asset> | undefined;
 
 /** Bundles `client/main.ts` for the browser once per process. */
@@ -45,6 +47,8 @@ export function clientScript(): Promise<Asset> {
       target: "browser",
       format: "esm",
       minify: true,
+      // Minifying drops comments; the vendored orb engine's MIT notice must ship with it.
+      banner: ORBS_NOTICE,
     });
     const file = out.outputs[0];
     if (!out.success || !file) {
