@@ -5,6 +5,7 @@ import {
   addSystemLine,
   applyEvent,
   initialState,
+  readableError,
   waitingForModel,
 } from "./chat-state.ts";
 
@@ -17,6 +18,33 @@ const snapshot: SessionSnapshot = {
   seq: 0,
   items: [],
 };
+
+describe("readableError", () => {
+  test("one readable line: prefixes go, API bodies unwrap, refusals said plainly", () => {
+    expect(readableError("Compaction failed: Summarization failed: connect ECONNREFUSED")).toBe(
+      "connect ECONNREFUSED",
+    );
+    expect(readableError("Summarization failed: Connection refused by host")).toBe(
+      "Connection refused by host",
+    );
+    expect(
+      readableError(
+        'Summarization failed: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded. Retry in 30s."}}',
+      ),
+    ).toBe("Overloaded. Retry in 30s.");
+    expect(readableError("The model refused to continue.")).toBe(
+      "the model refused to write the summary.",
+    );
+    expect(readableError("API integrators: you can reduce refusals for your users")).toBe(
+      "the model refused to write the summary.",
+    );
+    const long = `rate limited. ${"x".repeat(300)}`;
+    expect(readableError(long).length).toBeLessThanOrEqual(200);
+    expect(readableError("first line. Retry after 20s.\nstack trace")).toBe(
+      "first line. Retry after 20s.",
+    );
+  });
+});
 
 describe("chat state", () => {
   test("a subagent's messages, tools and status stay out of the chat; its approvals show", () => {
@@ -195,7 +223,9 @@ describe("chat state", () => {
     });
     addCompactionFailure(state, "Summarization failed: rate limited. Retry in 20s.");
     expect(state.items.length).toBe(before + 1);
-    expect(state.items.at(-1)).toMatchObject({ text: "Compaction failed: rate limited." });
+    expect(state.items.at(-1)).toMatchObject({
+      text: "Compaction failed: rate limited. Retry in 20s.",
+    });
     send({ type: "agent.compaction.start", reason: "manual" });
     send({ type: "agent.compaction.end", reason: "manual", aborted: true });
     expect(state.items.at(-1)).toMatchObject({ text: "Compaction stopped.", tone: "muted" });

@@ -171,9 +171,10 @@ export function applyEvent(state: ChatState, e: HamnessEvent): void {
 }
 
 /**
- * A raw model, API or policy error as one readable sentence: Pi's stacked prefixes
- * (`Compaction failed: Summarization failed: …`) dropped, a refusal said plainly, and the rest
- * cut to its first sentence.
+ * A raw model, API or policy error as one readable line: Pi's stacked prefixes
+ * (`Compaction failed: Summarization failed: …`) dropped, an API's `529 {json}` body unwrapped
+ * to its message, a model refusal said plainly, and the rest kept to its first line (retry
+ * hints included), at most `ERROR_MAX` characters.
  */
 export function readableError(raw: string): string {
   let text = raw.trim();
@@ -182,12 +183,21 @@ export function readableError(raw: string): string {
     if (next === text) break;
     text = next;
   }
-  if (/\brefus(al|als|ed|es)\b/i.test(text)) return "the model refused to write the summary.";
+  const body = /^\d{3}\s+(\{[\s\S]*\})\s*$/.exec(text)?.[1];
+  if (body) {
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown };
+      const message = parsed.error?.message ?? parsed.message;
+      if (typeof message === "string" && message.trim()) text = message.trim();
+    } catch {}
+  }
+  if (/model refused|refusal/i.test(text)) return "the model refused to write the summary.";
   const first = (text.split("\n")[0] ?? "").trim();
-  const sentence = /^(.+?[.!?])(\s|$)/.exec(first)?.[1] ?? first;
-  const short = sentence.length > 160 ? `${sentence.slice(0, 159)}…` : sentence;
+  const short = first.length > ERROR_MAX ? `${first.slice(0, ERROR_MAX - 1)}…` : first;
   return short || "unknown error.";
 }
+
+const ERROR_MAX = 200;
 
 /** `Compaction failed: …` once: the event and the command's own rejection say the same thing. */
 export function addCompactionFailure(state: ChatState, raw: string): void {
