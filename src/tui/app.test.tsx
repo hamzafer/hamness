@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { TextAttributes } from "@opentui/core";
+import { type Renderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core";
 import { testRender } from "@opentui/solid";
 import { noCommands } from "../../test/support/tui-client.ts";
 import type { DaemonClient, SessionCommands } from "../client/client.ts";
@@ -153,6 +153,46 @@ describe("TUI chat layout (headless)", () => {
     expect(rows.length).toBeGreaterThan(1);
     // A user prompt (plain text) and a reply (Markdown).
     expect(rows.map((l) => (l.match(/\d+/) ?? [""])[0]).join("")).toBe(`${token}${token}`);
+  });
+
+  test("the chat never scrolls sideways: wheel-right and long unbreakable lines keep column 0 intact", async () => {
+    const url = `https://example.com/${"a".repeat(300)}`;
+    const wide: SessionSnapshot = {
+      ...snapshot,
+      items: [
+        { kind: "message", id: "m1", role: "user", text: url },
+        {
+          kind: "message",
+          id: "m2",
+          role: "assistant",
+          text: `- ${url}\n\n\`\`\`\n${"x".repeat(300)}\n\`\`\``,
+        },
+        { kind: "message", id: "m3", role: "user", text: "hello" },
+        { kind: "message", id: "m4", role: "assistant", text: "- first\n- second" },
+      ],
+    };
+    const s = await render(fakeClient().client, wide);
+    await frameWhere(s, (f) => f.includes("- second"));
+    for (let i = 0; i < 8; i++) await s.mockMouse.scroll(10, 5, "right");
+    const frame = await frameWhere(s, (f) => f.includes("- second"));
+    const boxes: ScrollBoxRenderable[] = [];
+    const walk = (r: Renderable): void => {
+      if (r instanceof ScrollBoxRenderable) boxes.push(r);
+      for (const c of r.getChildren()) walk(c);
+    };
+    walk(s.renderer.root);
+    expect(boxes.length).toBeGreaterThan(0);
+    for (const b of boxes) {
+      expect(b.scrollLeft).toBe(0);
+      expect(b.scrollWidth).toBeLessThanOrEqual(b.viewport.width);
+    }
+    const lines = frame.split("\n");
+    // The pane has a one-column margin; the prompt marker and bullets sit right after it.
+    expect(lines.some((l) => l.startsWith(" › hello"))).toBe(true);
+    expect(lines.some((l) => l.startsWith(" - first"))).toBe(true);
+    // The input box keeps its left border and its first letter.
+    expect(lines.some((l) => l.startsWith(" │Ask hamness"))).toBe(true);
+    expect(lines.some((l) => l.startsWith(" ┌"))).toBe(true);
   });
 
   test("renders the transcript, a compact tool line, the input box and the rail placeholder", async () => {
