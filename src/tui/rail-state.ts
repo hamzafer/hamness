@@ -139,7 +139,16 @@ export function initialRail(snapshot: SessionSnapshot, now: number): RailState {
     mainAgentId,
     seq: snapshot.seq,
     agents,
-    checks: [],
+    // Finished checks the daemon stored: a resumed or reattached session keeps its rows.
+    checks: (snapshot.checks ?? []).slice(-RAIL_CHECKS_KEPT).map((c) => ({
+      id: c.id,
+      kind: c.kind,
+      label: c.label,
+      status: c.status,
+      ...(c.summary !== undefined ? { summary: c.summary } : {}),
+      startedAt: c.startedAt,
+      ...(c.endedAt !== undefined ? { endedAt: c.endedAt } : {}),
+    })),
     tasks: [],
   };
   if (snapshot.context) state.context = { ...snapshot.context };

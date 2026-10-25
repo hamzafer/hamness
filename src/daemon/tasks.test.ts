@@ -142,6 +142,10 @@ describe("the agent's task tools", () => {
     const snap = await snapshot();
     expect(snap.task).toMatchObject({ id: taskId, outcome: "verified", costMicros: sum });
     expect(snap.task?.tokens).toBe(110 + 220 + 330 + 440);
+    // The rail's check rows come back on a reattach.
+    expect(snap.checks).toMatchObject([
+      { taskId, kind: "command", label: "bun test", status: "passed" },
+    ]);
     // The user's message and the tool calls count toward the task too.
     const untagged = sql
       .query<{ n: number }, []>(

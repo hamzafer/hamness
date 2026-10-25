@@ -1331,6 +1331,7 @@ export class SessionHub {
     });
     const context = live.runner.contextUsage();
     const task = live.tasks.view();
+    const checks = live.unsaved ? [] : live.tasks.checks();
     return {
       session: this.info(live),
       seq: live.seq,
@@ -1339,6 +1340,7 @@ export class SessionHub {
         ? [{ id: live.agentId, kind: "main", tokens: 0, costMicros: 0 }]
         : this.store.agentTotals(live.id),
       ...(task ? { task } : {}),
+      ...(checks.length ? { checks } : {}),
       ...(context ? { context } : {}),
       approvals: [...live.approvals.values()].map((e) => e.approval),
     };

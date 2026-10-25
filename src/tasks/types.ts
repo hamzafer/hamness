@@ -54,6 +54,21 @@ export interface TaskView {
   unverifiedReason?: string;
 }
 
+/**
+ * A finished proof check, as a reattaching client's rail shows it: what the `check.start` and
+ * `check.end` events said, read back from the stored evidence.
+ */
+export interface CheckView {
+  id: string;
+  taskId: string;
+  kind: EvidenceKind;
+  label: string;
+  status: Exclude<EvidenceStatus, "pending">;
+  summary?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
 /** A user action on the session's task, from the TUI's slash commands. */
 export type TaskAction =
   | { kind: "start"; goal: string }

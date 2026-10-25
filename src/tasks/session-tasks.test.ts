@@ -396,6 +396,27 @@ describe("events", () => {
   });
 });
 
+describe("checks for a reattach", () => {
+  test("the session's checks, oldest first, with how they ended; a fresh SessionTasks sees them", async () => {
+    const t = tasks();
+    t.start("check twice");
+    await t.prove({ kind: "command", command: PASS });
+    await t.prove({ kind: "command", command: FAIL });
+    const checks = t.checks();
+    expect(checks.map((c) => [c.kind, c.label, c.status])).toEqual([
+      ["command", PASS, "passed"],
+      ["command", FAIL, "failed"],
+    ]);
+    for (const c of checks) {
+      expect(c.id).toBeString();
+      expect(c.endedAt).toBeGreaterThanOrEqual(c.startedAt);
+      expect(c.summary).toBeString();
+    }
+    expect(new SessionTasks(optsFor()).checks()).toEqual(checks);
+    expect(t.checks(1).map((c) => c.label)).toEqual([FAIL]);
+  });
+});
+
 describe("file evidence uses the task window", () => {
   test("a file written during the task passes", async () => {
     const t = tasks();

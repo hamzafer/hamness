@@ -8,7 +8,7 @@ import { decideGate, type GateResult } from "./gate.ts";
 import { proveClaim } from "./proof.ts";
 import { cdOutsideProblem } from "./proof-shape.ts";
 import { TaskStore } from "./store.ts";
-import type { CheckResult, EvidenceClaim, TaskView } from "./types.ts";
+import type { CheckResult, CheckView, EvidenceClaim, TaskView } from "./types.ts";
 
 /** A task event before the hub stamps it with the session and its sequence number. */
 export type TaskEventBody = TaskEvent;
@@ -39,6 +39,8 @@ export interface SessionTasksOptions {
 }
 
 const GOAL_MAX = 200;
+/** Checks a snapshot carries: as many as the full-screen rail keeps. */
+const CHECKS_KEPT = 20;
 
 /** A claim in one line, for the rail: the command, path, URL or PR / commit. */
 function claimLabel(claim: EvidenceClaim): string {
@@ -118,6 +120,20 @@ export class SessionTasks {
   view(): TaskView | undefined {
     const id = this.current ?? this.store.latestFor(this.opts.sessionId);
     return id ? this.store.view(id) : undefined;
+  }
+
+  /** The session's last `limit` finished checks, oldest first, for a reattaching rail. */
+  checks(limit = CHECKS_KEPT): CheckView[] {
+    return this.store.checkedEvidence(this.opts.sessionId, limit).map((e) => ({
+      id: e.id,
+      taskId: e.taskId,
+      kind: e.claim.kind,
+      label: claimLabel(e.claim),
+      status: e.status,
+      ...(e.summary !== undefined ? { summary: e.summary } : {}),
+      startedAt: e.createdAt,
+      ...(e.checkedAt !== undefined ? { endedAt: e.checkedAt } : {}),
+    }));
   }
 
   beginTurn(prompt: string): void {
