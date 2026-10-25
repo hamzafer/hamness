@@ -38,6 +38,10 @@ interface StoredSessionRow {
   safety_mode: string | null;
 }
 
+/** The session holds an open explicit task (it may have moved there with `/new`; ADR 0021). */
+const OPEN_TASK = `EXISTS (SELECT 1 FROM tasks t WHERE t.session_id = s.id AND t.outcome = 'open'
+    AND t.implicit = 0)`;
+
 const STORED_SESSION = `SELECT s.id, a.id AS agent_id, s.cwd, s.model, s.external_id, s.title,
     s.thinking_level, s.safety_mode
   FROM sessions s JOIN agents a ON a.session_id = s.id AND a.kind = 'main'`;
@@ -119,7 +123,7 @@ export class ChatStore {
       .query<StoredSessionRow, [string]>(
         `${STORED_SESSION}
          WHERE s.source = 'hamness' AND s.cwd = ? AND s.external_id IS NOT NULL
-           AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)
+           AND (EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id) OR ${OPEN_TASK})
          ORDER BY s.updated_at DESC, s.id DESC LIMIT 1`,
       )
       .get(cwd);
@@ -162,7 +166,8 @@ export class ChatStore {
               WHERE mc.session_id = s.id) AS cost
          FROM sessions s
          WHERE s.source = 'hamness' AND s.cwd = ?
-           AND (s.title IS NOT NULL OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id))
+           AND (s.title IS NOT NULL OR ${OPEN_TASK}
+             OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id))
          ORDER BY coalesce(last_at, s.started_at, s.created_at) DESC, s.id DESC`,
       )
       .all(cwd)
@@ -197,11 +202,38 @@ export class ChatStore {
   reopenSession(ids: { sessionId: string; agentId: string }): void {
     const now = Date.now();
     this.sql.transaction(() => {
-      this.sql.query("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, ids.sessionId);
+      this.sql
+        .query("UPDATE sessions SET ended_at = NULL, updated_at = ? WHERE id = ?")
+        .run(now, ids.sessionId);
       this.sql
         .query("UPDATE agents SET status = 'running', ended_at = NULL WHERE id = ?")
         .run(ids.agentId);
     })();
+  }
+
+  /**
+   * Makes the session the cwd's most recently updated one, the one a daemon restart picks,
+   * even when another of the cwd's rows was touched in the same millisecond.
+   */
+  makeLatest(sessionId: string, cwd: string): void {
+    this.sql
+      .query(
+        `UPDATE sessions SET updated_at = max(?, 1 + (SELECT max(updated_at) FROM sessions
+           WHERE source = 'hamness' AND cwd = ?)) WHERE id = ?`,
+      )
+      .run(Date.now(), cwd, sessionId);
+  }
+
+  /** Points a session that had no Pi file yet at a new one (a task holder; ADR 0021). */
+  setPiSessionId(sessionId: string, piSessionId: string): void {
+    this.sql.query("UPDATE sessions SET external_id = ? WHERE id = ?").run(piSessionId, sessionId);
+  }
+
+  /** Whether the session has any message: without one, Pi never wrote its file. */
+  hasMessages(sessionId: string): boolean {
+    return !!this.sql
+      .query<{ id: string }, [string]>("SELECT id FROM messages WHERE session_id = ? LIMIT 1")
+      .get(sessionId);
   }
 
   /** The user's settings for a session: its name, thinking level and safety mode. */

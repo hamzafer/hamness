@@ -70,9 +70,12 @@ export interface ClaudeHooks {
   /** `notice`: something the user should know (project hooks held back until trusted). */
   sessionStart(
     s: HookSession,
-    info: { source: "startup" | "resume"; model?: string },
+    info: { source: SessionStartSource; model?: string },
   ): Promise<{ context?: string; notice?: string }>;
 }
+
+/** Why a SessionStart fires, as Claude Code names it: `/clear` (`/new`) is `clear`, `/compact` is `compact`. */
+export type SessionStartSource = "startup" | "resume" | "clear" | "compact";
 
 export interface ClaudeHooksOptions {
   /** Claude Code's config dir (`CLAUDE_CONFIG_DIR` or `~/.claude`). */

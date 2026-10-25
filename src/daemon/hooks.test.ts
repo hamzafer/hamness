@@ -268,6 +268,61 @@ describe("Claude Code hooks in the daemon", () => {
     expect(JSON.stringify(fake.contexts[1]?.messages).split("on branch main")).toHaveLength(2);
   });
 
+  test("/new fires SessionStart with source clear, as Claude Code's /clear does", async () => {
+    fx.settings(claudeDir, { SessionStart: [{ matcher: "clear" }] });
+    fake.script([{ text: "ok" }]);
+    const { s, log } = await start();
+    const token = readFileSync(dataPaths(dataDir).token, "utf8").trim();
+    const res = await fetch(`${daemon?.url}/v1/sessions/${s.session.id}/new`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: "{}",
+    });
+    const next = (await res.json()) as SessionSnapshot;
+    await log.waitFor(() => fx.calls().length > 0);
+    expect(fx.calls()).toHaveLength(1);
+    expect(fx.calls()[0]?.input).toMatchObject({
+      session_id: next.session.id,
+      hook_event_name: "SessionStart",
+      source: "clear",
+    });
+  });
+
+  test("/compact fires SessionStart with source compact; its context reaches the next prompt", async () => {
+    fx.settings(claudeDir, { SessionStart: [{ matcher: "compact" }] });
+    fx.respond({
+      SessionStart: { stdout: { hookSpecificOutput: { additionalContext: "after compaction" } } },
+    });
+    const big = (tag: string) => `${tag} ${"lorem ipsum dolor ".repeat(6000)}`;
+    const usage = { input: 60_000, output: 5, cacheRead: 0, cacheWrite: 0 };
+    fake.script([
+      { text: "r1", usage: { ...usage, input: 30_000 } },
+      { text: "r2", usage },
+      { text: "SUMMARY" },
+      { text: "r3" },
+    ]);
+    const { s, prompt, settled } = await start();
+    await prompt(big("first"));
+    await settled();
+    await prompt(big("second"));
+    await settled(2);
+    expect(fx.calls()).toHaveLength(0);
+    const token = readFileSync(dataPaths(dataDir).token, "utf8").trim();
+    const res = await fetch(`${daemon?.url}/v1/sessions/${s.session.id}/compact`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(200);
+    expect(fx.calls()[0]?.input).toMatchObject({
+      hook_event_name: "SessionStart",
+      source: "compact",
+    });
+    await prompt("next");
+    await settled(3);
+    expect(lastContext()).toContain("after compaction");
+  }, 15_000);
+
   test("project hooks wait for trust, and the user is told", async () => {
     fx.settings(join(work, ".claude"), { UserPromptSubmit: [{}] });
     fake.script([{ text: "ok" }, { text: "ok" }]);

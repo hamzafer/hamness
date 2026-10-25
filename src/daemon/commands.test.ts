@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { eventLog } from "../../test/support/events.ts";
 import { type FakeModel, fakeModel } from "../../test/support/fake-model.ts";
@@ -364,6 +364,124 @@ describe("fork", () => {
   });
 });
 
+describe("review fixes: resume, restart and stranded tasks", () => {
+  const sessionRow = (d: RunningDaemon, id: string) =>
+    d.db.sqlite
+      .query<{ ended_at: number | null }, [string]>("SELECT ended_at FROM sessions WHERE id = ?")
+      .get(id);
+
+  test("a resumed session is no longer ended", async () => {
+    fake.script([{ text: "a" }]);
+    const { d, call, attach, say } = await start();
+    const s = await attach();
+    await say(s.session.id, "hi");
+    const next = (await (
+      await call("POST", `/v1/sessions/${s.session.id}/new`, {})
+    ).json()) as SessionSnapshot;
+    expect(sessionRow(d, s.session.id)?.ended_at).not.toBeNull();
+    await call("POST", `/v1/sessions/${next.session.id}/resume`, { sessionId: s.session.id });
+    expect(sessionRow(d, s.session.id)?.ended_at).toBeNull();
+  });
+
+  test("a daemon restart after /resume comes back to the resumed session", async () => {
+    fake.script([{ text: "a" }, { text: "b" }]);
+    let { call, attach, say } = await start();
+    const first = await attach();
+    await say(first.session.id, "one");
+    const second = (await (
+      await call("POST", `/v1/sessions/${first.session.id}/new`, {})
+    ).json()) as SessionSnapshot;
+    await say(second.session.id, "two");
+    await call("POST", `/v1/sessions/${second.session.id}/resume`, {
+      sessionId: first.session.id,
+    });
+    await daemon?.stop();
+    ({ call, attach } = await start());
+    expect((await attach()).session.id).toBe(first.session.id);
+  });
+
+  test("a daemon restart after /fork comes back to the fork", async () => {
+    fake.script([{ text: "a" }, { text: "b" }]);
+    let { call, attach, say } = await start();
+    const s = await attach();
+    await say(s.session.id, "one");
+    const two = await say(s.session.id, "two");
+    const { snapshot } = (await (
+      await call("POST", `/v1/sessions/${s.session.id}/fork`, { messageId: two })
+    ).json()) as { snapshot: SessionSnapshot };
+    await daemon?.stop();
+    ({ call, attach } = await start());
+    expect((await attach()).session.id).toBe(snapshot.session.id);
+  });
+
+  test("/task, /new, then /resume of the old one: the task's session is still listed and resumable", async () => {
+    fake.script([{ text: "a" }]);
+    const { call, attach, say } = await start();
+    const s = await attach();
+    await say(s.session.id, "hi");
+    const opened = await call("POST", `/v1/sessions/${s.session.id}/task`, { goal: "keep me" });
+    const { task } = (await opened.json()) as { task: { id: string } };
+    const holder = (await (
+      await call("POST", `/v1/sessions/${s.session.id}/new`, {})
+    ).json()) as SessionSnapshot;
+    await call("POST", `/v1/sessions/${holder.session.id}/resume`, { sessionId: s.session.id });
+
+    const { sessions } = (await (
+      await call("GET", `/v1/sessions?cwd=${encodeURIComponent(work)}`)
+    ).json()) as { sessions: Array<{ id: string; resumable: boolean }> };
+    expect(sessions.find((x) => x.id === holder.session.id)).toMatchObject({ resumable: true });
+
+    const back = (await (
+      await call("POST", `/v1/sessions/${s.session.id}/resume`, { sessionId: holder.session.id })
+    ).json()) as SessionSnapshot;
+    expect(back.session.id).toBe(holder.session.id);
+    expect(back.task).toMatchObject({ id: task.id, outcome: "open" });
+  });
+
+  test("/task, /new, then a restart before any prompt: the session with the task comes back", async () => {
+    fake.script([{ text: "a" }]);
+    let { call, attach, say } = await start();
+    const s = await attach();
+    await say(s.session.id, "hi");
+    const opened = await call("POST", `/v1/sessions/${s.session.id}/task`, { goal: "keep me" });
+    const { task } = (await opened.json()) as { task: { id: string } };
+    const holder = (await (
+      await call("POST", `/v1/sessions/${s.session.id}/new`, {})
+    ).json()) as SessionSnapshot;
+    await daemon?.stop();
+    ({ call, attach, say } = await start());
+    const back = await attach();
+    expect(back.session.id).toBe(holder.session.id);
+    expect(back.task).toMatchObject({ id: task.id, outcome: "open" });
+    // It works as a session again: a prompt runs and is stored.
+    fake.script([{ text: "b" }]);
+    await say(back.session.id, "go on");
+  });
+
+  test("a /new that fails part way leaves the old session and its task as they were", async () => {
+    const { d, call, attach } = await start();
+    const s = await attach();
+    const opened = await call("POST", `/v1/sessions/${s.session.id}/task`, { goal: "stay" });
+    const { task } = (await opened.json()) as { task: { id: string } };
+    d.db.sqlite.run(`CREATE TRIGGER no_moves BEFORE UPDATE OF session_id ON tasks
+      BEGIN SELECT RAISE(ABORT, 'no moving tasks'); END`);
+    const count = () =>
+      d.db.sqlite.query<{ n: number }, []>("SELECT count(*) AS n FROM sessions").get()?.n;
+    const before = count();
+    const res = await call("POST", `/v1/sessions/${s.session.id}/new`, {});
+    expect(res.status).toBe(500);
+    expect(count()).toBe(before);
+    expect((await attach()).session.id).toBe(s.session.id);
+    const row = d.db.sqlite
+      .query<{ session_id: string }, [string]>("SELECT session_id FROM tasks WHERE id = ?")
+      .get(task.id);
+    expect(row?.session_id).toBe(s.session.id);
+    d.db.sqlite.run("DROP TRIGGER no_moves");
+    // Not stuck replacing: a later /new works.
+    expect((await call("POST", `/v1/sessions/${s.session.id}/new`, {})).status).toBe(200);
+  });
+});
+
 describe("export and last reply", () => {
   test("export to HTML under the data dir by default, and JSONL at a path", async () => {
     fake.script([{ text: "the reply" }]);
@@ -411,6 +529,24 @@ describe("export and last reply", () => {
     expect((await exp({ format: "pdf" })).status).toBe(400);
     expect((await exp({ format: "html", path: join(work, "missing", "x.html") })).status).toBe(400);
     expect(existsSync(join(work, "missing"))).toBe(false);
+  });
+
+  test("export refuses a symlink at the path, even a dangling one", async () => {
+    fake.script([{ text: "r" }]);
+    const { call, attach, say } = await start();
+    const s = await attach();
+    await say(s.session.id, "hello");
+    const victim = join(home.dir, "victim.txt");
+    symlinkSync(victim, join(work, "link.html"));
+    for (const overwrite of [false, true]) {
+      const res = await call("POST", `/v1/sessions/${s.session.id}/export`, {
+        format: "html",
+        path: "link.html",
+        overwrite,
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(existsSync(victim)).toBe(false);
   });
 
   test("the last assistant message text, for /copy", async () => {
@@ -521,6 +657,29 @@ describe("compact", () => {
       )
       .get(s.session.id);
     expect(calls?.n).toBe(1);
+  });
+
+  test("a /compact after /abandon charges no task: the task is closed", async () => {
+    const big = (tag: string) => `${tag} ${"lorem ipsum dolor ".repeat(6000)}`;
+    const usage = { input: 60_000, output: 5, cacheRead: 0, cacheWrite: 0 };
+    fake.script([
+      { text: "r1", usage: { ...usage, input: 30_000 } },
+      { text: "r2", usage },
+      { text: "SUMMARY" },
+    ]);
+    const { d, call, attach, say } = await start();
+    const s = await attach();
+    await call("POST", `/v1/sessions/${s.session.id}/task`, { goal: "big work" });
+    await say(s.session.id, big("first"));
+    await say(s.session.id, big("second"));
+    await call("POST", `/v1/sessions/${s.session.id}/abandon`, {});
+    expect((await call("POST", `/v1/sessions/${s.session.id}/compact`, {})).status).toBe(200);
+    const row = d.db.sqlite
+      .query<{ task_id: string | null }, [string]>(
+        "SELECT task_id FROM model_calls WHERE session_id = ? AND message_id IS NULL",
+      )
+      .get(s.session.id);
+    expect(row).toEqual({ task_id: null });
   });
 
   test("a session too small to compact is a 409 with Pi's reason", async () => {
