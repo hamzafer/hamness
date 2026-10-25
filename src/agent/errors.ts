@@ -16,6 +16,10 @@ export function explainModelError(message: string, dataDir: string, provider?: s
     const p = missing[1] ?? "anthropic";
     return `No API key for ${p}. Set ${envKeyHint(p)}, or run \`hamness keys set ${p}\` (stored in ${keyFilePath(dataDir)}, mode 0600), then restart the daemon with \`hamness stop\` and \`hamness\`.`;
   }
+  // A ChatGPT login of the wrong kind (Pi's newer Sign in with ChatGPT, not the Codex one).
+  if (/Failed to extract accountId from token/i.test(message)) {
+    return "Your ChatGPT plan login can't reach the plan's models. Sign in again: hamness login openai (then `hamness stop` and `hamness`).";
+  }
   const who = provider ?? "the model provider";
   if (REFUSED_KEY.test(message)) {
     const set = provider

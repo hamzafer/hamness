@@ -60,7 +60,10 @@ describe("login", () => {
     const code = await login({ provider: "openai", runtime, io: t.cli, dataDir: home.dir });
     expect(code).toBe(0);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ provider: "openai", type: "oauth" });
+    expect(calls[0]).toMatchObject({ provider: "openai-codex", type: "oauth" });
+    expect(t.lines.join("\n")).toContain(
+      "Signed in with your ChatGPT plan. Default model: gpt-5.6-terra (plan).",
+    );
     expect(pasted).toBe("https://localhost/cb?code=abc");
     expect(t.lines.join("\n")).toContain("https://auth.example/authorize?x=1");
     expect(t.lines.join("\n")).not.toContain(TOKEN);
@@ -108,5 +111,29 @@ describe("login", () => {
     const t = io();
     expect(await login({ provider: "openai", runtime, io: t.cli, dataDir: home.dir })).toBe(1);
     expect(t.lines.join("\n")).toContain("user closed the browser");
+  });
+
+  test("a workspace that blocks third-party sign-in gets an explanation", async () => {
+    const { runtime } = fakeRuntime(async () => {
+      throw new Error("token request failed (403): 3p_delegated_access_policy_denied");
+    });
+    const t = io();
+    expect(await login({ provider: "openai", runtime, io: t.cli, dataDir: home.dir })).toBe(1);
+    const text = t.lines.join("\n");
+    expect(text).toContain("workspace does not allow third-party apps");
+    expect(text).toContain("personal ChatGPT account");
+  });
+
+  test("the closing line names the plan's default model", async () => {
+    const { runtime } = fakeRuntime(async () => {});
+    const t = io();
+    await login({
+      provider: "chatgpt",
+      runtime,
+      io: t.cli,
+      dataDir: home.dir,
+      planModel: () => "openai-codex/gpt-6-sol",
+    });
+    expect(t.lines.join("\n")).toContain("Default model: gpt-6-sol (plan).");
   });
 });

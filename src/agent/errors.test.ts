@@ -11,6 +11,11 @@ describe("explainModelError: model errors say what to do", () => {
     expect(m).toContain("hamness stop");
   });
 
+  test("a ChatGPT login without the account claim says to sign in again", () => {
+    const m = explainModelError("Failed to extract accountId from token", DATA, "openai-codex");
+    expect(m).toContain("Sign in again: hamness login openai");
+  });
+
   test("a refused key says to set a new one", () => {
     const m = explainModelError(
       '401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
