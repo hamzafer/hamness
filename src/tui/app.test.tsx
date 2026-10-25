@@ -110,6 +110,25 @@ async function frameWhere(s: Setup, pred: (frame: string) => boolean): Promise<s
 }
 
 describe("TUI chat layout (headless)", () => {
+  test("an empty chat shows one quiet welcome line until the first prompt", async () => {
+    const fake = fakeClient();
+    const empty: SessionSnapshot = { ...snapshot, items: [] };
+    const s = await render(fake.client, empty);
+    const frame = await frameWhere(s, (f) => f.includes("Type / for commands"));
+    const line = frame.split("\n").find((l) => l.includes("Type / for commands")) ?? "";
+    expect(line).toContain("/work/demo");
+    expect(line).toContain("anthropic/claude-opus-5-5");
+    fake.send({ type: "agent.message.start", messageId: "u1", role: "user" });
+    fake.send({ type: "agent.message.end", messageId: "u1", role: "user", text: "hello" });
+    const after = await frameWhere(s, (f) => !f.includes("Type / for commands"));
+    expect(after).not.toContain("Type / for commands");
+    expect(after).toContain("› hello");
+    // A chat with a transcript doesn't show it.
+    await setup?.dispose();
+    const full = await render(fakeClient().client);
+    expect(await frameWhere(full, (f) => f.includes("fig."))).not.toContain("Type / for commands");
+  });
+
   test("the scrollbar never covers the last character of a wrapped line", async () => {
     // A token too long for one line wraps to full-width rows; earlier lines overflow the pane
     // so the scrollbar shows.

@@ -472,6 +472,11 @@ export function App(props: AppProps) {
             minHeight={0}
             contentOptions={{ paddingRight: 1 }}
           >
+            <Show when={!state.items.some((i) => i.kind === "message" && i.role === "user")}>
+              <text fg={COLORS.muted}>
+                {`  ${shortPath(state.session.cwd, home, Math.max(10, chatWidth() - 60))} · ${state.session.model} · Type / for commands`}
+              </text>
+            </Show>
             <For each={state.items}>
               {(item) =>
                 item.kind === "message" ? (
