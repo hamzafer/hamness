@@ -1,5 +1,6 @@
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { type ClaudeHooks, claudePermissionMode, type HookSession } from "../compat/hooks.ts";
 import { type ClaudeEnv, type CompatSetup, loadCompat } from "../compat/index.ts";
@@ -8,11 +9,13 @@ import type { HamnessDb } from "../db/open.ts";
 import type {
   AgentEvent,
   ApprovalDecision,
+  ContextFill,
   JudgeState,
   PendingApproval,
   SafetyMode,
   SessionInfo,
   SessionSnapshot,
+  ThinkingLevel,
   TranscriptItem,
 } from "../events/types.ts";
 import { costMicros } from "../models/prices.ts";
@@ -27,19 +30,21 @@ import {
 import { loadProofConfig } from "../safety/proof.ts";
 import { broadWorkspace } from "../safety/rules.ts";
 import { type GhRunner, runGh } from "../tasks/checkers/index.ts";
-import { SessionTasks } from "../tasks/session-tasks.ts";
+import { gitBranch, SessionTasks } from "../tasks/session-tasks.ts";
 import { PROOF_GATE_PROMPT, taskTools } from "../tasks/tools.ts";
 import type { TaskAction, TaskView } from "../tasks/types.ts";
 import { explainModelError } from "./errors.ts";
 import { listModels, type ModelChoice, type ModelInfo, parseModelSpec } from "./models.ts";
 import {
   type AgentRunner,
+  type BranchFrom,
+  type CompactionOutcome,
   type RunnerEvent,
   startAgentRunner,
   type ToolGuard,
   type ToolVerdict,
 } from "./runner.ts";
-import { ChatStore, type RowIds } from "./store.ts";
+import { ChatStore, type RowIds, type SessionUsage, type StoredSession } from "./store.ts";
 import {
   noticeText,
   type SubagentControl,
@@ -64,8 +69,14 @@ export interface SessionHubOptions {
   /** Resolved on first use, so the daemon starts without an API key. */
   models: () => Promise<ModelChoice>;
   safety?: SafetyCheck;
-  /** The safety mode for a cwd, shown to clients (the yolo banner). */
-  safetyMode?: (cwd: string) => SafetyMode | undefined;
+  /**
+   * The safety modes: a session's own (`/mode`), else its cwd's from the config. Shown to clients
+   * (the yolo banner). Without it there are no modes (tests with a fixed safety check).
+   */
+  safetyModes?: {
+    modeFor(cwd: string, sessionId?: string): SafetyMode | undefined;
+    setSessionMode(sessionId: string, mode: SafetyMode | undefined): void;
+  };
   /** The judge's state per session, and `/judge resume` (auto mode only). */
   judge?: { state(sessionId: string): JudgeState; resume(sessionId: string): boolean };
   publish: (event: AgentEvent) => void;
@@ -161,6 +172,102 @@ interface LiveSession extends AgentState {
    * and leaves (a TUI opened in the wrong folder) leaves no empty session behind (#25).
    */
   unsaved?: { piSessionId: string | undefined; startedAt: number } | undefined;
+  /** The user message row whose Pi entry id comes next (`user.entry`), for `/fork`. */
+  pendingUserRow?: string | undefined;
+  /** True during `/compact`, and while `/new`, `/resume` or `/fork` replaces the session. */
+  compacting: boolean;
+  replacing: boolean;
+  /** `/name`. */
+  sessionName?: string | undefined;
+  /** The mode the user set for this session (`/mode`), if any. */
+  ownMode?: SafetyMode | undefined;
+}
+
+/** How `create` starts a session's agent. */
+type StartPlan =
+  /** Attach: the cwd's last session from before a restart, else a new one. */
+  | { kind: "attach" }
+  /** `/new`: a fresh session; settings and an open explicit task carry over from `from`. */
+  | { kind: "new"; from: LiveSession }
+  | { kind: "resume"; stored: StoredSession; file: string }
+  /** `/fork`: Pi's history up to `branch.leafId`, and the transcript before `beforeMessageId`. */
+  | { kind: "fork"; from: LiveSession; branch: BranchFrom; beforeMessageId: string };
+
+/** A session command the session's state or the request doesn't allow; `status` is the HTTP one. */
+export class SessionCommandError extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 404 | 409,
+  ) {
+    super(message);
+    this.name = "SessionCommandError";
+  }
+}
+
+const THINKING_LEVELS: readonly ThinkingLevel[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+const asThinking = (v: string | undefined): ThinkingLevel | undefined =>
+  (THINKING_LEVELS as readonly string[]).includes(v ?? "") ? (v as ThinkingLevel) : undefined;
+const SAFETY_MODES: readonly SafetyMode[] = ["ask", "auto", "yolo"];
+export const YOLO_WARNING =
+  "yolo mode: every tool call runs with no rules, judge or question; only Claude Code hooks can still stop one. Switch back with /mode auto.";
+export const SESSION_NAME_MAX = 200;
+
+/** One session of `GET /v1/sessions?cwd=`. */
+export interface SessionListItem {
+  id: string;
+  name?: string;
+  startedAt: number;
+  lastActivityAt: number;
+  messageCount: number;
+  costMicros: number;
+  /** The cwd's live session now. */
+  current: boolean;
+  /** Pi still has its session file, so `/resume` can continue it. */
+  resumable: boolean;
+}
+
+/** `GET /v1/sessions/:id/status` (`/session`, `/status`). */
+export interface SessionStatus {
+  sessionId: string;
+  name?: string;
+  cwd: string;
+  branch?: string;
+  model: string;
+  thinkingLevel: ThinkingLevel;
+  busy: boolean;
+  context?: ContextFill;
+  /** Stored usage over all the session's agents. */
+  tokens: SessionUsage["tokens"];
+  costMicros: number;
+  /** Pi's counts for the main agent's session file. */
+  messages: { user: number; assistant: number; toolCalls: number };
+  task?: TaskView;
+  mode?: SafetyMode;
+  /** `session`: set with `/mode`; `config`: the user config's mode. */
+  modeSource?: "session" | "config";
+  judge?: JudgeState;
+  /** Pi's session file. */
+  sessionFile?: string;
+}
+
+/** `GET /v1/sessions/:id/compat`: what the session loaded from Claude Code's setup. */
+export interface SessionCompat {
+  skills: Array<{
+    name: string;
+    description: string;
+    scope: "user" | "project";
+    userInvocable: boolean;
+    modelInvocable: boolean;
+  }>;
+  mcpServers: Array<{ name: string; scope: string; status: string; reason?: string }>;
 }
 
 interface Subagent {
@@ -229,12 +336,13 @@ export class SessionHub {
   prompt(sessionId: string, text: string): string | undefined {
     const live = this.byId.get(sessionId);
     if (!live) return undefined;
-    if (live.busy) throw new SessionBusyError();
+    if (live.busy || live.compacting || live.replacing) throw new SessionBusyError();
     this.persist(live);
 
     // Stored redacted (message and task goal); the live stream echoes the prompt as typed.
     live.tasks.beginTurn(redactText(text));
     const messageId = this.store.addMessage(this.ids(live), "user", redactText(text));
+    live.pendingUserRow = messageId;
     this.emit(live, { type: "agent.message.start", messageId, role: "user" });
     this.emit(live, { type: "agent.message.end", messageId, role: "user", text });
     this.setBusy(live, live, true);
@@ -251,6 +359,17 @@ export class SessionHub {
       startedAt: unsaved.startedAt,
     });
     live.unsaved = undefined;
+    this.saveSettings(live);
+  }
+
+  /** The session's name, thinking level and own mode, on its row. */
+  private saveSettings(live: LiveSession): void {
+    if (live.unsaved) return;
+    this.store.setSessionSettings(live.id, {
+      ...(live.sessionName ? { name: live.sessionName } : {}),
+      thinkingLevel: live.runner.thinkingLevel,
+      ...(live.ownMode ? { safetyMode: live.ownMode } : {}),
+    });
   }
 
   private failRun(live: LiveSession, err: unknown): void {
@@ -269,7 +388,7 @@ export class SessionHub {
       sessionId: live.id,
       cwd: live.cwd,
       ...(file ? { transcriptPath: file } : {}),
-      permissionMode: claudePermissionMode(this.opts.safetyMode?.(live.cwd)),
+      permissionMode: claudePermissionMode(this.modeOf(live)),
     };
   }
 
@@ -314,6 +433,7 @@ export class SessionHub {
 
   /** The run settled: Stop hooks may keep it going, up to `STOP_HOOK_CAP` times in a row. */
   private async afterRun(live: LiveSession, aborted: boolean): Promise<void> {
+    live.pendingUserRow = undefined;
     const hooks = this.opts.hooks;
     const gen = live.runGen;
     let reason: string | undefined;
@@ -424,6 +544,269 @@ export class SessionHub {
     return true;
   }
 
+  // ---- session commands (ADR 0021) ----------------------------------------------------------
+
+  /** The live session, or a 404 `SessionCommandError`. */
+  private live(sessionId: string): LiveSession {
+    const live = this.byId.get(sessionId);
+    if (!live) throw new SessionCommandError("no such session", 404);
+    return live;
+  }
+
+  private assertIdle(live: LiveSession): void {
+    if (live.busy || live.compacting || live.replacing) throw new SessionBusyError();
+  }
+
+  /**
+   * Starts `plan`'s session in `live`'s cwd and ends `live`: its subagents stop, its approvals
+   * are denied, its row ends. Clients attached to it get `session.replaced`.
+   */
+  private async replace(
+    live: LiveSession,
+    plan: Exclude<StartPlan, { kind: "attach" }>,
+  ): Promise<LiveSession> {
+    this.assertIdle(live);
+    live.replacing = true;
+    let next: LiveSession;
+    try {
+      next = await this.create(live.cwd, plan);
+    } catch (err) {
+      live.replacing = false;
+      throw err;
+    }
+    this.byCwd.set(live.cwd, Promise.resolve(next));
+    this.emit(live, { type: "session.replaced", newSessionId: next.id, reason: plan.kind });
+    await this.end(live);
+    return next;
+  }
+
+  private async end(live: LiveSession): Promise<void> {
+    live.runGen += 1;
+    this.cancelApprovals(live);
+    await Promise.all([...live.subagents.values()].map((sub) => this.stopSubagent(sub)));
+    this.byId.delete(live.id);
+    live.runner.dispose();
+    if (!live.unsaved) this.store.endSession({ sessionId: live.id, agentId: live.agentId });
+    this.opts.safetyModes?.setSessionMode(live.id, undefined);
+  }
+
+  /** `/new`, `/clear`: a fresh session in the same cwd. */
+  async newSession(sessionId: string): Promise<SessionSnapshot> {
+    const live = this.live(sessionId);
+    return this.snapshotOf(await this.replace(live, { kind: "new", from: live }));
+  }
+
+  /** `/resume`: the cwd's sessions, the most recently active first. */
+  async listSessions(cwd: string): Promise<SessionListItem[]> {
+    const current = this.byId.size
+      ? [...this.byId.values()].find((l) => l.cwd === cwd)?.id
+      : undefined;
+    const files = new Set(
+      (await SessionManager.list(cwd, this.sessionDir).catch(() => [])).map((s) => s.id),
+    );
+    return this.store.listSessions(cwd).map((r) => ({
+      id: r.id,
+      ...(r.name ? { name: r.name } : {}),
+      startedAt: r.startedAt,
+      lastActivityAt: r.lastActivityAt,
+      messageCount: r.messageCount,
+      costMicros: r.costMicros,
+      current: r.id === current,
+      resumable: r.piSessionId !== null && files.has(r.piSessionId),
+    }));
+  }
+
+  /** `/resume <id>`: switches the cwd's live session to a stored one of the same cwd. */
+  async resume(sessionId: string, targetId: string): Promise<SessionSnapshot> {
+    const live = this.live(sessionId);
+    if (targetId === live.id) return this.snapshotOf(live);
+    const stored = this.store.session(targetId);
+    if (!stored) throw new SessionCommandError("no such session to resume", 404);
+    if (stored.cwd !== live.cwd) {
+      throw new SessionCommandError("that session belongs to another folder", 400);
+    }
+    const file = SessionManager.findById(live.cwd, stored.piSessionId, this.sessionDir);
+    if (!file) throw new SessionCommandError("Pi's file for that session is gone", 409);
+    return this.snapshotOf(await this.replace(live, { kind: "resume", stored, file }));
+  }
+
+  /**
+   * `/fork <message>`: a new session holding the history before one of the user's messages
+   * (Pi's fork). Returns the new snapshot and the message's text, for the input box.
+   */
+  async fork(
+    sessionId: string,
+    messageId: string,
+  ): Promise<{ snapshot: SessionSnapshot; text: string }> {
+    const live = this.live(sessionId);
+    this.assertIdle(live);
+    const msg = this.store.mainMessage({ sessionId: live.id, agentId: live.agentId }, messageId);
+    if (msg?.role !== "user") {
+      throw new SessionCommandError("messageId must be one of this session's user messages", 400);
+    }
+    const branch = msg.externalId ? live.runner.forkPoint(msg.externalId) : undefined;
+    if (!branch) throw new SessionCommandError("that message cannot be forked from", 400);
+    const next = await this.replace(live, {
+      kind: "fork",
+      from: live,
+      branch,
+      beforeMessageId: messageId,
+    });
+    return { snapshot: this.snapshotOf(next), text: msg.text };
+  }
+
+  /** `/compact [instructions]`: Pi's manual compaction. Its progress streams as events. */
+  async compact(sessionId: string, instructions?: string): Promise<CompactionOutcome> {
+    const live = this.live(sessionId);
+    this.assertIdle(live);
+    live.compacting = true;
+    try {
+      return await live.runner.compact(instructions);
+    } catch (err) {
+      throw new SessionCommandError((err as Error).message, 409);
+    } finally {
+      live.compacting = false;
+    }
+  }
+
+  /** `/session`, `/status`. */
+  status(sessionId: string): SessionStatus {
+    const live = this.live(sessionId);
+    const usage = this.store.sessionUsage(live.id);
+    const info = this.info(live);
+    const branch = gitBranch(live.cwd);
+    const context = live.runner.contextUsage();
+    const task = live.tasks.view();
+    const file = live.runner.sessionFile;
+    const stats = live.runner.stats();
+    return {
+      sessionId: live.id,
+      ...(live.sessionName ? { name: live.sessionName } : {}),
+      cwd: live.cwd,
+      ...(branch ? { branch } : {}),
+      model: live.runner.model,
+      thinkingLevel: live.runner.thinkingLevel,
+      busy: live.busy,
+      ...(context ? { context } : {}),
+      tokens: usage.tokens,
+      costMicros: usage.costMicros,
+      messages: stats,
+      ...(task ? { task } : {}),
+      ...(info.mode ? { mode: info.mode, modeSource: live.ownMode ? "session" : "config" } : {}),
+      ...(info.judge ? { judge: info.judge } : {}),
+      ...(file ? { sessionFile: file } : {}),
+    } as SessionStatus;
+  }
+
+  thinking(sessionId: string): { level: ThinkingLevel; levels: ThinkingLevel[] } {
+    const live = this.live(sessionId);
+    return { level: live.runner.thinkingLevel, levels: live.runner.thinkingLevels() };
+  }
+
+  /** `/thinking <level>`: one of the levels the model supports (Pi's list). */
+  setThinking(sessionId: string, level: string): { level: ThinkingLevel; levels: ThinkingLevel[] } {
+    const live = this.live(sessionId);
+    const levels = live.runner.thinkingLevels();
+    if (!(levels as string[]).includes(level)) {
+      throw new SessionCommandError(`level must be one of ${levels.join(", ")}`, 400);
+    }
+    live.runner.setThinkingLevel(level as ThinkingLevel);
+    return this.thinking(sessionId);
+  }
+
+  /** `/name <name>`: kept on the session row and in Pi's session file. */
+  rename(sessionId: string, name: string): SessionSnapshot {
+    const live = this.live(sessionId);
+    this.persist(live);
+    live.sessionName = name;
+    live.runner.setName(name);
+    this.store.setSessionSettings(live.id, { name });
+    this.emit(live, { type: "session.name", name });
+    return this.snapshotOf(live);
+  }
+
+  /**
+   * `/export [path]`: Pi's HTML or JSONL export. Without a path it goes under
+   * `<dataDir>/exports`; a relative path is in the session's cwd. Returns the path written.
+   */
+  async exportSession(
+    sessionId: string,
+    format: "html" | "jsonl",
+    opts: { path?: string; overwrite?: boolean } = {},
+  ): Promise<string> {
+    const live = this.live(sessionId);
+    let target: string;
+    if (opts.path) {
+      target = resolve(live.cwd, opts.path);
+      if (!isDirectory(dirname(target))) {
+        throw new SessionCommandError(`no folder ${dirname(target)}`, 400);
+      }
+      if (existsSync(target) && !opts.overwrite) {
+        throw new SessionCommandError(`${target} exists; send overwrite: true to replace it`, 409);
+      }
+    } else {
+      const dir = join(this.opts.dataDir, "exports");
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      target = join(dir, `${live.id}-${stamp}.${format}`);
+    }
+    try {
+      return format === "html"
+        ? await live.runner.exportHtml(target)
+        : live.runner.exportJsonl(target);
+    } catch (err) {
+      throw new SessionCommandError(`could not export: ${(err as Error).message}`, 409);
+    }
+  }
+
+  /** `/copy`: the last assistant message's text. Undefined before the first reply. */
+  lastReply(sessionId: string): string | undefined {
+    return this.live(sessionId).runner.lastAssistantText();
+  }
+
+  mode(sessionId: string): { mode: SafetyMode; source: "session" | "config" } {
+    const live = this.live(sessionId);
+    const mode = this.modeOf(live);
+    if (!mode) throw new SessionCommandError("this daemon has no safety modes", 409);
+    return { mode, source: live.ownMode ? "session" : "config" };
+  }
+
+  /** `/mode <ask|auto|yolo>` for this session; `yolo` comes with a warning for a banner. */
+  setMode(sessionId: string, mode: SafetyMode): { mode: SafetyMode; source: "session" } {
+    const live = this.live(sessionId);
+    const modes = this.opts.safetyModes;
+    if (!modes) throw new SessionCommandError("this daemon has no safety modes", 409);
+    live.ownMode = mode;
+    modes.setSessionMode(live.id, mode);
+    if (!live.unsaved) this.store.setSessionSettings(live.id, { safetyMode: mode });
+    this.emit(live, {
+      type: "safety.mode",
+      mode,
+      ...(mode === "yolo" ? { warning: YOLO_WARNING } : {}),
+    });
+    return { mode, source: "session" };
+  }
+
+  /** The skills and MCP servers the session loaded from Claude Code's setup (ADR 0008). */
+  compatInfo(sessionId: string): SessionCompat {
+    const compat = this.live(sessionId).compat;
+    return {
+      skills: (compat?.skills.skills ?? []).map((s) => ({
+        name: s.name,
+        description: s.description,
+        scope: s.scope,
+        userInvocable: s.userInvocable,
+        modelInvocable: !s.disableModelInvocation,
+      })),
+      mcpServers: (compat?.mcp.servers ?? []).map((m) => ({
+        name: m.name,
+        scope: m.scope,
+        status: m.status,
+        ...(m.reason ? { reason: m.reason } : {}),
+      })),
+    };
+  }
+
   /** Answers a pending approval. False when there is no such approval (unknown or answered). */
   answerApproval(approvalId: string, decision: ApprovalDecision): boolean {
     for (const live of this.byId.values()) {
@@ -455,21 +838,39 @@ export class SessionHub {
    * The cwd's last session from before a daemon restart, when SQLite has its rows and Pi
    * still has its JSONL (so the model gets the conversation back as context).
    */
-  private resumable(cwd: string, sessionDir: string) {
+  private resumable(cwd: string): (StoredSession & { file: string }) | undefined {
     const last = this.store.latestSession(cwd);
     if (!last) return undefined;
-    const file = SessionManager.findById(cwd, last.piSessionId, sessionDir);
+    const file = SessionManager.findById(cwd, last.piSessionId, this.sessionDir);
     return file ? { ...last, file } : undefined;
   }
 
-  private async create(cwd: string): Promise<LiveSession> {
+  private get sessionDir(): string {
+    return join(this.opts.dataDir, "pi", "sessions");
+  }
+
+  private async create(cwd: string, plan: StartPlan = { kind: "attach" }): Promise<LiveSession> {
     const base = await this.opts.models();
-    const sessionDir = join(this.opts.dataDir, "pi", "sessions");
-    const resume = this.resumable(cwd, sessionDir);
-    const saved = resume?.model ? parseModelSpec(resume.model) : undefined;
+    const sessionDir = this.sessionDir;
+    const resume =
+      plan.kind === "attach"
+        ? this.resumable(cwd)
+        : plan.kind === "resume"
+          ? { ...plan.stored, file: plan.file }
+          : undefined;
+    // `/new` and `/fork` keep the session's model, thinking level and mode.
+    const from = plan.kind === "new" || plan.kind === "fork" ? plan.from : undefined;
+    const savedSpec = resume?.model ?? from?.runner.model;
+    const saved = savedSpec ? parseModelSpec(savedSpec) : undefined;
     const savedModel = saved && base.runtime.getModel(saved.provider, saved.id);
     const models: ModelChoice = savedModel ? { ...base, model: savedModel } : base;
     const model = `${models.model.provider}/${models.model.id}`;
+    const thinkingLevel = asThinking(resume?.thinkingLevel) ?? from?.runner.thinkingLevel;
+    const ownMode = resume
+      ? (SAFETY_MODES as readonly string[]).includes(resume.safetyMode ?? "")
+        ? (resume.safetyMode as SafetyMode)
+        : undefined
+      : from?.ownMode;
     // `live` is filled in before the runner can emit anything: events only follow a prompt.
     let live: LiveSession | undefined;
     const withCompat = this.opts.contextFiles ?? true;
@@ -500,6 +901,8 @@ export class SessionHub {
       agentDir: join(this.opts.dataDir, "pi"),
       sessionDir,
       ...(resume ? { resumeFile: resume.file } : {}),
+      ...(plan.kind === "fork" ? { branchFrom: plan.branch } : {}),
+      ...(thinkingLevel ? { thinkingLevel } : {}),
       models,
       contextFiles: withCompat,
       ...(compat ? { compat } : {}),
@@ -527,6 +930,27 @@ export class SessionHub {
     const { sessionId, agentId } = resume
       ? { sessionId: resume.sessionId, agentId: resume.agentId }
       : { sessionId: newId(), agentId: newId() };
+    const startedAt = Date.now();
+    // An open explicit task follows `/new` and `/fork` (ADR 0021), and a fork shows the history
+    // it continues: both need the session's rows now.
+    let stored = !!resume;
+    if (from && (plan.kind === "fork" || this.store.hasOpenExplicitTask(from.id))) {
+      this.store.createSession(cwd, model, runner.piSessionId, {
+        ids: { sessionId, agentId },
+        startedAt,
+      });
+      stored = true;
+      this.store.moveOpenTask(from.id, sessionId);
+      if (plan.kind === "fork") {
+        this.store.copyTranscript(
+          { sessionId: from.id, agentId: from.agentId },
+          { sessionId, agentId },
+          plan.beforeMessageId,
+        );
+      }
+    }
+    if (plan.kind === "resume") this.store.reopenSession({ sessionId, agentId });
+    this.opts.safetyModes?.setSessionMode(sessionId, ownMode);
     const tasks = new SessionTasks({
       db: this.opts.db,
       sessionId,
@@ -571,8 +995,13 @@ export class SessionHub {
       stopActive: false,
       stopStreak: 0,
       runGen: 0,
-      ...(resume ? {} : { unsaved: { piSessionId: runner.piSessionId, startedAt: Date.now() } }),
+      compacting: false,
+      replacing: false,
+      ...(resume?.name ? { sessionName: resume.name } : {}),
+      ...(ownMode ? { ownMode } : {}),
+      ...(stored ? {} : { unsaved: { piSessionId: runner.piSessionId, startedAt } }),
     };
+    if (stored && !resume) this.saveSettings(live);
     live.ready = this.sessionStartHooks(live, resume ? "resume" : "startup", model);
     this.byId.set(sessionId, live);
     return live;
@@ -840,7 +1269,7 @@ export class SessionHub {
   }
 
   private info(live: LiveSession): SessionInfo {
-    const mode = this.opts.safetyMode?.(live.cwd);
+    const mode = this.modeOf(live);
     const judge = mode === "auto" ? this.opts.judge?.state(live.id) : undefined;
     return {
       id: live.id,
@@ -850,7 +1279,13 @@ export class SessionHub {
       mainAgentId: live.agentId,
       ...(mode ? { mode } : {}),
       ...(judge ? { judge } : {}),
+      ...(live.sessionName ? { name: live.sessionName } : {}),
+      thinkingLevel: live.runner.thinkingLevel,
     };
+  }
+
+  private modeOf(live: LiveSession): SafetyMode | undefined {
+    return this.opts.safetyModes?.modeFor(live.cwd, live.id);
   }
 
   /** Publishes an approval request and waits for an answer, the timeout or an abort. */
@@ -1060,6 +1495,43 @@ export class SessionHub {
         emit({ type: "agent.context", ...fill });
         return;
       }
+      case "user.entry":
+        if (agent === live && live.pendingUserRow) {
+          this.store.setMessageExternalId(live.pendingUserRow, e.entryId);
+          live.pendingUserRow = undefined;
+        }
+        return;
+      case "thinking":
+        if (agent !== live) return;
+        if (!live.unsaved) this.store.setSessionSettings(live.id, { thinkingLevel: e.level });
+        emit({ type: "agent.thinking", level: e.level });
+        return;
+      case "compaction.start":
+        if (agent === live) emit({ type: "agent.compaction.start", reason: e.reason });
+        return;
+      case "compaction.end": {
+        // The summary is a model call: its spend counts (toward the task, if one is open).
+        if (e.usage && e.provider && e.model) {
+          this.persist(live);
+          const priced = costMicros(e.model, e.usage);
+          this.store.addModelCall(this.ids(live, agent), {
+            provider: e.provider,
+            model: e.model,
+            usage: e.usage,
+            costMicros: priced ?? Math.round((e.piCostUsd ?? 0) * 1_000_000),
+          });
+        }
+        if (agent !== live) return;
+        emit({
+          type: "agent.compaction.end",
+          reason: e.reason,
+          aborted: e.aborted,
+          ...(e.tokensBefore !== undefined ? { tokensBefore: e.tokensBefore } : {}),
+          ...(e.tokensAfter !== undefined ? { tokensAfter: e.tokensAfter } : {}),
+          ...(e.error ? { error: e.error } : {}),
+        });
+        return;
+      }
       case "run.settled":
         agent.currentReplyRow = undefined;
         // A subagent's last status waits for its result (`finishSubagent`); no Stop hooks.
@@ -1075,3 +1547,11 @@ export class SessionHub {
 }
 
 const notReady = (reason: string): ToolVerdict => ({ allow: false, reason });
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
