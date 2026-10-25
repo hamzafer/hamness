@@ -107,6 +107,11 @@ export class SessionTasks {
     return this.current;
   }
 
+  /** The open task only: spend outside a turn (a `/compact`) never goes to a closed one. */
+  openTaskId(): string | undefined {
+    return this.openTask()?.id;
+  }
+
   /** The current task, or the session's last one. */
   view(): TaskView | undefined {
     const id = this.current ?? this.store.latestFor(this.opts.sessionId);

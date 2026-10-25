@@ -1,8 +1,23 @@
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { type ClaudeHooks, claudePermissionMode, type HookSession } from "../compat/hooks.ts";
+import {
+  type ClaudeHooks,
+  claudePermissionMode,
+  type HookSession,
+  type SessionStartSource,
+} from "../compat/hooks.ts";
 import { type ClaudeEnv, type CompatSetup, loadCompat } from "../compat/index.ts";
 import { newId } from "../db/ids.ts";
 import type { HamnessDb } from "../db/open.ts";
@@ -189,7 +204,8 @@ type StartPlan =
   | { kind: "attach" }
   /** `/new`: a fresh session; settings and an open explicit task carry over from `from`. */
   | { kind: "new"; from: LiveSession }
-  | { kind: "resume"; stored: StoredSession; file: string }
+  /** `file` is missing for a session that never had a prompt (a task holder): Pi starts a new one. */
+  | { kind: "resume"; stored: StoredSession; file?: string }
   /** `/fork`: Pi's history up to `branch.leafId`, and the transcript before `beforeMessageId`. */
   | { kind: "fork"; from: LiveSession; branch: BranchFrom; beforeMessageId: string };
 
@@ -579,6 +595,8 @@ export class SessionHub {
     this.byCwd.set(live.cwd, Promise.resolve(next));
     this.emit(live, { type: "session.replaced", newSessionId: next.id, reason: plan.kind });
     await this.end(live);
+    // Ending the old row touched it last; the new one is the cwd's current session.
+    if (!next.unsaved) this.store.makeLatest(next.id, next.cwd);
     return next;
   }
 
@@ -615,7 +633,7 @@ export class SessionHub {
       costMicros: r.costMicros,
       ...(r.firstPrompt ? { firstPrompt: r.firstPrompt } : {}),
       current: r.id === current,
-      resumable: r.piSessionId !== null && files.has(r.piSessionId),
+      resumable: r.messageCount === 0 || (r.piSessionId !== null && files.has(r.piSessionId)),
     }));
   }
 
@@ -629,8 +647,13 @@ export class SessionHub {
       throw new SessionCommandError("that session belongs to another folder", 400);
     }
     const file = SessionManager.findById(live.cwd, stored.piSessionId, this.sessionDir);
-    if (!file) throw new SessionCommandError("Pi's file for that session is gone", 409);
-    return this.snapshotOf(await this.replace(live, { kind: "resume", stored, file }));
+    // A session with no message (one holding a task moved by `/new`) never had a Pi file.
+    if (!file && this.store.hasMessages(targetId)) {
+      throw new SessionCommandError("Pi's file for that session is gone", 409);
+    }
+    return this.snapshotOf(
+      await this.replace(live, { kind: "resume", stored, ...(file ? { file } : {}) }),
+    );
   }
 
   /**
@@ -663,13 +686,18 @@ export class SessionHub {
     const live = this.live(sessionId);
     this.assertIdle(live);
     live.compacting = true;
+    let out: CompactionOutcome;
     try {
-      return await live.runner.compact(instructions);
+      out = await live.runner.compact(instructions);
+      // Claude Code runs SessionStart hooks after a compaction; their context goes with the
+      // next prompt.
+      await this.sessionStartHooks(live, "compact", live.runner.model);
     } catch (err) {
       throw new SessionCommandError((err as Error).message, 409);
     } finally {
       live.compacting = false;
     }
+    return out;
   }
 
   /** `/session`, `/status`. */
@@ -709,6 +737,7 @@ export class SessionHub {
   /** `/thinking <level>`: one of the levels the model supports (Pi's list). */
   setThinking(sessionId: string, level: string): { level: ThinkingLevel; levels: ThinkingLevel[] } {
     const live = this.live(sessionId);
+    if (live.replacing || live.compacting) throw new SessionBusyError();
     const levels = live.runner.thinkingLevels();
     if (!(levels as string[]).includes(level)) {
       throw new SessionCommandError(`level must be one of ${levels.join(", ")}`, 400);
@@ -720,6 +749,7 @@ export class SessionHub {
   /** `/name <name>`: kept on the session row and in Pi's session file. */
   rename(sessionId: string, name: string): SessionSnapshot {
     const live = this.live(sessionId);
+    if (live.replacing) throw new SessionBusyError();
     this.persist(live);
     live.sessionName = name;
     live.runner.setName(name);
@@ -738,27 +768,46 @@ export class SessionHub {
     opts: { path?: string; overwrite?: boolean } = {},
   ): Promise<string> {
     const live = this.live(sessionId);
-    let target: string;
-    if (opts.path) {
-      target = resolve(live.cwd, opts.path);
-      if (!isDirectory(dirname(target))) {
-        throw new SessionCommandError(`no folder ${dirname(target)}`, 400);
-      }
-      if (existsSync(target) && !opts.overwrite) {
-        throw new SessionCommandError(`${target} exists; send overwrite: true to replace it`, 409);
-      }
-    } else {
-      const dir = join(this.opts.dataDir, "exports");
-      mkdirSync(dir, { recursive: true, mode: 0o700 });
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      target = join(dir, `${live.id}-${stamp}.${format}`);
+    const dir = join(this.opts.dataDir, "exports");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const target = opts.path
+      ? resolve(live.cwd, opts.path)
+      : join(dir, `${live.id}-${stamp}.${format}`);
+    if (!isDirectory(dirname(target))) {
+      throw new SessionCommandError(`no folder ${dirname(target)}`, 400);
     }
+    const existing = lstatOrUndefined(target);
+    // Never through a symlink, dangling or not: it would write wherever the link points.
+    if (existing?.isSymbolicLink()) throw new SessionCommandError(`${target} is a symlink`, 400);
+    if (existing && !opts.overwrite) {
+      throw new SessionCommandError(`${target} exists; send overwrite: true to replace it`, 409);
+    }
+    // Pi writes into hamness's own folder; the copy to the target refuses links (O_NOFOLLOW)
+    // and, without overwrite, any file that appeared meanwhile (O_EXCL).
+    const scratch = join(dir, `.${newId()}.${format}`);
+    let fd: number | undefined;
     try {
-      return format === "html"
-        ? await live.runner.exportHtml(target)
-        : live.runner.exportJsonl(target);
+      const written =
+        format === "html"
+          ? await live.runner.exportHtml(scratch)
+          : live.runner.exportJsonl(scratch);
+      const flags =
+        fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_NOFOLLOW |
+        (opts.overwrite ? fsConstants.O_TRUNC : fsConstants.O_EXCL);
+      fd = openSync(target, flags, 0o600);
+      writeSync(fd, readFileSync(written));
+      return target;
     } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") throw new SessionCommandError(`${target} exists`, 409);
+      if (code === "ELOOP") throw new SessionCommandError(`${target} is a symlink`, 400);
       throw new SessionCommandError(`could not export: ${(err as Error).message}`, 409);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      rmSync(scratch, { force: true });
     }
   }
 
@@ -777,6 +826,8 @@ export class SessionHub {
   /** `/mode <ask|auto|yolo>` for this session; `yolo` comes with a warning for a banner. */
   setMode(sessionId: string, mode: SafetyMode): { mode: SafetyMode; source: "session" } {
     const live = this.live(sessionId);
+    // During `/new`, `/resume` or `/fork` the setting would go to a session that is ending.
+    if (live.replacing) throw new SessionBusyError();
     const modes = this.opts.safetyModes;
     if (!modes) throw new SessionCommandError("this daemon has no safety modes", 409);
     live.ownMode = mode;
@@ -841,11 +892,13 @@ export class SessionHub {
    * The cwd's last session from before a daemon restart, when SQLite has its rows and Pi
    * still has its JSONL (so the model gets the conversation back as context).
    */
-  private resumable(cwd: string): (StoredSession & { file: string }) | undefined {
+  private resumable(cwd: string): (StoredSession & { file?: string }) | undefined {
     const last = this.store.latestSession(cwd);
     if (!last) return undefined;
     const file = SessionManager.findById(cwd, last.piSessionId, this.sessionDir);
-    return file ? { ...last, file } : undefined;
+    if (file) return { ...last, file };
+    // A session holding a task moved there by `/new` (ADR 0021) has no Pi file yet.
+    return this.store.hasMessages(last.sessionId) ? undefined : last;
   }
 
   private get sessionDir(): string {
@@ -903,7 +956,7 @@ export class SessionHub {
       cwd,
       agentDir: join(this.opts.dataDir, "pi"),
       sessionDir,
-      ...(resume ? { resumeFile: resume.file } : {}),
+      ...(resume?.file ? { resumeFile: resume.file } : {}),
       ...(plan.kind === "fork" ? { branchFrom: plan.branch } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {}),
       models,
@@ -937,22 +990,32 @@ export class SessionHub {
     // An open explicit task follows `/new` and `/fork` (ADR 0021), and a fork shows the history
     // it continues: both need the session's rows now.
     let stored = !!resume;
-    if (from && (plan.kind === "fork" || this.store.hasOpenExplicitTask(from.id))) {
-      this.store.createSession(cwd, model, runner.piSessionId, {
-        ids: { sessionId, agentId },
-        startedAt,
-      });
-      stored = true;
-      this.store.moveOpenTask(from.id, sessionId);
-      if (plan.kind === "fork") {
-        this.store.copyTranscript(
-          { sessionId: from.id, agentId: from.agentId },
-          { sessionId, agentId },
-          plan.beforeMessageId,
-        );
-      }
+    try {
+      // All or nothing: a failure leaves the old session with its task (and no new rows).
+      this.opts.db.sqlite.transaction(() => {
+        if (from && (plan.kind === "fork" || this.store.hasOpenExplicitTask(from.id))) {
+          this.store.createSession(cwd, model, runner.piSessionId, {
+            ids: { sessionId, agentId },
+            startedAt,
+          });
+          this.store.moveOpenTask(from.id, sessionId);
+          if (plan.kind === "fork") {
+            this.store.copyTranscript(
+              { sessionId: from.id, agentId: from.agentId },
+              { sessionId, agentId },
+              plan.beforeMessageId,
+            );
+          }
+          stored = true;
+        }
+        // A task holder that never had a prompt has no Pi file: it starts a fresh one.
+        if (resume && !resume.file) this.store.setPiSessionId(sessionId, runner.piSessionId);
+        if (plan.kind === "resume") this.store.reopenSession({ sessionId, agentId });
+      })();
+    } catch (err) {
+      runner.dispose();
+      throw err;
     }
-    if (plan.kind === "resume") this.store.reopenSession({ sessionId, agentId });
     this.opts.safetyModes?.setSessionMode(sessionId, ownMode);
     const tasks = new SessionTasks({
       db: this.opts.db,
@@ -1005,7 +1068,11 @@ export class SessionHub {
       ...(stored ? {} : { unsaved: { piSessionId: runner.piSessionId, startedAt } }),
     };
     if (stored && !resume) this.saveSettings(live);
-    live.ready = this.sessionStartHooks(live, resume ? "resume" : "startup", model);
+    live.ready = this.sessionStartHooks(
+      live,
+      resume ? "resume" : plan.kind === "new" ? "clear" : "startup",
+      model,
+    );
     this.byId.set(sessionId, live);
     return live;
   }
@@ -1212,7 +1279,7 @@ export class SessionHub {
 
   private async sessionStartHooks(
     live: LiveSession,
-    source: "startup" | "resume",
+    source: SessionStartSource,
     model: string,
   ): Promise<void> {
     const hooks = this.opts.hooks;
@@ -1524,7 +1591,11 @@ export class SessionHub {
         if (e.usage && e.provider && e.model) {
           this.persist(live);
           const priced = costMicros(e.model, e.usage);
-          this.store.addModelCall(this.ids(live, agent), {
+          const ids =
+            agent === live
+              ? { sessionId: live.id, agentId: live.agentId, taskId: live.tasks.openTaskId() }
+              : this.ids(live, agent);
+          this.store.addModelCall(ids, {
             provider: e.provider,
             model: e.model,
             usage: e.usage,
@@ -1558,6 +1629,14 @@ export class SessionHub {
 }
 
 const notReady = (reason: string): ToolVerdict => ({ allow: false, reason });
+
+function lstatOrUndefined(path: string) {
+  try {
+    return lstatSync(path);
+  } catch {
+    return undefined;
+  }
+}
 
 function isDirectory(path: string): boolean {
   try {
