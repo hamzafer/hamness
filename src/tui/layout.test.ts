@@ -1,5 +1,46 @@
 import { describe, expect, test } from "bun:test";
-import { PROMPT_HINTS, promptHint, shortPath, wrappedRows } from "./layout.ts";
+import { PROMPT_HINTS, plural, promptHint, shortPath, wrappedRows } from "./layout.ts";
+import { statusRows } from "./status-panel.tsx";
+
+describe("plural", () => {
+  test("one of a thing is singular, any other count plural", () => {
+    expect(plural(1, "prompt")).toBe("1 prompt");
+    expect(plural(0, "prompt")).toBe("0 prompts");
+    expect(plural(2, "reply", "replies")).toBe("2 replies");
+    expect(plural(1, "reply", "replies")).toBe("1 reply");
+  });
+
+  test("/status counts read right for one of each", () => {
+    const rows = statusRows(
+      {
+        sessionId: "s-1",
+        cwd: "/work/demo",
+        model: "fake/m",
+        thinkingLevel: "off",
+        busy: false,
+        tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
+        costMicros: 0,
+        messages: { user: 1, assistant: 1, toolCalls: 1 },
+        task: {
+          id: "t1",
+          goal: "g",
+          implicit: false,
+          outcome: "open",
+          evidence: 1,
+          passed: 1,
+          costMicros: 0,
+          tokens: 0,
+          startedAt: 0,
+          durationMs: 0,
+        },
+      },
+      HOME,
+    );
+    const row = (k: string) => rows.find(([key]) => key === k)?.[1];
+    expect(row("Messages")).toBe("1 prompt, 1 reply, 1 tool call");
+    expect(row("Task")).toBe("g · open · 1/1 check");
+  });
+});
 
 describe("wrappedRows", () => {
   test("counts the rows text takes when wrapped at word breaks", () => {

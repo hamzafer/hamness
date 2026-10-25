@@ -55,6 +55,11 @@ export function wrappedRows(text: string, width: number): number {
   return Math.max(1, rows);
 }
 
+/** `1 prompt`, `2 prompts`: the count and the word in the number it needs. */
+export function plural(n: number, word: string, many = `${word}s`): string {
+  return `${n} ${n === 1 ? word : many}`;
+}
+
 /** The input box's hint, longest first. */
 export const PROMPT_HINTS: readonly string[] = [
   "Ask hamness… (Enter sends, Shift+Enter or Ctrl+J new line, Esc stops, /help lists commands, Ctrl+C leaves)",

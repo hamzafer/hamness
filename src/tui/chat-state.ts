@@ -6,6 +6,7 @@ import type {
   SessionSnapshot,
   TranscriptItem,
 } from "../events/types.ts";
+import { plural } from "./layout.ts";
 import { formatTokens } from "./rail-state.ts";
 
 /**
@@ -201,7 +202,8 @@ export const JUDGE_BACK_ON = "The judge is back on.";
 /** The chat's line when the judge backs off; the daemon's reason says after how many asks. */
 export function judgePausedLine(reason: string): string {
   const n = /asked (\d+) times/.exec(reason)?.[1];
-  return `The judge paused${n ? ` after ${n} asks` : ""}; /judge resume turns it back on`;
+  const after = n ? ` after ${plural(Number(n), "ask")}` : "";
+  return `The judge paused${after}; /judge resume turns it back on`;
 }
 
 /** `Compacted: 142k → 18k tokens`, said differently when Pi did it on its own. */

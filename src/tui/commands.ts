@@ -8,7 +8,7 @@ import type {
   ThinkingLevel,
 } from "../events/types.ts";
 import { JUDGE_BACK_ON, type SystemLine } from "./chat-state.ts";
-import { shortPath } from "./layout.ts";
+import { plural, shortPath } from "./layout.ts";
 import type { PickerSpec } from "./picker.tsx";
 import { formatCost } from "./rail-state.ts";
 import { parseTaskCommand, taskConfirmation } from "./task-commands.ts";
@@ -221,7 +221,7 @@ export const COMMANDS: readonly SlashCommand[] = [
           cells: [
             sessionLabel(s),
             relativeTime(s.lastActivityAt, now),
-            `${s.messageCount} ${s.messageCount === 1 ? "message" : "messages"}`,
+            plural(s.messageCount, "message"),
             formatCost(s.costMicros),
           ],
           current: s.current,
