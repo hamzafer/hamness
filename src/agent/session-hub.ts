@@ -1327,7 +1327,7 @@ export class SessionHub {
     const items = this.store.transcript(live.id, live.agentId).map((item): TranscriptItem => {
       if (item.kind !== "message") return item;
       const partial = streaming.get(item.id);
-      return partial === undefined ? item : { ...item, text: partial, streaming: true };
+      return partial === undefined ? item : { ...item, text: redactText(partial), streaming: true };
     });
     const context = live.runner.contextUsage();
     const task = live.tasks.view();
@@ -1513,7 +1513,9 @@ export class SessionHub {
         if (error) agent.lastError = error;
         else delete agent.lastError;
         if (agent === live) live.lastReply = e.text;
-        this.store.setMessageContent(reply.rowId, redactText(e.text));
+        // Stored and sent redacted alike: a reopened session shows what the live one ended on.
+        const shown = redactText(e.text);
+        this.store.setMessageContent(reply.rowId, shown);
         const priced = costMicros(e.model, e.usage);
         const cost = priced ?? Math.round(e.piCostUsd * 1_000_000);
         const modelCallId = this.store.addModelCall(this.ids(live, agent), {
@@ -1528,7 +1530,7 @@ export class SessionHub {
           type: "agent.message.end",
           messageId: reply.rowId,
           role: "assistant",
-          text: e.text,
+          text: shown,
           ...(error ? { error } : {}),
         });
         emit({

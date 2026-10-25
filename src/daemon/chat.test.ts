@@ -287,6 +287,11 @@ describe("a prompt, end to end with a fake model", () => {
     const [toolEnd] = log.ofType("agent.tool.end");
     expect(toolEnd?.summary).toContain("[redacted]");
     expect(toolEnd?.summary).not.toContain(secret);
+    // The live reply ends as the stored one reads, so a reopened session shows the same.
+    const replyEnd = log
+      .ofType("agent.message.end")
+      .find((e) => e.role === "assistant" && e.text.includes("The key is"));
+    expect(replyEnd?.text).toBe("The key is [redacted].");
   });
 
   test("a finished run adds its time to the session, so stats show active and wall time", async () => {
