@@ -99,12 +99,13 @@ export function seeder(sqlite: Database) {
     cacheRead?: number;
     cacheWrite?: number;
     costMicros?: number;
+    billing?: "plan";
   }) => {
     sqlite
       .query(
         `INSERT INTO model_calls (id, session_id, task_id, provider, model, input_tokens, output_tokens,
-           cache_read_tokens, cache_write_tokens, cost_micros, started_at, created_at, updated_at)
-         VALUES (?, ?, ?, 'p', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           cache_read_tokens, cache_write_tokens, cost_micros, started_at, created_at, updated_at, billing)
+         VALUES (?, ?, ?, 'p', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         newId(),
@@ -119,6 +120,7 @@ export function seeder(sqlite: Database) {
         o.at,
         o.at,
         o.at,
+        o.billing ?? null,
       );
   };
 

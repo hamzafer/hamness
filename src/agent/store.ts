@@ -77,6 +77,8 @@ export interface SessionListRow {
 export interface SessionUsage {
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
   costMicros: number;
+  /** Calls billed to the ChatGPT plan ($0 each). */
+  planCalls: number;
 }
 
 export class ChatStore {
@@ -413,13 +415,15 @@ export class ChatStore {
           cache_read: number;
           cache_write: number;
           cost: number;
+          plan: number;
         },
         [string]
       >(
         `SELECT coalesce(sum(input_tokens), 0) AS input, coalesce(sum(output_tokens), 0) AS output,
            coalesce(sum(cache_read_tokens), 0) AS cache_read,
            coalesce(sum(cache_write_tokens), 0) AS cache_write,
-           coalesce(sum(cost_micros), 0) AS cost
+           coalesce(sum(cost_micros), 0) AS cost,
+           coalesce(sum(billing = 'plan'), 0) AS plan
          FROM model_calls WHERE session_id = ?`,
       )
       .get(sessionId);
@@ -436,6 +440,7 @@ export class ChatStore {
         total: input + output + cacheRead + cacheWrite,
       },
       costMicros: t?.cost ?? 0,
+      planCalls: t?.plan ?? 0,
     };
   }
 
@@ -539,6 +544,8 @@ export class ChatStore {
       usage: TokenUsage;
       costMicros: number;
       durationMs?: number;
+      /** `plan`: billed to the ChatGPT plan ($0). */
+      billing?: "plan" | "api";
     },
   ): string {
     const id = newId();
@@ -547,8 +554,8 @@ export class ChatStore {
       .query(
         `INSERT INTO model_calls (id, session_id, agent_id, task_id, message_id, provider, model,
            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micros,
-           duration_ms, started_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           duration_ms, started_at, created_at, updated_at, billing)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -567,6 +574,7 @@ export class ChatStore {
         call.durationMs === undefined ? null : now - call.durationMs,
         now,
         now,
+        call.billing ?? null,
       );
     return id;
   }

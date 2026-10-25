@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { eventLog } from "../../test/support/events.ts";
 import { type FakeModel, fakeModel } from "../../test/support/fake-model.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
-import type { ModelInfo } from "../agent/models.ts";
+import type { ModelChoice, ModelInfo } from "../agent/models.ts";
 import { dataPaths } from "../config/paths.ts";
 import type { HamnessEvent, SessionSnapshot } from "../events/types.ts";
 import { type RunningDaemon, startDaemon } from "./daemon.ts";
@@ -31,12 +31,12 @@ afterEach(async () => {
 
 const dataDir = () => join(home.dir, "data");
 
-async function start() {
+async function start(models: ModelChoice = fake) {
   log?.close();
   daemon = await startDaemon({
     dataDir: dataDir(),
     port: 0,
-    models: async () => fake,
+    models: async () => models,
     contextFiles: false,
   });
   const token = readFileSync(dataPaths(dataDir()).token, "utf8").trim();
@@ -181,5 +181,64 @@ describe("resume after a daemon restart", () => {
       await call("POST", "/v1/sessions", { cwd: work })
     ).json()) as SessionSnapshot;
     expect(back.session.id).not.toBe(s.session.id);
+  });
+});
+
+describe("billing (ADR 0023)", () => {
+  const plan = (): ModelChoice => ({ ...fake, billing: () => ({ kind: "plan" }) });
+
+  test("a ChatGPT plan call keeps its tokens, costs $0 and is marked plan", async () => {
+    fake.script([{ text: "ok", usage: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 } }]);
+    const { d, call, log } = await start(plan());
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    expect(s.session.billing).toBe("plan");
+    await call("POST", `/v1/sessions/${s.session.id}/prompt`, { text: "hi" });
+    const usage = (await log.waitFor((e) => e.type === "agent.usage")) as Extract<
+      HamnessEvent,
+      { type: "agent.usage" }
+    >;
+    expect(usage).toMatchObject({ costMicros: 0, inputTokens: 1000, billing: "plan" });
+    await log.waitFor(settled(s.session.id));
+    expect(
+      d.db.sqlite
+        .query("SELECT input_tokens, cost_micros, billing FROM model_calls WHERE session_id = ?")
+        .all(s.session.id),
+    ).toEqual([{ input_tokens: 1000, cost_micros: 0, billing: "plan" }]);
+    const status = (await (await call("GET", `/v1/sessions/${s.session.id}/status`)).json()) as {
+      billing?: string;
+      planCalls?: number;
+      costMicros: number;
+    };
+    expect(status).toMatchObject({ billing: "plan", planCalls: 1, costMicros: 0 });
+  });
+
+  test("a stored model with no key switches to the default, and says so", async () => {
+    fake.script([{ text: "one" }, { text: "two" }]);
+    let { d, call, log } = await start();
+    const s = (await (await call("POST", "/v1/sessions", { cwd: work })).json()) as SessionSnapshot;
+    await call("POST", `/v1/sessions/${s.session.id}/prompt`, { text: "first" });
+    await log.waitFor(settled(s.session.id));
+    // As if the session was last used with Claude, before the ChatGPT plan login.
+    d.db.sqlite
+      .query("UPDATE sessions SET model = 'anthropic/claude-opus-5-5' WHERE id = ?")
+      .run(s.session.id);
+    await daemon?.stop();
+
+    const billing = (p: string) => (p === "fake" ? { kind: "plan" as const } : undefined);
+    ({ d, call, log } = await start({ ...fake, billing }));
+    const back = (await (
+      await call("POST", "/v1/sessions", { cwd: work })
+    ).json()) as SessionSnapshot;
+    expect(back.session.id).toBe(s.session.id);
+    expect(back.session.model).toBe("fake/claude-opus-5-5");
+    await call("POST", `/v1/sessions/${back.session.id}/prompt`, { text: "second" });
+    const notice = await log.waitFor((e) => e.type === "agent.notice");
+    expect(notice).toMatchObject({
+      message: "Switched to fake/claude-opus-5-5 (plan): anthropic/claude-opus-5-5 has no key.",
+    });
+    await log.waitFor(settled(back.session.id));
+    expect(
+      d.db.sqlite.query("SELECT model FROM sessions WHERE id = ?").get(back.session.id),
+    ).toEqual({ model: "fake/claude-opus-5-5" });
   });
 });

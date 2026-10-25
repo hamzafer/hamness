@@ -50,7 +50,18 @@ import { gitBranch, SessionTasks } from "../tasks/session-tasks.ts";
 import { PROOF_GATE_PROMPT, taskTools } from "../tasks/tools.ts";
 import type { TaskAction, TaskView } from "../tasks/types.ts";
 import { explainModelError } from "./errors.ts";
-import { listModels, type ModelChoice, type ModelInfo, parseModelSpec } from "./models.ts";
+import {
+  billingLabel,
+  listModels,
+  type ModelChoice,
+  type ModelInfo,
+  modelName,
+  PLAN_DEFAULT_MODEL,
+  PLAN_UNSUPPORTED_ERROR,
+  parseModelSpec,
+  planModel,
+} from "./models.ts";
+import { readPlanLogin } from "./plan.ts";
 import { ReplyRedactor } from "./reply-redact.ts";
 import {
   type AgentRunner,
@@ -112,6 +123,10 @@ export interface SessionHubOptions {
 
 /** `provider/id` to its provider. */
 const providerOf = (model: string) => model.split("/")[0];
+
+/** `plan` or `api` for a session's model (`provider/id`); undefined when unknown. */
+const billingKind = (models: ModelChoice, model: string) =>
+  models.billing?.(providerOf(model) ?? "")?.kind;
 
 export const DEFAULT_MAX_SUBAGENTS = 4;
 /** Stop hooks may continue a turn this many times in a row (Claude Code's cap). */
@@ -176,6 +191,10 @@ interface LiveSession extends AgentState {
   /** SessionStart hook context and notice, for the first prompt. */
   startContext?: string | undefined;
   startNotice?: string | undefined;
+  /** Why the session's stored model was swapped for the default; shown with the first prompt. */
+  modelNotice?: string | undefined;
+  /** The last reply was the ChatGPT plan refusing the model; switch when the run settles. */
+  planFallback?: boolean;
   /** Set once the "runs in your home folder or /" notice went out. */
   broadNoticeShown?: boolean;
   /** The text of the last reply, for Stop hooks. */
@@ -262,12 +281,16 @@ export interface SessionStatus {
   cwd: string;
   branch?: string;
   model: string;
+  /** How the model is paid for: `plan` (ChatGPT subscription) or `api` (pay per token). */
+  billing?: "plan" | "api";
   thinkingLevel: ThinkingLevel;
   busy: boolean;
   context?: ContextFill;
   /** Stored usage over all the session's agents. */
   tokens: SessionUsage["tokens"];
   costMicros: number;
+  /** Model calls billed to the ChatGPT plan ($0 each). */
+  planCalls?: number;
   /** Pi's counts for the main agent's session file. */
   messages: { user: number; assistant: number; toolCalls: number };
   task?: TaskView;
@@ -434,6 +457,10 @@ export class SessionHub {
   private async send(live: LiveSession, text: string): Promise<void> {
     live.stopActive = false;
     live.stopStreak = 0;
+    if (live.modelNotice) {
+      this.emit(live, { type: "agent.notice", message: live.modelNotice });
+      live.modelNotice = undefined;
+    }
     if (!live.broadNoticeShown && broadWorkspace(live.cwd, homedir())) {
       live.broadNoticeShown = true;
       this.emit(live, {
@@ -540,8 +567,8 @@ export class SessionHub {
   /** The models a session can switch to: Pi's catalog, for providers with credentials. */
   async models(): Promise<ModelInfo[]> {
     const first = this.byId.values().next().value as LiveSession | undefined;
-    const runtime = first?.models.runtime ?? (await this.opts.models()).runtime;
-    return listModels(runtime);
+    const models = first?.models ?? (await this.opts.models());
+    return listModels(models.runtime, models.billing, models.planTier);
   }
 
   /**
@@ -564,8 +591,40 @@ export class SessionHub {
     }
     // An unsaved session stores its model when its row is written.
     if (!live.unsaved) this.store.setModel(this.ids(live), live.runner.model);
-    this.emit(live, { type: "agent.model", model: live.runner.model });
+    const billing = billingKind(live.models, live.runner.model);
+    this.emit(live, {
+      type: "agent.model",
+      model: live.runner.model,
+      ...(billing ? { billing } : {}),
+    });
     return this.snapshotOf(live);
+  }
+
+  /**
+   * The ChatGPT plan refused the session's model ("not supported when using Codex with a
+   * ChatGPT account"): switch to the plan tier's default and say so (ADR 0023).
+   */
+  private async fallBackToPlanDefault(live: LiveSession): Promise<void> {
+    const from = parseModelSpec(live.runner.model);
+    if (!from) return;
+    const tier = readPlanLogin(this.opts.dataDir)?.tier;
+    const pick = planModel(live.models.runtime, [from.provider], "main", tier);
+    const target = [pick, PLAN_DEFAULT_MODEL].find((m) => m && m !== live.runner.model);
+    const to = target ? parseModelSpec(target) : undefined;
+    const model = to && live.models.runtime.getModel(to.provider, to.id);
+    if (!to || !model || live.busy) return;
+    await live.runner.setModel(model);
+    if (!live.unsaved) this.store.setModel(this.ids(live), live.runner.model);
+    const billing = billingKind(live.models, live.runner.model);
+    this.emit(live, {
+      type: "agent.model",
+      model: live.runner.model,
+      ...(billing ? { billing } : {}),
+    });
+    this.emit(live, {
+      type: "agent.notice",
+      message: `${from.id} isn't on the ChatGPT plan; using ${to.id}. Send the prompt again.`,
+    });
   }
 
   /** Stops the main agent and every subagent it started (queued ones never start). */
@@ -736,11 +795,13 @@ export class SessionHub {
       cwd: live.cwd,
       ...(branch ? { branch } : {}),
       model: live.runner.model,
+      ...(info.billing ? { billing: info.billing } : {}),
       thinkingLevel: live.runner.thinkingLevel,
       busy: live.busy,
       ...(context ? { context } : {}),
       tokens: usage.tokens,
       costMicros: usage.costMicros,
+      planCalls: usage.planCalls,
       messages: stats,
       ...(task ? { task } : {}),
       ...(info.mode ? { mode: info.mode, modeSource: live.ownMode ? "session" : "config" } : {}),
@@ -943,7 +1004,19 @@ export class SessionHub {
     const savedSpec = resume?.model ?? from?.runner.model;
     const saved = savedSpec ? parseModelSpec(savedSpec) : undefined;
     const savedModel = saved && base.runtime.getModel(saved.provider, saved.id);
-    const models: ModelChoice = savedModel ? { ...base, model: savedModel } : base;
+    // A stored or carried model whose provider has no key or login can't answer; the default
+    // can, so switch and say so (a session from before the ChatGPT plan login, ADR 0023).
+    const billing = base.billing;
+    const unusable =
+      savedModel &&
+      billing &&
+      !billing(savedModel.provider) &&
+      billing(base.model.provider) !== undefined;
+    const models: ModelChoice = savedModel && !unusable ? { ...base, model: savedModel } : base;
+    const modelNotice =
+      unusable && billing
+        ? `Switched to ${modelName(base.model)} (${billingLabel(billing(base.model.provider))}): ${modelName(savedModel)} has no key.`
+        : undefined;
     const model = `${models.model.provider}/${models.model.id}`;
     const thinkingLevel = asThinking(resume?.thinkingLevel) ?? from?.runner.thinkingLevel;
     const ownMode = resume
@@ -1092,6 +1165,10 @@ export class SessionHub {
       ...(stored ? {} : { unsaved: { piSessionId: runner.piSessionId, startedAt } }),
     };
     if (stored && !resume) this.saveSettings(live);
+    if (modelNotice) {
+      live.modelNotice = modelNotice;
+      if (!live.unsaved) this.store.setModel(this.ids(live), live.runner.model);
+    }
     live.ready = this.sessionStartHooks(
       live,
       resume ? "resume" : plan.kind === "new" ? "clear" : "startup",
@@ -1371,10 +1448,12 @@ export class SessionHub {
     const mode = this.modeOf(live);
     // Yolo skips the judge, but its state still shows (it is what `/mode auto` brings back).
     const judge = mode === "auto" || mode === "yolo" ? this.opts.judge?.state(live.id) : undefined;
+    const billing = billingKind(live.models, live.runner.model);
     return {
       id: live.id,
       cwd: live.cwd,
       model: live.runner.model,
+      ...(billing ? { billing } : {}),
       busy: live.busy,
       mainAgentId: live.agentId,
       ...(mode ? { mode } : {}),
@@ -1535,6 +1614,10 @@ export class SessionHub {
             : undefined;
         if (error) agent.lastError = error;
         else delete agent.lastError;
+        // The ChatGPT plan refused this model: switch to the plan's default once the run ends.
+        if (agent === live && e.error && PLAN_UNSUPPORTED_ERROR.test(e.error)) {
+          live.planFallback = true;
+        }
         if (agent === live) live.lastReply = e.text;
         // Stored and sent redacted alike: a reopened session shows what the live one ended on.
         // Only unmistakable secrets: a reply that explains `API_KEY=…` reads as written.
@@ -1542,7 +1625,9 @@ export class SessionHub {
         const tail = reply.redact.flush();
         if (tail) emit({ type: "agent.message.delta", messageId: reply.rowId, text: tail });
         this.store.setMessageContent(reply.rowId, shown);
-        const priced = costMicros(e.model, e.usage);
+        // A ChatGPT plan call costs $0: tokens are kept, no API price (ADR 0023).
+        const plan = live.models.billing?.(e.provider)?.kind === "plan";
+        const priced = plan ? 0 : costMicros(e.model, e.usage);
         const cost = priced ?? Math.round(e.piCostUsd * 1_000_000);
         const modelCallId = this.store.addModelCall(this.ids(live, agent), {
           messageId: reply.rowId,
@@ -1550,6 +1635,7 @@ export class SessionHub {
           model: e.model,
           usage: e.usage,
           costMicros: cost,
+          ...(plan ? { billing: "plan" as const } : {}),
           ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
         });
         emit({
@@ -1571,6 +1657,7 @@ export class SessionHub {
           cacheWriteTokens: e.usage.cacheWrite,
           costMicros: cost,
           priced: priced !== undefined,
+          ...(plan ? { billing: "plan" as const } : {}),
         });
         // Finished replies no longer need their buffer; the row has the text.
         agent.replies.delete(e.key);
@@ -1627,7 +1714,8 @@ export class SessionHub {
         // The summary is a model call: its spend counts (toward the task, if one is open).
         if (e.usage && e.provider && e.model) {
           this.persist(live);
-          const priced = costMicros(e.model, e.usage);
+          const plan = live.models.billing?.(e.provider)?.kind === "plan";
+          const priced = plan ? 0 : costMicros(e.model, e.usage);
           const ids =
             agent === live
               ? { sessionId: live.id, agentId: live.agentId, taskId: live.tasks.openTaskId() }
@@ -1637,6 +1725,7 @@ export class SessionHub {
             model: e.model,
             usage: e.usage,
             costMicros: priced ?? Math.round((e.piCostUsd ?? 0) * 1_000_000),
+            ...(plan ? { billing: "plan" as const } : {}),
           });
         }
         if (agent !== live) return;
@@ -1664,11 +1753,18 @@ export class SessionHub {
         // A subagent's last status waits for its result (`finishSubagent`); no Stop hooks.
         if (agent !== live) return;
         if (e.aborted) emit({ type: "agent.stopped" });
-        this.afterRun(live, e.aborted).catch(() => {
-          live.currentReplyRow = undefined;
-          live.tasks.endTurn();
-          this.setBusy(live, live, false);
-        });
+        this.afterRun(live, e.aborted)
+          .catch(() => {
+            live.currentReplyRow = undefined;
+            live.tasks.endTurn();
+            this.setBusy(live, live, false);
+          })
+          .then(() => {
+            if (!live.planFallback) return;
+            live.planFallback = false;
+            return this.fallBackToPlanDefault(live);
+          })
+          .catch(() => {});
         return;
     }
   }

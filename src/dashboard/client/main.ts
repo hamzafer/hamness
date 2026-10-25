@@ -1,5 +1,5 @@
 import type { HamnessEvent } from "../../events/types.ts";
-import { count, duration, money, moneyCompact } from "../../stats/format.ts";
+import { count, duration, modelCost, money, moneyCompact } from "../../stats/format.ts";
 import type {
   DecisionListRow,
   EvidenceRow,
@@ -403,7 +403,7 @@ function overview(r: StatsReport): Node[] {
           r.models.map((x) => ({
             label: x.priced ? x.model : `${x.model} *`,
             value: x.costMicros,
-            text: `${x.sources.some((src) => src !== "hamness") ? "~" : ""}${money(x.costMicros)} · ${count(x.calls)} ${x.calls === 1 ? "call" : "calls"}`,
+            text: `${x.sources.some((src) => src !== "hamness") ? "~" : ""}${modelCost(x)} · ${count(x.calls)} ${x.calls === 1 ? "call" : "calls"}`,
           })),
         )
       : empty("No model calls in this range."),
@@ -435,6 +435,10 @@ function overview(r: StatsReport): Node[] {
 
   const notes: string[] = [];
   if (k.pricing.estimated) notes.push("~ Cost of imported history is estimated from token counts.");
+  if (k.pricing.planCalls > 0)
+    notes.push(
+      `${count(k.pricing.planCalls)} calls were billed to the ChatGPT plan: $0 (plan), tokens still counted.`,
+    );
   if (k.pricing.unpricedCalls > 0)
     notes.push(
       `* ${count(k.pricing.unpricedCalls)} calls of models with no known price count as $0: ${k.pricing.unpricedModels.join(", ")}.`,

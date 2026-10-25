@@ -134,11 +134,17 @@ describe("kpis", () => {
       estimated: true,
       unpricedCalls: 2,
       unpricedModels: ["llama-local"],
+      planCalls: 0,
     });
 
     const hamness = kpis(db.sqlite, q("7d", { source: "hamness" }));
     expect(hamness.costMicros).toBe(3_000_000);
-    expect(hamness.pricing).toEqual({ estimated: false, unpricedCalls: 0, unpricedModels: [] });
+    expect(hamness.pricing).toEqual({
+      estimated: false,
+      unpricedCalls: 0,
+      unpricedModels: [],
+      planCalls: 0,
+    });
 
     const codex = kpis(db.sqlite, q("7d", { source: "codex" }));
     expect(codex.costPerVerifiedTaskMicros).toBeNull();

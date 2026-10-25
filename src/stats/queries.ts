@@ -30,6 +30,8 @@ export interface Pricing {
   /** Calls of models with no known price. They count as $0. */
   unpricedCalls: number;
   unpricedModels: string[];
+  /** Calls billed to the ChatGPT plan: $0, tokens still counted. */
+  planCalls: number;
 }
 
 export interface Kpis {
@@ -65,6 +67,8 @@ interface ModelSourceRow {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Calls billed to the ChatGPT plan ($0 each, ADR 0023). */
+  planCalls: number;
 }
 
 /** Model calls grouped by source, model and time bucket `b`. */
@@ -97,7 +101,8 @@ function context(sqlite: Database, q: StatsQuery): Ctx {
           `SELECT s.source, mc.model, (mc.created_at - ?1) / ?4 AS b, count(*) AS calls,
              sum(mc.cost_micros) AS cost, sum(mc.input_tokens) AS input,
              sum(mc.output_tokens) AS output, sum(mc.cache_read_tokens) AS cacheRead,
-             sum(mc.cache_write_tokens) AS cacheWrite
+             sum(mc.cache_write_tokens) AS cacheWrite,
+             coalesce(sum(mc.billing = 'plan'), 0) AS planCalls
            FROM model_calls mc JOIN sessions s ON s.id = mc.session_id
            WHERE mc.created_at BETWEEN ?1 AND ?2 AND (?3 IS NULL OR s.source = ?3)
            GROUP BY s.source, mc.model, b`,
@@ -125,6 +130,7 @@ function modelSourceRows(c: Ctx): ModelSourceRow[] {
     r.output += f.output;
     r.cacheRead += f.cacheRead;
     r.cacheWrite += f.cacheWrite;
+    r.planCalls += f.planCalls;
   }
   return [...rows.values()];
 }
@@ -139,8 +145,9 @@ function addTokens(t: Tokens, r: Omit<Tokens, "prompt">): void {
   t.prompt += r.input + r.cacheRead + r.cacheWrite;
 }
 
-/** A model with no price and no recorded cost: its calls count as $0. */
-const unpriced = (model: string, cost: number) => cost === 0 && priceFor(model) === undefined;
+/** A model with no price and no recorded cost: its calls count as $0. Plan calls are $0 by design. */
+const unpriced = (model: string, cost: number, calls = 1, planCalls = 0) =>
+  cost === 0 && planCalls < calls && priceFor(model) === undefined;
 
 /**
  * A session's active time, never more than its wall time when both ends are known: imported
@@ -194,7 +201,12 @@ function kpisOf(c: Ctx): Kpis {
   let costMicros = 0;
   let hamnessCost = 0;
   const tokens = emptyTokens();
-  const pricing: Pricing = { estimated: false, unpricedCalls: 0, unpricedModels: [] };
+  const pricing: Pricing = {
+    estimated: false,
+    unpricedCalls: 0,
+    unpricedModels: [],
+    planCalls: 0,
+  };
   const unpricedByModel = new Map<string, number>();
   for (const r of modelSourceRows(c)) {
     modelCalls += r.calls;
@@ -202,7 +214,8 @@ function kpisOf(c: Ctx): Kpis {
     if (r.source === "hamness") hamnessCost += r.cost;
     else pricing.estimated = true;
     addTokens(tokens, r);
-    if (unpriced(r.model, r.cost)) {
+    pricing.planCalls += r.planCalls;
+    if (unpriced(r.model, r.cost, r.calls, r.planCalls)) {
       pricing.unpricedCalls += r.calls;
       unpricedByModel.set(r.model, (unpricedByModel.get(r.model) ?? 0) + r.calls);
     }
@@ -308,6 +321,8 @@ export interface ModelRow {
   sources: Source[];
   /** False when the model has no known price and its calls count as $0. */
   priced: boolean;
+  /** Calls billed to the ChatGPT plan ($0 each). */
+  planCalls: number;
 }
 
 /** Models by cost (then number of calls), grouped by the model id as stored. */
@@ -327,17 +342,19 @@ function topModelsOf(c: Ctx, limit: number): ModelRow[] {
         tokens: emptyTokens(),
         sources: [],
         priced: true,
+        planCalls: 0,
       };
       byModel.set(r.model, m);
     }
     m.calls += r.calls;
     m.costMicros += r.cost;
+    m.planCalls += r.planCalls;
     addTokens(m.tokens, r);
     m.sources.push(r.source);
   }
   const rows = [...byModel.values()];
   for (const m of rows) {
-    m.priced = !unpriced(m.model, m.costMicros);
+    m.priced = !unpriced(m.model, m.costMicros, m.calls, m.planCalls);
     m.sources.sort();
   }
   return rows
