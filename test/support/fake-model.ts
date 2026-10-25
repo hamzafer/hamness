@@ -51,11 +51,12 @@ const DEFAULT_USAGE: TokenUsage = { input: 10, output: 5, cacheRead: 0, cacheWri
 export async function fakeModel(
   dir: string,
   modelId = "claude-opus-5-5",
-  opts: { noKey?: boolean; otherModels?: string[] } = {},
+  opts: { noKey?: boolean; otherModels?: string[]; reasoning?: boolean } = {},
 ): Promise<FakeModel> {
+  const reasoning = opts.reasoning ? { reasoning: true } : {};
   const core = createFauxCore({
     provider: "fake",
-    models: [{ id: modelId }, ...(opts.otherModels ?? []).map((id) => ({ id }))],
+    models: [{ id: modelId, ...reasoning }, ...(opts.otherModels ?? []).map((id) => ({ id }))],
   });
   const usages: TokenUsage[] = [];
   const contexts: Array<{ messages: unknown[] }> = [];

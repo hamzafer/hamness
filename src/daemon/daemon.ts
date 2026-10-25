@@ -123,7 +123,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       dataDir: paths.dataDir,
       models: opts.models ?? (() => resolveModels({ dataDir: paths.dataDir, env: process.env })),
       safety: opts.safety ?? (rules as NonNullable<typeof rules>).check,
-      ...(rules ? { safetyMode: (cwd: string) => rules.modeFor(cwd) } : {}),
+      ...(rules ? { safetyModes: rules } : {}),
       ...(judge ? { judge } : {}),
       ...(opts.contextFiles !== undefined ? { contextFiles: opts.contextFiles } : {}),
       hooks,

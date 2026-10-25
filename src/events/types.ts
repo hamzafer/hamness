@@ -17,7 +17,17 @@ export interface SessionInfo {
   mainAgentId?: string;
   /** The judge's state in `auto` mode. Absent in other modes. */
   judge?: JudgeState;
+  /** The name the user gave the session (`/name`). */
+  name?: string;
+  /** Pi's thinking level for the main agent's next model call. */
+  thinkingLevel?: ThinkingLevel;
 }
+
+/** Pi's thinking levels; a model supports some of them (`GET /v1/sessions/:id/thinking`). */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/** Why Pi compacted: the user asked (`/compact`), the context crossed the threshold, or overflowed. */
+export type CompactionReason = "manual" | "threshold" | "overflow";
 
 /** `ask`: rules, then the user. `auto`: rules, then the judge, then the user. `yolo`: allow all. */
 export type SafetyMode = "ask" | "auto" | "yolo";
@@ -178,6 +188,34 @@ export type AgentEvent = { sessionId: string; seq: number; agentId?: string } & 
    * Its runs then show as `agent.status`, and a failure as `agent.error` before the last one.
    */
   | { type: "agent.start"; name: string; parentAgentId: string; model: string }
+  /** The main agent's thinking level changed (`/thinking`, or Pi clamped it on a model switch). */
+  | { type: "agent.thinking"; level: ThinkingLevel }
+  /** Pi started compacting the context (`/compact`, or on its own near the limit). */
+  | { type: "agent.compaction.start"; reason: CompactionReason }
+  /**
+   * Compaction ended. `tokensBefore` / `tokensAfter` are Pi's estimates of the context size;
+   * `error` when it failed. An `agent.context` with the new fill follows a success.
+   */
+  | {
+      type: "agent.compaction.end";
+      reason: CompactionReason;
+      aborted: boolean;
+      tokensBefore?: number;
+      tokensAfter?: number;
+      error?: string;
+    }
+  /**
+   * This session ended and `newSessionId` took its place in the same cwd: `/new` or `/clear`,
+   * `/resume` of another session, or `/fork`. Clients attached to it switch to the new one.
+   */
+  | { type: "session.replaced"; newSessionId: string; reason: "new" | "resume" | "fork" }
+  /** The user renamed the session (`/name`). */
+  | { type: "session.name"; name: string }
+  /**
+   * The user set the session's safety mode (`/mode`). `warning` is set for `yolo`: clients show
+   * it as a banner for as long as the mode lasts (`session.mode` in snapshots says so too).
+   */
+  | { type: "safety.mode"; mode: SafetyMode; warning?: string }
   | TaskEvent
 );
 

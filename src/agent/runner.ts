@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { type CompatSetup, compatExtensions, compatPrompt } from "../compat/index.ts";
-import type { ContextFill } from "../events/types.ts";
+import type { CompactionReason, ContextFill, ThinkingLevel } from "../events/types.ts";
 import type { TokenUsage } from "../models/prices.ts";
 import type { ModelChoice } from "./models.ts";
 
@@ -97,7 +97,44 @@ export type RunnerEvent =
     }
   /** After each turn (reply plus its tool results are in the session): how full the context is. */
   | ({ type: "context" } & ContextFill)
-  | { type: "run.settled"; aborted: boolean };
+  | { type: "run.settled"; aborted: boolean }
+  /** A user message went into Pi's session file as entry `entryId` (what `/fork` branches at). */
+  | { type: "user.entry"; entryId: string }
+  | { type: "thinking"; level: ThinkingLevel }
+  | { type: "compaction.start"; reason: CompactionReason }
+  | {
+      type: "compaction.end";
+      reason: CompactionReason;
+      aborted: boolean;
+      tokensBefore?: number;
+      tokensAfter?: number;
+      error?: string;
+      /** The summary call's usage, when it made one. */
+      usage?: TokenUsage;
+      piCostUsd?: number;
+      provider?: string;
+      model?: string;
+    };
+
+/** Where a fork starts: Pi's session file and the entry its new branch ends at (null: empty). */
+export interface BranchFrom {
+  file: string;
+  leafId: string | null;
+}
+
+/** What `compact` did, in Pi's estimates of the context size. */
+export interface CompactionOutcome {
+  tokensBefore: number;
+  tokensAfter?: number;
+  summary: string;
+}
+
+/** Pi's message counts for the session's file (`/session`). */
+export interface RunnerStats {
+  user: number;
+  assistant: number;
+  toolCalls: number;
+}
 
 export interface RunnerOptions {
   cwd: string;
@@ -119,6 +156,13 @@ export interface RunnerOptions {
   sessionDir?: string;
   /** A Pi session file to continue (its messages become the context). Needs `sessionDir`. */
   resumeFile?: string;
+  /**
+   * Start a new Pi session file holding `branchFrom.file`'s history up to `leafId` (Pi's fork).
+   * Needs `sessionDir`; ignored with `resumeFile`.
+   */
+  branchFrom?: BranchFrom;
+  /** The thinking level to start with. Default `medium` (Pi clamps it to what the model has). */
+  thinkingLevel?: ThinkingLevel;
   /** hamness's own tools, next to Pi's built-ins. */
   tools?: AgentToolSpec[];
   /** Text added to the end of the system prompt. */
@@ -144,6 +188,26 @@ export interface AgentRunner {
    * current turn, otherwise the next prompt's model call sees it.
    */
   notify(text: string): Promise<void>;
+  readonly thinkingLevel: ThinkingLevel;
+  /** The levels the current model supports (Pi's list). */
+  thinkingLevels(): ThinkingLevel[];
+  /** Sets the level; Pi clamps it to the model's. Returns the level now in effect. */
+  setThinkingLevel(level: ThinkingLevel): ThinkingLevel;
+  /** Pi's manual compaction (`/compact`). Throws Pi's reason when there is nothing to compact. */
+  compact(instructions?: string): Promise<CompactionOutcome>;
+  /** The name in Pi's session file (Pi's `/name`). */
+  setName(name: string): void;
+  stats(): RunnerStats;
+  /** Pi's exports; each returns the path it wrote. */
+  exportHtml(path: string): Promise<string>;
+  exportJsonl(path: string): string;
+  /** The text of the last assistant message in the context (Pi's `/copy`). */
+  lastAssistantText(): string | undefined;
+  /**
+   * Where a fork at user message entry `entryId` starts: this file, up to the entry before it.
+   * Undefined when the entry is not a user message of this session.
+   */
+  forkPoint(entryId: string): BranchFrom | undefined;
   dispose(): void;
 }
 
@@ -175,6 +239,28 @@ function toPiTool(spec: AgentToolSpec): ToolDefinition {
       return { content: [{ type: "text", text: out.text }], details: out.details ?? {} };
     },
   };
+}
+
+/** Pi's session manager for a new, resumed or forked session (as Pi's own `/fork` builds it). */
+function sessionManagerFor(opts: RunnerOptions): SessionManager {
+  const dir = opts.sessionDir;
+  if (!dir) return SessionManager.inMemory(opts.cwd);
+  if (opts.resumeFile) return SessionManager.open(opts.resumeFile, dir);
+  const branch = opts.branchFrom;
+  if (!branch) return SessionManager.create(opts.cwd, dir);
+  if (branch.leafId === null) {
+    const fresh = SessionManager.create(opts.cwd, dir);
+    fresh.newSession({ parentSession: branch.file });
+    return fresh;
+  }
+  const source = SessionManager.open(branch.file, dir);
+  if (!source.createBranchedSession(branch.leafId)) throw new Error("could not fork the session");
+  return source;
+}
+
+function piUsage(u: AssistantMessage["usage"] | undefined): TokenUsage | undefined {
+  if (!u) return undefined;
+  return { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite };
 }
 
 export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner> {
@@ -255,14 +341,10 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
     agentDir: opts.agentDir,
     modelRuntime: opts.models.runtime,
     model: opts.models.model,
-    thinkingLevel: "medium",
+    thinkingLevel: opts.thinkingLevel ?? "medium",
     resourceLoader,
     customTools: (opts.tools ?? []).map(toPiTool),
-    sessionManager: !opts.sessionDir
-      ? SessionManager.inMemory(opts.cwd)
-      : opts.resumeFile
-        ? SessionManager.open(opts.resumeFile, opts.sessionDir)
-        : SessionManager.create(opts.cwd, opts.sessionDir),
+    sessionManager: sessionManagerFor(opts),
     settingsManager: SettingsManager.inMemory({
       compaction: { enabled: true },
       retry: { enabled: false },
@@ -298,6 +380,16 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
         }
         return;
       case "message_end": {
+        if (ev.message.role === "user") {
+          // Pi appends the entry right after its listeners ran; read its id once it has.
+          queueMicrotask(() => {
+            const entry = session.sessionManager.getLeafEntry();
+            if (entry?.type === "message" && entry.message.role === "user") {
+              emit({ type: "user.entry", entryId: entry.id });
+            }
+          });
+          return;
+        }
         if (ev.message.role !== "assistant" || !currentKey) return;
         const m = ev.message as AssistantMessage & { durationMs?: number };
         emit({
@@ -350,6 +442,38 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
         busy = false;
         emit({ type: "run.settled", aborted: ev.aborted });
         return;
+      case "thinking_level_changed":
+        emit({ type: "thinking", level: ev.level as ThinkingLevel });
+        return;
+      case "compaction_start":
+        emit({ type: "compaction.start", reason: ev.reason });
+        return;
+      case "compaction_end": {
+        const r = ev.result;
+        const usage = piUsage(r?.usage as AssistantMessage["usage"] | undefined);
+        const m = session.model;
+        emit({
+          type: "compaction.end",
+          reason: ev.reason,
+          aborted: ev.aborted,
+          ...(r ? { tokensBefore: r.tokensBefore } : {}),
+          ...(r?.estimatedTokensAfter !== undefined ? { tokensAfter: r.estimatedTokensAfter } : {}),
+          ...(ev.errorMessage ? { error: ev.errorMessage } : {}),
+          ...(usage && m
+            ? {
+                usage,
+                piCostUsd: r?.usage?.cost?.total ?? 0,
+                provider: m.provider,
+                model: m.id,
+              }
+            : {}),
+        });
+        if (r) {
+          const fill = contextFill();
+          if (fill) emit({ type: "context", ...fill });
+        }
+        return;
+      }
       default:
         return;
     }
@@ -387,6 +511,36 @@ export async function startAgentRunner(opts: RunnerOptions): Promise<AgentRunner
         { customType: "hamness.notice", content: text, display: true },
         { triggerTurn: false },
       ),
+    get thinkingLevel() {
+      return session.thinkingLevel as ThinkingLevel;
+    },
+    thinkingLevels: () => session.getAvailableThinkingLevels() as ThinkingLevel[],
+    setThinkingLevel(level) {
+      session.setThinkingLevel(level);
+      return session.thinkingLevel as ThinkingLevel;
+    },
+    async compact(instructions) {
+      const r = await session.compact(instructions);
+      return {
+        tokensBefore: r.tokensBefore,
+        ...(r.estimatedTokensAfter !== undefined ? { tokensAfter: r.estimatedTokensAfter } : {}),
+        summary: r.summary,
+      };
+    },
+    setName: (name) => session.setSessionName(name),
+    stats() {
+      const s = session.getSessionStats();
+      return { user: s.userMessages, assistant: s.assistantMessages, toolCalls: s.toolCalls };
+    },
+    exportHtml: (path) => session.exportToHtml(path),
+    exportJsonl: (path) => session.exportToJsonl(path),
+    lastAssistantText: () => session.getLastAssistantText(),
+    forkPoint(entryId) {
+      const entry = session.sessionManager.getEntry(entryId);
+      const file = session.sessionFile;
+      if (!file || entry?.type !== "message" || entry.message.role !== "user") return undefined;
+      return { file, leafId: entry.parentId };
+    },
     dispose() {
       unsubscribe();
       session.dispose();

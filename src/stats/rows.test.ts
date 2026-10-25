@@ -61,6 +61,7 @@ describe("listTasks", () => {
       {
         id: t,
         sessionId: s,
+        sessionName: null,
         source: "hamness",
         goal: "fix the parser",
         implicit: false,
