@@ -14,6 +14,8 @@ export interface AreaChartOptions {
   title: (start: number) => string;
   /** The last bucket is still filling: its segment is drawn dashed. */
   partialLast: boolean;
+  /** The one y-axis label when every value is zero (`$0`). Default `$0`. */
+  zero?: string;
 }
 
 let gradientIds = 0;
@@ -32,17 +34,42 @@ const STEPS = [0, 0.25, 0.5, 0.75, 1];
 const CHAR_PX = 7;
 
 /**
- * The y-axis labels and the left gutter that fits them: compact labels on narrow widths, and
- * a gutter sized to the longest label, so `$2,000.00` is never cut at the card's edge.
+ * The y-axis ticks (`steps`, fractions of the top), their labels and the left gutter that fits
+ * them: compact labels on narrow widths, and a gutter sized to the longest label, so `$2,000.00`
+ * is never cut at the card's edge. A step whose label repeats one below it is left out, so tiny
+ * values never read `$0.00, $0.00`; with `allZero` there is one baseline, labeled `zero`.
  */
 export function yAxis(
   top: number,
-  opts: { format: (v: number) => string; compact?: (v: number) => string; narrow: boolean },
-): { labels: string[]; left: number } {
+  opts: {
+    format: (v: number) => string;
+    compact?: (v: number) => string;
+    narrow: boolean;
+    allZero?: boolean;
+    /** The baseline's label when every value is zero. Default `$0`. */
+    zero?: string;
+  },
+): { labels: string[]; steps: number[]; left: number } {
   const fmt = opts.narrow && opts.compact ? opts.compact : opts.format;
-  const labels = STEPS.map((f) => fmt(top * f));
+  const steps: number[] = [];
+  const labels: string[] = [];
+  if (opts.allZero) {
+    steps.push(0);
+    labels.push(opts.zero ?? "$0");
+  } else {
+    for (const f of STEPS) {
+      const label = fmt(top * f);
+      if (labels.includes(label)) continue;
+      steps.push(f);
+      labels.push(label);
+    }
+  }
   const longest = Math.max(...labels.map((l) => l.length));
-  return { labels, left: Math.max(opts.narrow ? 40 : 48, Math.ceil(longest * CHAR_PX) + 12) };
+  return {
+    labels,
+    steps,
+    left: Math.max(opts.narrow ? 40 : 48, Math.ceil(longest * CHAR_PX) + 12),
+  };
 }
 
 const disposers = new WeakMap<Element, () => void>();
@@ -72,11 +99,14 @@ export function areaChart(opts: AreaChartOptions): HTMLElement {
     const narrow = width < 520;
     const height = narrow ? 200 : 260;
     const n = opts.points.length;
-    const top = niceMax(Math.max(0, ...opts.points.map((p) => p.value)));
+    const max = Math.max(0, ...opts.points.map((p) => p.value));
+    const top = niceMax(max);
     const axis = yAxis(top, {
       format: opts.format,
       ...(opts.compact ? { compact: opts.compact } : {}),
       narrow,
+      allZero: max === 0,
+      ...(opts.zero ? { zero: opts.zero } : {}),
     });
     const pad = { top: 12, right: 12, bottom: 28, left: axis.left };
     const innerW = width - pad.left - pad.right;
@@ -84,7 +114,7 @@ export function areaChart(opts: AreaChartOptions): HTMLElement {
     const x = (i: number) => pad.left + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
     const y = (v: number) => pad.top + innerH - (v / top) * innerH;
 
-    const grid = STEPS.map((f, i) => {
+    const grid = axis.steps.map((f, i) => {
       const v = top * f;
       return s(
         "g",
