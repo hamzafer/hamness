@@ -38,7 +38,8 @@ export interface CommandContext {
   setInput(text: string): void;
   /** The user's prompts in this chat, oldest first, for `/fork`. */
   prompts(): Array<{ id: string; text: string }>;
-  copy(text: string): Promise<void>;
+  /** `system`: the clipboard has it; `terminal`: sent by OSC 52, which a terminal may ignore. */
+  copy(text: string): Promise<"system" | "terminal">;
   exit(): void;
 }
 
@@ -315,8 +316,8 @@ export const COMMANDS: readonly SlashCommand[] = [
       try {
         const text = await ctx.client.lastReply(ctx.session().id);
         if (text === undefined) return ctx.say("Nothing to copy yet.");
-        await ctx.copy(text);
-        ctx.say("Copied.");
+        const how = await ctx.copy(text);
+        ctx.say(how === "system" ? "Copied." : "Sent to the terminal clipboard.");
       } catch (err) {
         fail(ctx)(err);
       }
@@ -424,7 +425,8 @@ function taskCommand(ctx: CommandContext, text: string) {
 export const needsArgs = (c: SlashCommand) => c.needsArgs ?? c.args?.startsWith("<") === true;
 
 export function findCommand(word: string): SlashCommand | undefined {
-  return COMMANDS.find((c) => c.name === word || c.aliases?.includes(word));
+  const w = word.toLowerCase();
+  return COMMANDS.find((c) => c.name === w || c.aliases?.includes(w));
 }
 
 /** A row of the `/` menu: the command, shown as `label` (an alias when that is what matched). */
@@ -471,6 +473,35 @@ export function matchCommands(query: string): CommandMatch[] {
   return hits.map(({ command, label }) => ({ command, label }));
 }
 
+/**
+ * What Enter does in the menu. It runs only what the user clearly meant: an exact name or
+ * alias, a prefix that only one command has, or a row picked with the arrows. A fuzzy or
+ * shared match completes into the input box instead, and a bare `/` only hints.
+ */
+export function menuEnter(
+  query: string,
+  matches: readonly CommandMatch[],
+  selected: number,
+  navigated: boolean,
+): { kind: "run" | "complete"; match: CommandMatch } | { kind: "hint" } {
+  const picked = matches[Math.min(selected, matches.length - 1)];
+  if (!picked) return { kind: "hint" };
+  if (navigated) return { kind: "run", match: picked };
+  const q = query.toLowerCase();
+  if (!q) return { kind: "hint" };
+  const exact = findCommand(q);
+  if (exact) return { kind: "run", match: { command: exact, label: `/${q}` } };
+  const prefixed = COMMANDS.filter((c) =>
+    [c.name, ...(c.aliases ?? [])].some((n) => n.startsWith(q)),
+  );
+  const only = prefixed[0];
+  if (prefixed.length === 1 && only) {
+    const label = [only.name, ...(only.aliases ?? [])].find((n) => n.startsWith(q)) ?? only.name;
+    return { kind: "run", match: { command: only, label: `/${label}` } };
+  }
+  return { kind: "complete", match: picked };
+}
+
 /** What follows the slash while the menu should show: the first word, still being typed. */
 export function menuQuery(text: string): string | undefined {
   const m = /^\/([^\s]*)$/.exec(text);
@@ -484,7 +515,9 @@ export function menuQuery(text: string): string | undefined {
 export function parseSlash(
   text: string,
 ): { command: SlashCommand; arg: string } | { unknown: string } | undefined {
-  const m = /^\/([a-z?][\w-]*|\?)(?=\s|$)\s*([\s\S]*)$/.exec(text.trim());
+  const t = text.trim();
+  if (t === "/") return { unknown: "/" };
+  const m = /^\/([a-z?][\w-]*|\?)(?=\s|$)\s*([\s\S]*)$/i.exec(t);
   if (!m) return undefined;
   const word = m[1] ?? "";
   const command = findCommand(word);

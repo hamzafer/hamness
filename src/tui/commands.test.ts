@@ -3,6 +3,7 @@ import {
   COMMANDS,
   findCommand,
   matchCommands,
+  menuEnter,
   menuQuery,
   parseExportArgs,
   parseSlash,
@@ -108,6 +109,47 @@ describe("parseSlash", () => {
     expect(parseSlash("/frobnicate now")).toEqual({ unknown: "/frobnicate" });
     expect(parseSlash("/work/demo/notes.txt what is in it?")).toBeUndefined();
     expect(parseSlash("fix the bug")).toBeUndefined();
+  });
+
+  test("command names ignore case", () => {
+    const p = parseSlash("/NEW");
+    expect(p && "command" in p ? p.command.name : p).toBe("new");
+    const q = parseSlash("/Compact keep IT");
+    expect(q && "command" in q ? [q.command.name, q.arg] : q).toEqual(["compact", "keep IT"]);
+  });
+
+  test("a bare slash is not a command and not a prompt", () => {
+    expect(parseSlash("/")).toEqual({ unknown: "/" });
+  });
+});
+
+describe("Enter in the / menu", () => {
+  const at = (q: string, navigated = false) => {
+    const r = menuEnter(q, matchCommands(q), 0, navigated);
+    return r.kind === "hint" ? "hint" : `${r.kind} ${r.match.label}`;
+  };
+
+  test("runs an exact name or alias, or a prefix only one command has", () => {
+    expect(at("new")).toBe("run /new");
+    expect(at("clear")).toBe("run /clear");
+    expect(at("NEW")).toBe("run /new");
+    expect(at("comp")).toBe("run /compact");
+    expect(at("sk")).toBe("run /skills");
+  });
+
+  test("a fuzzy-only or shared prefix completes instead of running", () => {
+    expect(at("opt")).toBe("complete /compact");
+    expect(at("x")).toBe("complete /export");
+    expect(at("co")).toBe("complete /compact");
+  });
+
+  test("a row picked with the arrows runs", () => {
+    expect(at("co", true)).toBe("run /compact");
+  });
+
+  test("a bare slash only hints", () => {
+    expect(at("")).toBe("hint");
+    expect(at("", true)).toBe("run /new");
   });
 });
 
