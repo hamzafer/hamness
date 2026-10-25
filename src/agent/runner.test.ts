@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type FakeModel, fakeModel } from "../../test/support/fake-model.ts";
 import { tempHome } from "../../test/support/temp-home.ts";
@@ -146,6 +146,35 @@ describe("the model line in the system prompt", () => {
     await r.prompt("second");
     const later = systemText(1);
     // The newest model line is the switched one.
+    expect(later.lastIndexOf("fake/claude-haiku-5-5")).toBeGreaterThan(
+      later.lastIndexOf("fake/claude-opus-5-5"),
+    );
+  });
+
+  test("Pi's APPEND_SYSTEM.md is still honored, before and after a switch", async () => {
+    fake = await fakeModel(home.dir, "claude-opus-5-5", { otherModels: ["claude-haiku-5-5"] });
+    mkdirSync(join(home.dir, "pi"), { recursive: true });
+    writeFileSync(join(home.dir, "pi", "APPEND_SYSTEM.md"), "USER-APPEND-RULE");
+    const r = await startAgentRunner({
+      cwd: home.dir,
+      agentDir: join(home.dir, "pi"),
+      models: fake,
+      onEvent: (e) => events.push(e),
+      contextFiles: false,
+      systemPromptAppend: ["HAMNESS-RULE"],
+    });
+    runner = r;
+    fake.script([{ text: "one" }, { text: "two" }]);
+    await r.prompt("first");
+    const first = systemText(0);
+    expect(first).toContain("USER-APPEND-RULE");
+    expect(first).toContain("HAMNESS-RULE");
+    const next = fake.runtime.getModel("fake", "claude-haiku-5-5");
+    if (!next) throw new Error("no second model");
+    await r.setModel(next);
+    await r.prompt("second");
+    const later = systemText(1);
+    expect(later.lastIndexOf("USER-APPEND-RULE")).toBeGreaterThan(-1);
     expect(later.lastIndexOf("fake/claude-haiku-5-5")).toBeGreaterThan(
       later.lastIndexOf("fake/claude-opus-5-5"),
     );
