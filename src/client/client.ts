@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { openSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ModelInfo } from "../agent/models.ts";
 import type { CompactionOutcome } from "../agent/runner.ts";
 import type { SessionCompat, SessionListItem, SessionStatus } from "../agent/session-hub.ts";
 import type { Env } from "../config/paths.ts";
 import { dataPaths, ensureDataDir } from "../config/paths.ts";
+import { DAEMON_MARKER } from "../daemon/processes.ts";
 import { getStatus } from "../daemon/status.ts";
 import type {
   ApprovalDecision,
@@ -99,7 +100,8 @@ export async function ensureDaemon(
   const child = spawn(process.execPath, ["--config=/dev/null", MAIN, "daemon"], {
     detached: true,
     stdio: ["ignore", log, log],
-    env: { ...(opts.env ?? process.env), HAMNESS_HOME: dataDir },
+    // The marker and an absolute HAMNESS_HOME let `hamness stop --all` find it by its process.
+    env: { ...(opts.env ?? process.env), HAMNESS_HOME: resolve(dataDir), [DAEMON_MARKER]: "1" },
   });
   child.unref();
 

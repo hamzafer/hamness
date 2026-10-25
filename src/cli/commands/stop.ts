@@ -1,17 +1,20 @@
 import { parseArgs } from "node:util";
-import { dataPaths } from "../../config/paths.ts";
-import { describeDaemon, findDaemons, isDaemonProcess } from "../../daemon/processes.ts";
-import { readState } from "../../daemon/state.ts";
+import {
+  describeDaemon,
+  findDaemons,
+  identify,
+  isSameDaemon,
+  lockedDaemon,
+} from "../../daemon/processes.ts";
 import { getStatus } from "../../daemon/status.ts";
-import { terminate } from "../../daemon/terminate.ts";
+import { type TerminateOutcome, terminate } from "../../daemon/terminate.ts";
 import type { CliContext } from "../run.ts";
 
 export const STOP_USAGE = [
   "Usage: hamness stop [--all]",
   "",
-  "Stops the daemon. Running prompts stop; each directory's session resumes, with its",
-  "transcript, the next time the daemon starts (`hamness` starts it). Restart it this way",
-  "after adding a key or changing HAMNESS_MODEL.",
+  "Stops the daemon. Running prompts stop; continue a session later with `hamness -c`.",
+  "Restart the daemon this way after adding a key or changing HAMNESS_MODEL.",
   "",
   "It waits for the process to exit (SIGTERM, then SIGKILL after 6 s).",
   "",
@@ -21,6 +24,12 @@ export const STOP_USAGE = [
 
 /** How long a daemon gets to exit after SIGTERM before it is sent SIGKILL. */
 export const STOP_GRACE_MS = 6000;
+
+/** A process to stop, and when it started, to tell it from a later process with its pid. */
+interface Target {
+  pid: number;
+  startMs?: number;
+}
 
 /** `hamness stop`: SIGTERM to the daemon for this data dir, then wait until its process is gone. */
 export async function stopCommand({ args, dataDir, io }: CliContext): Promise<number> {
@@ -36,16 +45,22 @@ export async function stopCommand({ args, dataDir, io }: CliContext): Promise<nu
   return all ? stopAll(dataDir, io) : stopOne(dataDir, io);
 }
 
+/** The daemon answering with this data dir's token is ours; note its start time for the SIGKILL check. */
+function answering(pid: number): Target {
+  const startMs = identify(pid)?.startMs;
+  return startMs === undefined ? { pid } : { pid, startMs };
+}
+
 async function stopOne(dataDir: string, io: CliContext["io"]): Promise<number> {
   const status = await getStatus(dataDir);
-  // The daemon that answers; else the one holding the lock (alive, but not serving).
-  const lockPid = readState(dataPaths(dataDir).daemonLock)?.pid;
-  const pid = status.running
-    ? status.pid
-    : lockPid !== undefined && lockPid !== process.pid && isDaemonProcess(lockPid)
-      ? lockPid
+  // The daemon that answers; else the one provably holding the lock (alive, not serving).
+  const lock = lockedDaemon(dataDir);
+  const target: Target | undefined = status.running
+    ? answering(status.pid)
+    : lock && lock.pid !== process.pid
+      ? lock
       : undefined;
-  if (pid === undefined) {
+  if (!target) {
     io.out("hamness daemon: not running");
     const strays = findDaemons(dataDir).filter((p) => p.pid !== process.pid);
     if (strays.length === 0) return 0;
@@ -55,30 +70,32 @@ async function stopOne(dataDir: string, io: CliContext["io"]): Promise<number> {
     io.out("  stop them with `hamness stop --all`");
     return 1;
   }
-  return report(io, pid, await terminate(pid, { graceMs: STOP_GRACE_MS }));
+  return report(io, target.pid, await stop(target));
 }
 
 async function stopAll(dataDir: string, io: CliContext["io"]): Promise<number> {
   const status = await getStatus(dataDir);
-  const pids = new Set(findDaemons(dataDir).map((p) => p.pid));
-  if (status.running) pids.add(status.pid);
-  pids.delete(process.pid);
-  if (pids.size === 0) {
+  const targets = new Map<number, Target>(findDaemons(dataDir).map((p) => [p.pid, p]));
+  if (status.running && !targets.has(status.pid)) {
+    targets.set(status.pid, answering(status.pid));
+  }
+  targets.delete(process.pid);
+  if (targets.size === 0) {
     io.out("hamness daemon: no daemon processes for this data dir");
     return 0;
   }
   const outcomes = await Promise.all(
-    [...pids].map(async (pid) => ({
-      pid,
-      outcome: await terminate(pid, { graceMs: STOP_GRACE_MS }),
-    })),
+    [...targets.values()].map(async (t) => ({ pid: t.pid, outcome: await stop(t) })),
   );
   let code = 0;
   for (const { pid, outcome } of outcomes) code = Math.max(code, report(io, pid, outcome));
   return code;
 }
 
-function report(io: CliContext["io"], pid: number, outcome: Awaited<ReturnType<typeof terminate>>) {
+const stop = (t: Target) =>
+  terminate(t.pid, { graceMs: STOP_GRACE_MS, stillOurs: () => isSameDaemon(t.pid, t.startMs) });
+
+function report(io: CliContext["io"], pid: number, outcome: TerminateOutcome) {
   const grace = STOP_GRACE_MS / 1000;
   switch (outcome) {
     case "exited":
@@ -91,6 +108,11 @@ function report(io: CliContext["io"], pid: number, outcome: Awaited<ReturnType<t
       return 0;
     case "denied":
       io.err(`hamness stop: not allowed to signal pid ${pid} (another user's process?)`);
+      return 1;
+    case "unverified":
+      io.err(
+        `hamness stop: pid ${pid} is still running ${grace} s after SIGTERM, and it can no longer be confirmed as this daemon, so it was not killed; check it with \`ps -p ${pid}\``,
+      );
       return 1;
     case "alive":
       io.err(

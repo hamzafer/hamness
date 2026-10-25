@@ -47,6 +47,8 @@ export async function spawnDaemon(
       PATH: process.env.PATH ?? "",
       HOME: home,
       HAMNESS_HOME: dataDir,
+      // As `ensureDaemon` starts it, so a scan can find it.
+      HAMNESS_DAEMON: "1",
       CLAUDE_CONFIG_DIR: claude,
       ...opts.env,
     },
@@ -99,14 +101,16 @@ export async function spawnDaemon(
 /**
  * A stand-in for a daemon that stopped serving but never exited: a process whose command line
  * is `bun <dir>/main.ts daemon` with HAMNESS_HOME set to `dataDir`, which serves nothing and,
- * with `ignoreSigterm`, survives SIGTERM (as the stray daemons did). It is not a hamness daemon,
+ * with `ignoreSigterm`, survives SIGTERM (as the stray daemons did). `marker: false` leaves out
+ * the HAMNESS_DAEMON env `ensureDaemon` sets; `hamnessHome` overrides HAMNESS_HOME. Not a daemon,
  * so the test controls exactly how it dies.
  */
 export async function spawnStray(
   dataDir: string,
-  opts: { ignoreSigterm?: boolean } = {},
+  opts: { ignoreSigterm?: boolean; marker?: boolean; hamnessHome?: string } = {},
 ): Promise<Subprocess<"ignore", "pipe", "pipe">> {
-  const dir = join(dataDir, "..", `stray-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  // A space in the path, as in macOS's "Application Support".
+  const dir = join(dataDir, "..", `stray dir-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   const script = join(dir, "main.ts");
   writeFileSync(
@@ -118,7 +122,12 @@ export async function spawnStray(
     ].join("\n"),
   );
   const proc = Bun.spawn([process.execPath, "--config=/dev/null", script, "daemon"], {
-    env: { PATH: process.env.PATH ?? "", HOME: dir, HAMNESS_HOME: dataDir },
+    env: {
+      PATH: process.env.PATH ?? "",
+      HOME: dir,
+      HAMNESS_HOME: opts.hamnessHome ?? dataDir,
+      ...(opts.marker === false ? {} : { HAMNESS_DAEMON: "1" }),
+    },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",

@@ -85,7 +85,10 @@ describe("hamness stop", () => {
   test("a process that ignores SIGTERM gets SIGKILL, and stop says so", async () => {
     const p = await stray({ ignoreSigterm: true });
     // It holds the lock, as a daemon that stopped serving would.
-    writeFileSync(dataPaths(dataDir).daemonLock, JSON.stringify({ pid: p.pid }));
+    writeFileSync(
+      dataPaths(dataDir).daemonLock,
+      JSON.stringify({ pid: p.pid, startedAt: Date.now() }),
+    );
     const t0 = Date.now();
     const r = await cli("stop");
     expect(Date.now() - t0).toBeGreaterThanOrEqual(5900);
@@ -127,6 +130,58 @@ describe("hamness stop", () => {
       "hamness daemon: no daemon processes for this data dir",
     );
   }, 30_000);
+
+  test("a lock naming an unrelated live process is ignored: nothing is signaled", async () => {
+    const other = Bun.spawn(["sleep", "30"]);
+    procs.push(other);
+    writeFileSync(
+      dataPaths(dataDir).daemonLock,
+      JSON.stringify({ pid: other.pid, startedAt: Date.now() }),
+    );
+    expect((await cli("stop")).out).toBe("hamness daemon: not running");
+    expect((await cli("stop", "--all")).out).toBe(
+      "hamness daemon: no daemon processes for this data dir",
+    );
+    expect(isProcessAlive(other.pid)).toBe(true);
+  });
+
+  test("a lock whose stamp is older than its process (a reused pid) is ignored", async () => {
+    const p = await stray({ marker: false });
+    writeFileSync(
+      dataPaths(dataDir).daemonLock,
+      JSON.stringify({ pid: p.pid, startedAt: Date.now() - 3_600_000 }),
+    );
+    expect((await cli("stop")).out).toBe("hamness daemon: not running");
+    expect(isProcessAlive(p.pid)).toBe(true);
+  });
+
+  test("a lock holder that serves another data dir is ignored", async () => {
+    const p = await stray({ marker: false, hamnessHome: join(home.dir, "other-data") });
+    writeFileSync(
+      dataPaths(dataDir).daemonLock,
+      JSON.stringify({ pid: p.pid, startedAt: Date.now() }),
+    );
+    expect((await cli("stop")).out).toBe("hamness daemon: not running");
+    expect(isProcessAlive(p.pid)).toBe(true);
+  });
+
+  test("--all leaves a `bun …/main.ts daemon` alone without the daemon marker, or with a relative HAMNESS_HOME", async () => {
+    const unmarked = await stray({ marker: false });
+    const relative = await stray({ hamnessHome: "data" });
+    const r = await cli("stop", "--all");
+    expect(r.out).toBe("hamness daemon: no daemon processes for this data dir");
+    expect(isProcessAlive(unmarked.pid)).toBe(true);
+    expect(isProcessAlive(relative.pid)).toBe(true);
+  });
+
+  test("--all finds strays in a data dir with spaces in its path", async () => {
+    dataDir = join(home.dir, "Application Support", "hamness");
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    const p = await stray();
+    const r = await cli("stop", "--all");
+    expect(r.out).toBe(`hamness daemon: stopped (pid ${p.pid})`);
+    expect(isProcessAlive(p.pid)).toBe(false);
+  });
 
   test("--all finds a daemon that lost its daemon.json and lock", async () => {
     const d = await daemon();
