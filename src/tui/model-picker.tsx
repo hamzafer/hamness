@@ -1,7 +1,5 @@
-import type { SelectOption, SelectRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/solid";
-import { onMount } from "solid-js";
 import type { ModelInfo } from "../agent/models.ts";
+import { Picker } from "./picker.tsx";
 
 const money = (usd: number) => `$${Number(usd.toFixed(4))}`;
 
@@ -18,48 +16,32 @@ export interface ModelPickerProps {
 }
 
 /**
- * The `/model` picker: the models that have credentials, with prices. Up/Down moves,
- * Enter switches, Esc closes. `/model provider/id` skips it.
+ * The `/model` picker: the models that have credentials, with prices, grouped by provider.
+ * Typing filters, Up/Down moves, Enter switches, Esc closes. `/model provider/id` skips it.
  */
 export function ModelPicker(props: ModelPickerProps) {
-  const options = (): SelectOption[] =>
-    props.models.map((m) => ({
-      name: `${m.id === props.current ? "● " : "  "}${m.id}`,
-      description: `${m.name} · ${priceLabel(m)} per MTok`,
-      value: m.id,
-    }));
-  const start = Math.max(
-    0,
-    props.models.findIndex((m) => m.id === props.current),
-  );
-
-  let list: SelectRenderable | undefined;
-  // `selectedIndex` as a prop is applied before the options exist; set it once mounted.
-  onMount(() => list?.setSelectedIndex(start));
-
-  useKeyboard((key) => {
-    if (key.name === "escape") props.onClose();
-  });
-
+  // Grouped: providers in the order they first appear, models in the daemon's order.
+  const providers = [...new Set(props.models.map((m) => m.provider))];
+  const models = providers.flatMap((p) => props.models.filter((m) => m.provider === p));
   return (
-    <box
-      border
-      title="switch model (Enter picks, Esc closes)"
-      flexDirection="column"
-      height={Math.min(props.models.length * 2 + 2, 14)}
-    >
-      <select
-        ref={(r: SelectRenderable) => {
-          list = r;
-        }}
-        focused
-        flexGrow={1}
-        options={options()}
-        showDescription
-        onSelect={(_i: number, option: SelectOption | null) => {
-          if (option?.value) props.onPick(String(option.value));
-        }}
-      />
-    </box>
+    <Picker
+      spec={{
+        title: "Switch model",
+        rows: models.map((m) => ({
+          cells: [m.id, priceLabel(m), m.name],
+          current: m.id === props.current,
+          group: m.provider,
+        })),
+        start: Math.max(
+          0,
+          models.findIndex((m) => m.id === props.current),
+        ),
+        onPick: (i) => {
+          const m = models[i];
+          if (m) props.onPick(m.id);
+        },
+      }}
+      onClose={props.onClose}
+    />
   );
 }

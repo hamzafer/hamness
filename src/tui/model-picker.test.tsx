@@ -99,6 +99,34 @@ describe("/model in the TUI", () => {
     expect(fake.prompts).toEqual([]);
   });
 
+  test("typing filters the models (letters are not keys), grouped by provider", async () => {
+    const fake = fakeClient();
+    const s = await render(fake.client);
+    await s.mockInput.typeText("/model");
+    s.mockInput.pressEnter();
+    const all = await s.waitForFrame((f) => f.includes("openai/gpt-5.6-luna"));
+    // One heading per provider.
+    expect(all).toMatch(/│ +anthropic +│/);
+    expect(all).toMatch(/│ +openai +│/);
+    // j and k type, they don't move.
+    await s.mockInput.typeText("haik");
+    const frame = await s.waitForFrame((f) => !f.includes("openai/gpt-5.6-luna"));
+    expect(frame).toContain("anthropic/claude-haiku-5-5");
+    expect(frame).not.toMatch(/│ +(● )?anthropic\/claude-opus-5-5/);
+    expect(frame).toContain("haik");
+    s.mockInput.pressBackspace();
+    s.mockInput.pressBackspace();
+    s.mockInput.pressBackspace();
+    s.mockInput.pressBackspace();
+    await s.waitForFrame((f) => f.includes("openai/gpt-5.6-luna"));
+    await s.mockInput.typeText("luna");
+    await s.waitForFrame((f) => !f.includes("anthropic/claude-haiku-5-5"));
+    s.mockInput.pressEnter();
+    await s.waitFor(() => fake.switches.length === 1);
+    expect(fake.switches).toEqual(["openai/gpt-5.6-luna"]);
+    expect(fake.prompts).toEqual([]);
+  });
+
   test("/model provider/id switches directly, without the picker", async () => {
     const fake = fakeClient();
     const s = await render(fake.client);

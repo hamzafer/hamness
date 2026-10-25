@@ -591,6 +591,32 @@ describe("session commands", () => {
     expect(fake.calls).toEqual([`list ${CWD}`, `resume ${SID} ${OLD}`]);
   });
 
+  test("/resume and /fork filter as you type", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/resume");
+    await frameWhere(s, (f) => f.includes("Resume a session"));
+    await s.mockInput.typeText("release");
+    const frame = await frameWhere(s, (f) => !f.includes("an old question"));
+    expect(frame).not.toContain("an old question");
+    expect(frame).toContain("release");
+    s.mockInput.pressEnter();
+    await frameWhere(s, (f) => f.includes("Resumed: release notes"));
+    expect(fake.calls).toEqual([`list ${CWD}`, `resume ${SID} ${OLD}`]);
+  });
+
+  test("a filter that matches nothing says so; Enter picks nothing", async () => {
+    const fake = fakeClient();
+    const s = await render(fake);
+    await run(s, "/fork");
+    await frameWhere(s, (f) => f.includes("Fork from a prompt"));
+    await s.mockInput.typeText("zzz");
+    await frameWhere(s, (f) => f.includes("Nothing matches"));
+    s.mockInput.pressEnter();
+    await Bun.sleep(30);
+    expect(fake.calls).toEqual([]);
+  });
+
   test("/resume of a session whose file is gone says so", async () => {
     const fake = fakeClient();
     const s = await render(fake);
