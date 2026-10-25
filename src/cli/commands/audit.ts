@@ -11,7 +11,8 @@ export const AUDIT_USAGE = [
   "Lists recent safety decisions, newest first: what each tool call was,",
   "whether it was allowed, asked or denied, by what (rule, judge, hook, user, mode) and why.",
   "",
-  "  --session <id>  Only this session (the full id or the short one shown here)",
+  "  --session <id>  Only this session: its full id, or any unique start or end of it",
+  "                  (the short id shown here is its last 8 characters)",
   "  --limit <n>     How many decisions (default 50)",
   "  --json          Print the rows as JSON",
 ].join("\n");
@@ -27,6 +28,30 @@ function time(ms: number): string {
 function latency(ms: number | null): string {
   if (ms === null) return "";
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * The one session whose id is `given`, starts with it or ends with it. `none` or `several`
+ * when that is not one session. Matches sessions and decisions both, so a row is never missed.
+ */
+function resolveSession(
+  db: ReturnType<typeof openDatabase>,
+  given: string,
+): { id: string } | "none" | "several" {
+  const ids = db.sqlite
+    .query<{ id: string }, [string]>(
+      `SELECT id FROM sessions
+         WHERE id = ?1 OR substr(id, 1, length(?1)) = ?1 OR substr(id, -length(?1)) = ?1
+       UNION
+       SELECT DISTINCT session_id FROM decisions
+         WHERE session_id = ?1 OR substr(session_id, 1, length(?1)) = ?1
+           OR substr(session_id, -length(?1)) = ?1`,
+    )
+    .all(given)
+    .map((r) => r.id);
+  if (ids.includes(given)) return { id: given };
+  if (ids.length === 0) return "none";
+  return ids.length === 1 ? { id: ids[0] as string } : "several";
 }
 
 export async function auditCommand({ args, dataDir, io }: CliContext): Promise<number> {
@@ -65,10 +90,21 @@ export async function auditCommand({ args, dataDir, io }: CliContext): Promise<n
   }
   const db = openDatabase(path);
   try {
-    const rows = new DecisionStore(db).list({
-      limit,
-      ...(values.session ? { session: values.session } : {}),
-    });
+    let session: string | undefined;
+    if (values.session !== undefined) {
+      const given = values.session.trim();
+      const found = given ? resolveSession(db, given) : "none";
+      if (found === "none") {
+        io.err(`hamness audit: no session matches ${values.session}`);
+        return 1;
+      }
+      if (found === "several") {
+        io.err(`hamness audit: ${given} matches several sessions`);
+        return 1;
+      }
+      session = found.id;
+    }
+    const rows = new DecisionStore(db).list({ limit, ...(session ? { session } : {}) });
     if (values.json) {
       io.out(JSON.stringify(rows, null, 2));
       return 0;
@@ -84,7 +120,13 @@ export async function auditCommand({ args, dataDir, io }: CliContext): Promise<n
       io.out(
         `${time(r.createdAt)}  ${pad((r.sessionId ?? "").slice(-8), 8)}  ${pad(r.tool, 10)}  ${pad(r.verdict, 7)}  ${pad(r.source, 6)}  ${pad(latency(r.latencyMs), 6)}  ${callText(r.args)}`,
       );
-      const why = [r.reason, r.rule ? `(${r.rule})` : ""].filter(Boolean).join(" ");
+      const why = [
+        r.reason,
+        r.rule ? `(${r.rule})` : "",
+        r.source === "judge" && r.judgeModel ? `(judge ${r.judgeModel})` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
       if (why) io.out(`${" ".repeat(19 + 2 + 8 + 2)}  ↳ ${why}`);
     }
     return 0;

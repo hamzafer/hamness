@@ -135,6 +135,7 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
 
   async function call(backend: BackendJudge, req: JudgeRequest): Promise<JudgeVerdict> {
     let timeoutMs = 0;
+    let model: string | undefined;
     const ac = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -146,10 +147,13 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
           reject(new Error("timeout"));
         }, timeoutMs);
       });
-      return await Promise.race([
-        backend(req, { signal: ac.signal, model: backend.model ?? config.model }),
+      const resolved = backend.model ?? config.model;
+      model = resolved;
+      const v = await Promise.race([
+        backend(req, { signal: ac.signal, model: resolved }),
         timedOut,
       ]);
+      return { ...v, model: v.model ?? resolved };
     } catch (err) {
       if (ac.signal.aborted) {
         // The request was sent and likely billed: count its estimated input cost (S-L2).
@@ -158,9 +162,14 @@ export function createJudgeController(opts: JudgeControllerOptions): JudgeContro
           verdict: "ask",
           reason: `the judge did not answer within ${timeoutMs / 1000}s`,
           ...(cost > 0 ? { costMicros: cost } : {}),
+          ...(model ? { model } : {}),
         };
       }
-      return { verdict: "ask", reason: `the judge failed: ${(err as Error).message}` };
+      return {
+        verdict: "ask",
+        reason: `the judge failed: ${(err as Error).message}`,
+        ...(model ? { model } : {}),
+      };
     } finally {
       clearTimeout(timer);
     }

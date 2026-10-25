@@ -50,6 +50,8 @@ export interface JudgeVerdict {
   costMicros?: number;
   /** The judge did not run (paused, over budget, no key): recorded with source `mode`. */
   skipped?: boolean;
+  /** The model that judged (`provider/id`), stored on the decision for `hamness audit`. */
+  model?: string;
 }
 
 /** Decides undecided calls in `auto` mode. Throwing means ask. Budget and back-off live in it. */
@@ -397,6 +399,7 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
             reason: judged.reason,
             ...(judged.category ? { category: judged.category } : {}),
             ...(judged.costMicros ? { costMicros: judged.costMicros } : {}),
+            ...(judged.model && !judged.skipped ? { judgeModel: judged.model } : {}),
           },
           tj,
         );

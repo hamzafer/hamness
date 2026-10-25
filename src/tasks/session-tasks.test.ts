@@ -218,11 +218,110 @@ describe("explicit tasks", () => {
     expect(done).toMatchObject({ evidence: 2, passed: 1 });
   });
 
-  test("an explicit task stays open across turns", () => {
+  test("an explicit task with work stays open across turns", () => {
     const t = tasks();
     const task = t.start("long job");
+    edited(t);
+    t.endTurn();
     t.beginTurn("keep going");
     expect(t.attributionId()).toBe(task.id);
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("an agent's task that ran git commit and push, with no task_done, stays open", () => {
+    const t = tasks();
+    const task = t.start("commit the fix");
+    bashTool(t, "git commit -am fix");
+    bashTool(t, "git push");
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("an agent's task with an MCP call stays open at turn end", () => {
+    const t = tasks();
+    const task = t.start("file the ticket");
+    call(t, "mcp__tracker__create_issue", { title: "x" });
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("an agent's task whose turn only read files and asked a question stays open", () => {
+    const t = tasks();
+    const task = t.start("refactor the parser");
+    call(t, "read", { path: "src/parser.ts" });
+    bashTool(t, "grep -rn parse src");
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("an agent's task whose reads end in a denied action is dropped", () => {
+    const t = tasks();
+    const task = t.start("clean up");
+    call(t, "read", { path: "README.md" });
+    bashTool(t, "rm -rf dist", "denied");
+    t.endTurn();
+    expect(row(task.id)).toBeNull();
+  });
+
+  test("a denied edit is not work: an implicit turn with only a denied edit is dropped", () => {
+    const t = tasks();
+    t.beginTurn("change it");
+    const id = chat.addToolCall(
+      { ...ids, taskId: t.attributionId() },
+      { messageId: undefined, tool: "edit", argsJson: JSON.stringify({ path: "a.ts" }) },
+    );
+    chat.finishToolCall(id, { status: "denied", summary: "denied" });
+    const taskId = t.attributionId() as string;
+    t.endTurn();
+    expect(row(taskId)).toBeNull();
+  });
+
+  test("a task the user opened with /task is never dropped at turn end", () => {
+    const t = tasks();
+    const task = t.start("my task", "user");
+    bashTool(t, "rm -rf dist", "denied");
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("an agent's task left open with no work and no evidence is dropped at turn end", () => {
+    const t = tasks();
+    const task = t.start("clean the build folder");
+    modelCall(t, 200);
+    // Its only action was denied, and the agent never called task_done.
+    const id = chat.addToolCall(
+      { ...ids, taskId: t.attributionId() },
+      { messageId: undefined, tool: "bash", argsJson: JSON.stringify({ command: "rm -rf dist" }) },
+    );
+    chat.finishToolCall(id, { status: "denied", summary: "denied" });
+    t.endTurn();
+    expect(row(task.id)).toBeNull();
+    expect(events.at(-1)).toEqual({ type: "task.drop", taskId: task.id });
+    expect(t.attributionId()).toBeUndefined();
+    const calls = db.sqlite
+      .query<{ task_id: string | null }, []>("SELECT task_id FROM model_calls")
+      .all();
+    expect(calls).toEqual([{ task_id: null }]);
+    // The next turn starts its own implicit task.
+    t.beginTurn("next");
+    expect(t.attributionId()).not.toBe(task.id);
+  });
+
+  test("an agent's open task with an evidence row stays open at turn end", async () => {
+    const t = new SessionTasks({
+      ...optsFor(),
+      safety: async () => ({ allow: false, reason: "no" }),
+    });
+    const task = t.start("check it");
+    await t.prove({ kind: "command", command: PASS });
+    t.endTurn();
+    expect(row(task.id)?.outcome).toBe("open");
+  });
+
+  test("a task the user opened stays open at turn end with no work", () => {
+    const t = tasks();
+    const task = t.start("user goal", "user");
     t.endTurn();
     expect(row(task.id)?.outcome).toBe("open");
   });
@@ -409,6 +508,7 @@ describe("the implicit task per turn", () => {
     const task = t.start("fix the parser");
     expect(task.id).toBe(id);
     expect(row(id)).toMatchObject({ implicit: 0, goal: "fix the parser" });
+    edited(t);
     t.endTurn();
     expect(row(id)?.outcome).toBe("open");
     expect(t.view()?.costMicros).toBe(100);

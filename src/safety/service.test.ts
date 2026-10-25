@@ -321,3 +321,40 @@ describe("yolo still asks for what the rules can't see past (the floor)", () => 
     expect(r).toMatchObject({ allow: false, asked: [] });
   });
 });
+
+describe("a judge decision stores the model that judged", () => {
+  test("the judge's model lands on the decision row; a skipped judge stores none", async () => {
+    const dataDir = join(home, "data");
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ safety: { mode: "auto" } }));
+    const db = openDatabase(join(dataDir, "judge-model.sqlite"));
+    const store = new ChatStore(db);
+    const { sessionId, agentId } = store.createSession(cwd, "anthropic/x");
+    let skipped = false;
+    const safety = createSafetyService({
+      db,
+      dataDir,
+      home,
+      judge: async () =>
+        skipped
+          ? { verdict: "ask", reason: "paused", skipped: true, model: "fake-plan/judge-mini" }
+          : { verdict: "allow", reason: "routine", model: "fake-plan/judge-mini" },
+    });
+    const run = async () => {
+      const toolCallId = store.addToolCall(
+        { sessionId, agentId, taskId: undefined },
+        { messageId: undefined, tool: "bash", argsJson: "{}" },
+      );
+      await safety.check(
+        { sessionId, toolCallId, tool: "bash", args: { command: "make something-odd" }, cwd },
+        { cwd, askUser: async () => ({ decision: "deny", by: "user" }) },
+      );
+    };
+    await run();
+    skipped = true;
+    await run();
+    const rows = new DecisionStore(db).list({ session: sessionId });
+    db.close();
+    expect(rows.find((r) => r.source === "judge")?.judgeModel).toBe("fake-plan/judge-mini");
+    expect(rows.find((r) => r.source === "mode")?.judgeModel).toBeNull();
+  });
+});

@@ -6,6 +6,7 @@ import { sessionCommands } from "./0007-session-commands.ts";
 import { modelCallBilling } from "./0008-billing.ts";
 import { sessionPicks } from "./0009-session-picks.ts";
 import { taskOpener } from "./0010-task-opener.ts";
+import { decisionJudgeModel } from "./0011-decision-judge-model.ts";
 import type { Migration } from "./types.ts";
 
 /** Every migration in version order. Append only (versions may have gaps). */
@@ -18,6 +19,7 @@ export const migrations: readonly Migration[] = [
   modelCallBilling,
   sessionPicks,
   taskOpener,
+  decisionJudgeModel,
 ];
 
 /** The schema version a fresh database migrates to. */

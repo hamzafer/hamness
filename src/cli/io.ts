@@ -56,8 +56,23 @@ function readVisible(prompt: string): Promise<string> {
   });
 }
 
+/**
+ * Writes a line to stdout. A reader that stopped early (`| head`) closed the pipe: exit 141
+ * (SIGPIPE) at once, so no command's own `catch` turns the EPIPE into an error message and a
+ * cut-off command doesn't report success (see `main.ts`). Only this stdout write is covered.
+ */
+function writeOut(line: string): void {
+  try {
+    process.stdout.write(`${line}\n`);
+  } catch (err) {
+    const e = err as { code?: unknown; syscall?: unknown };
+    if (e.code === "EPIPE" && (e.syscall === undefined || e.syscall === "write")) process.exit(141);
+    throw err;
+  }
+}
+
 export const processIo: CliIo = {
-  out: (line) => process.stdout.write(`${line}\n`),
+  out: writeOut,
   err: (line) => process.stderr.write(`${line}\n`),
   readSecret: (prompt) => (process.stdin.isTTY ? readHidden(prompt) : readPiped()),
   readLine: (prompt) => (process.stdin.isTTY ? readVisible(prompt) : readPiped()),

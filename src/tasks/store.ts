@@ -90,10 +90,11 @@ export class TaskStore {
    * Pi's read tools, and bash that `bashReadOnly` clears. Any other call (MCP, a subagent,
    * an unknown tool, bash it can't read) is work, denied or not (ADR 0012).
    */
-  onlyReadOnlyCalls(id: string): boolean {
+  onlyReadOnlyCalls(id: string, skipDenied = false): boolean {
     const rows = this.sql
       .query<{ tool: string; args_json: string | null }, [string]>(
-        "SELECT tool, args_json FROM tool_calls WHERE task_id = ?",
+        `SELECT tool, args_json FROM tool_calls WHERE task_id = ?
+         ${skipDenied ? "AND status != 'denied'" : ""}`,
       )
       .all(id);
     return rows.every((r) => {
@@ -402,9 +403,27 @@ export class TaskStore {
       .run(now, now, sessionId);
   }
 
-  /** Whether the task tried to change files (denied tries included). */
+  /** Whether the task changed files; a denied try changed nothing. */
   changedFiles(taskId: string, cwd: string): boolean {
-    return this.fileChanges(taskId, cwd, true).length > 0;
+    return this.fileChanges(taskId, cwd).length > 0;
+  }
+
+  /**
+   * How the task's tool calls stand at turn end: `acted` is whether any call other than the
+   * task tools ran (was not denied), `lastDenied` whether the latest such call was denied.
+   */
+  callState(id: string): { acted: boolean; lastDenied: boolean } {
+    const rows = this.sql
+      .query<{ status: string }, [string]>(
+        `SELECT status FROM tool_calls
+         WHERE task_id = ? AND tool NOT IN ('task_start', 'task_done', 'prove')
+         ORDER BY created_at DESC, rowid DESC`,
+      )
+      .all(id);
+    return {
+      acted: rows.some((r) => r.status !== "denied"),
+      lastDenied: rows[0]?.status === "denied",
+    };
   }
 
   view(id: string, now = Date.now()): TaskView | undefined {

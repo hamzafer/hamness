@@ -42,6 +42,14 @@ export function duration(ms: number): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+/**
+ * Spend that may be on the ChatGPT plan: `$0 (plan)` when plan calls made it all $0 (as the TUI
+ * says), else `money`. Never a bare `$0.00` for plan use.
+ */
+export function planMoney(costMicros: number, planCalls: number): string {
+  return planCalls > 0 && costMicros === 0 ? "$0 (plan)" : money(costMicros);
+}
+
 /** A model's cost: `$0 (plan)` when every call was billed to the ChatGPT plan, else `money`. */
 export function modelCost(m: { costMicros: number; calls: number; planCalls?: number }): string {
   const plan = m.planCalls ?? 0;

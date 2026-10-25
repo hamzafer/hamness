@@ -113,4 +113,55 @@ describe("hamness audit", () => {
       empty.cleanup();
     }
   });
+
+  test("--session takes a unique prefix or suffix of the id", async () => {
+    const [a, b] = sessions as [string, string];
+    const prefix = await audit("--session", a.slice(0, 24));
+    expect(prefix.code).toBe(0);
+    expect(prefix.out).toContain(a.slice(-8));
+    expect(prefix.out).not.toContain(b.slice(-8));
+    const suffix = await audit("--session", b.slice(-8));
+    expect(suffix.out).toContain(b.slice(-8));
+    expect(suffix.out).not.toContain(a.slice(-8));
+  });
+
+  test("--session says when nothing matches, or several sessions do", async () => {
+    const none = await audit("--session", "zzzzzzzz");
+    expect(none.code).toBe(1);
+    expect(none.err).toBe("hamness audit: no session matches zzzzzzzz");
+    expect(none.out).not.toContain("No decisions");
+    const [a, b] = sessions as [string, string];
+    let common = 0;
+    while (a[common] === b[common]) common++;
+    const shared = a.slice(0, Math.max(1, common));
+    const several = await audit("--session", shared);
+    expect(several.code).toBe(1);
+    expect(several.err).toBe(`hamness audit: ${shared} matches several sessions`);
+  });
+
+  test("a judge row names the judge model", async () => {
+    const db = openDatabase(dataPaths(home.dir).database);
+    const chat = new ChatStore(db);
+    const ids = chat.createSession("/work/c", "fake/model");
+    const tc = chat.addToolCall(ids, { messageId: undefined, tool: "bash", argsJson: "{}" });
+    new DecisionStore(db).add({
+      ...ids,
+      toolCallId: tc,
+      tool: "bash",
+      args: { command: "bun test" },
+      verdict: "allow",
+      source: "judge",
+      reason: "runs the tests",
+      judgeModel: "fake-plan/judge-mini",
+      mode: "auto",
+      latencyMs: 900,
+    });
+    db.close();
+    const r = await audit("--limit", "1");
+    expect(r.out).toContain("runs the tests (judge fake-plan/judge-mini)");
+    const json = JSON.parse((await audit("--json", "--limit", "1")).out) as Array<{
+      judgeModel: string;
+    }>;
+    expect(json[0]?.judgeModel).toBe("fake-plan/judge-mini");
+  });
 });

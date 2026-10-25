@@ -86,6 +86,8 @@ function goalOf(text: string): string {
  * - `/abandon` (user only): the open task becomes `abandoned`.
  * - At turn end an implicit task still open closes: `verified` with passing evidence,
  *   `unverified` with failed evidence, file edits or subagents, and is dropped when it had none.
+ * - At turn end an agent's explicit task is dropped too when it ran nothing, or only read
+ *   and its last action was denied (`idleAgentTask`); otherwise it stays open.
  *
  * Rows the hub stores count toward `attributionId()`: the open task, or the one closed
  * earlier in this turn, so the wrap-up of a task still counts toward it.
@@ -158,6 +160,10 @@ export class SessionTasks {
       if (this.gate(open.id).verified) this.closeAs(open.id, "verified");
       else if (this.didWork(open.id)) this.closeAs(open.id, "unverified");
       else this.drop(open.id);
+    } else if (open && this.idleAgentTask(open.id)) {
+      // The agent opened it and the turn ended with nothing done (its only action denied, say)
+      // and no task_done: nothing would ever close it, so drop it like a chat turn (ADR 0012).
+      this.drop(open.id);
     }
     // Next turn starts fresh unless an explicit task is still open.
     if (!this.openTask()) this.current = undefined;
@@ -323,6 +329,25 @@ export class SessionTasks {
       !this.store.hasSubagents(id) &&
       this.store.onlyReadOnlyCalls(id)
     );
+  }
+
+  /**
+   * An explicit task the agent opened that went nowhere this turn (ADR 0012): it passes the
+   * `droppable` checks (agent-opened, no evidence, no subagents) with denied calls ignored, and
+   * either made no call that ran, or only read and its last action was denied. A turn that
+   * only read and asked a question keeps its task for the next turn.
+   */
+  private idleAgentTask(id: string): boolean {
+    if (
+      this.store.openedBy(id) !== "agent" ||
+      this.store.evidenceRows(id) > 0 ||
+      this.store.hasSubagents(id) ||
+      !this.store.onlyReadOnlyCalls(id, true)
+    ) {
+      return false;
+    }
+    const { acted, lastDenied } = this.store.callState(id);
+    return !acted || lastDenied;
   }
 
   /** Deletes a task that did nothing; its rows stay, with no task (ADR 0012). */

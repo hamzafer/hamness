@@ -69,6 +69,8 @@ describe("listTasks", () => {
         reason: null,
         summary: null,
         costMicros: 500_000,
+        modelCalls: 2,
+        planCalls: 0,
         tokens: 1120,
         startedAt: NOW - 3 * HOUR,
         endedAt: NOW - 2 * HOUR,
@@ -79,6 +81,17 @@ describe("listTasks", () => {
         prUrl: null,
       },
     ]);
+  });
+
+  test("a task's plan calls are counted, so its cost reads $0 (plan)", () => {
+    const s = seed.session({ source: "hamness", at: NOW - DAY });
+    const t = seed.task({ sessionId: s, at: NOW - HOUR, outcome: "verified" });
+    seed.modelCall({ sessionId: s, taskId: t, at: NOW - HOUR, model: "m", billing: "plan" });
+    expect(listTasks(db.sqlite, { ...base, range: "7d" }).rows[0]).toMatchObject({
+      costMicros: 0,
+      modelCalls: 1,
+      planCalls: 1,
+    });
   });
 
   test("a task links to its branch, commit and PR (P-L4)", () => {

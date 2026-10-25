@@ -456,6 +456,8 @@ export interface SourceRow {
   source: Source;
   sessions: number;
   modelCalls: number;
+  /** Calls billed to the ChatGPT plan ($0 each, ADR 0024). */
+  planCalls: number;
   costMicros: number;
   /** Prompt plus output tokens. */
   tokens: number;
@@ -479,6 +481,7 @@ function sourceSplitOf(c: Ctx): SourceRow[] {
       source,
       sessions: 0,
       modelCalls: 0,
+      planCalls: 0,
       costMicros: 0,
       tokens: 0,
       tasks: 0,
@@ -508,6 +511,7 @@ function sourceSplitOf(c: Ctx): SourceRow[] {
     const row = rows.get(r.source);
     if (!row) continue;
     row.modelCalls += r.calls;
+    row.planCalls += r.planCalls;
     row.costMicros += r.cost;
     row.tokens += r.input + r.output + r.cacheRead + r.cacheWrite;
   }

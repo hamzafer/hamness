@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** A made-up JWT carrying the ChatGPT auth claim Pi's Codex login reads. Not a real token. */
@@ -13,7 +13,8 @@ export function fakeCodexToken(opts: { tier?: string; account?: boolean } = {}):
 /**
  * A synthetic ChatGPT plan login in `<dataDir>/pi/auth.json`, as `hamness login openai` leaves
  * it (Pi's `openai-codex` provider). It expires far in the future, so nothing refreshes it.
- * `provider: "openai"` writes a login stored before ADR 0024 (Pi's Sign in with ChatGPT).
+ * `provider: "openai"` writes a login stored before ADR 0024 (Pi's Sign in with ChatGPT). Logins
+ * already in the file are kept, so a test can store both.
  */
 export function writePlanLogin(
   dataDir: string,
@@ -22,9 +23,12 @@ export function writePlanLogin(
   const dir = join(dataDir, "pi");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const provider = opts.provider ?? "openai-codex";
+  const path = join(dir, "auth.json");
+  const existing = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
   writeFileSync(
-    join(dir, "auth.json"),
+    path,
     JSON.stringify({
+      ...existing,
       [provider]: {
         type: "oauth",
         access: fakeCodexToken(opts),

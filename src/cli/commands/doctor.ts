@@ -95,6 +95,17 @@ function apiKeysLine(dataDir: string, env: Env): string {
 }
 
 /** `hamness doctor`: one line per check, `ok` / `warn` / `fail`. */
+/**
+ * Pi's `openai` "Sign in with ChatGPT" login stored next to the Codex plan login. Pi sends its
+ * token to api.openai.com and marks it subscription-billed (ADR 0024), so it is not an API key,
+ * but the plan login covers everything it does, and its 40-odd models crowd the picker.
+ */
+const OLDER_OPENAI_LOGIN: Check = {
+  level: "info",
+  text: "An older OpenAI sign-in is also stored (Pi's Sign in with ChatGPT for api.openai.com, billed to your ChatGPT plan); the Codex plan login covers it",
+  fix: ["  Remove only the older one: hamness logout openai-api"],
+};
+
 export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<number> {
   const cwd = process.cwd();
   const checks: Check[] = [];
@@ -150,6 +161,7 @@ export async function doctorCommand({ env, dataDir, io }: CliContext): Promise<n
         level: "info",
         text: `ChatGPT plan: ${tierLabel(plan.tier)} · default ${planDefaultId(plan.tier)}`,
       });
+      if (cred.olderOpenaiLogin) checks.push(OLDER_OPENAI_LOGIN);
     } else if (cred.legacyOpenaiLogin) {
       checks.push({
         level: "warn",
