@@ -116,7 +116,7 @@ Every tool call passes **allow / ask / deny rules** before it runs (ADR 0006). T
 |---|---|
 | `auto` (default) | the judge decides; it asks you when unsure |
 | `ask` | you decide |
-| `yolo` | allowed, with a red banner that says so; `ask` rules are skipped too, but deny rules (the defaults and yours) still deny |
+| `yolo` | allowed, with a red banner that says so; `ask` rules are skipped too. Deny rules (the defaults and yours) still block direct references to secrets, and a call hamness can't see past (a recursive search over a folder holding secrets, a heredoc, a path in a variable, a glob too big to check) still asks. yolo can't see inside scripts and interpreters (`python3 -c`, `xargs`, `tar`). |
 
 **The judge** (auto mode) is Claude Haiku 5.5, keyed like chat. It sees the call (secrets redacted) as untrusted data and answers `allow`, or `ask` with a reason and a risk category. An error, an 8 s timeout, a refusal or an answer that does not parse means you are asked. Its spend is capped per day (default $1); after 3 asks in a row it pauses for the session until you type `/judge resume`. With no Anthropic key it is off and undecided calls ask you. The TUI header shows its state.
 

@@ -586,7 +586,7 @@ describe("safety mode per session", () => {
       { type: "safety.mode" }
     >;
     expect(ev.mode).toBe("yolo");
-    expect(ev.warning).toMatch(/every tool call/i);
+    expect(ev.warning).toMatch(/deny rules still block/i);
     expect((await attach()).session.mode).toBe("yolo");
 
     await say(s.session.id, "write a note");

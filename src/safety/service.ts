@@ -332,8 +332,12 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       return { allow: false, reason: because };
     }
     // yolo skips asks, the judge and the doom loop, never a deny rule (ADR 0022), nor the
-    // proof gate's "count it?" question. A hook's ask still asks.
-    if (mode === "yolo" && hook?.verdict !== "ask") {
+    // proof gate's "count it?" question. A hook's ask still asks, and so does a call the rules
+    // could not see past (the floor: a recursive read over secrets, an unparsed command, a
+    // path only known at run time), so yolo never silently reads a secret.
+    const yolo = mode === "yolo" && hook?.verdict !== "ask";
+    const yoloFloor = yolo && evaluation.floor !== undefined;
+    if (yolo && !yoloFloor) {
       if (hook?.verdict === "allow") return ran();
       if (evaluation.verdict === "allow") {
         record({ verdict: "allow", source: "rule", reason: because, ...ruleOf });
@@ -345,17 +349,21 @@ export function createSafetyService(opts: SafetyServiceOptions): SafetyService {
       }
       return ran();
     }
-    if (hook?.verdict === "allow" && evaluation.verdict !== "ask" && !looping) {
+    if (!yoloFloor && hook?.verdict === "allow" && evaluation.verdict !== "ask" && !looping) {
       return ran();
     }
-    if (evaluation.verdict === "allow" && !looping && hook?.verdict !== "ask") {
+    if (!yoloFloor && evaluation.verdict === "allow" && !looping && hook?.verdict !== "ask") {
       record({ verdict: "allow", source: "rule", reason: because, ...ruleOf });
       return ran();
     }
 
     let reason = because;
     let suggestions = evaluation.suggestions;
-    if (looping && evaluation.verdict !== "ask") {
+    if (yoloFloor) {
+      reason = `yolo still asks: ${redactText(evaluation.floor ?? "")}`;
+      suggestions = [];
+      record({ verdict: "ask", source: "mode", reason });
+    } else if (looping && evaluation.verdict !== "ask") {
       reason = `the same call ran ${DOOM_LOOP} times in a row`;
       suggestions = [];
       record({ verdict: "ask", source: "rule", reason, rule: "doom_loop" });
