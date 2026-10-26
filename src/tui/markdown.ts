@@ -4,10 +4,19 @@ import { type NativeResourceOwner, SyntaxStyle } from "@opentui/core";
  * How assistant Markdown looks, by the scopes OpenTUI's `<markdown>` renders (ADR 0010).
  * Same palette as the chat: headings and links in blue, code green, markers muted.
  */
-const MARKDOWN_STYLES = {
+const HEADING = { fg: "#7aa2f7", bold: true };
+
+export const MARKDOWN_STYLES = {
   default: { fg: "#c0caf5" },
   conceal: { fg: "#737aa2" },
-  "markup.heading": { fg: "#7aa2f7", bold: true },
+  "markup.heading": HEADING,
+  // Headings arrive as markup.heading.1 to .6, and OpenTUI falls back only to `markup`.
+  "markup.heading.1": HEADING,
+  "markup.heading.2": HEADING,
+  "markup.heading.3": HEADING,
+  "markup.heading.4": HEADING,
+  "markup.heading.5": HEADING,
+  "markup.heading.6": HEADING,
   "markup.strong": { bold: true },
   "markup.italic": { italic: true },
   "markup.strikethrough": { dim: true },
