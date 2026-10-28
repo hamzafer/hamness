@@ -508,6 +508,7 @@ export function App(props: AppProps) {
           <scrollbox
             stickyScroll
             stickyStart="bottom"
+            scrollX={false}
             flexGrow={1}
             minHeight={0}
             contentOptions={{ paddingRight: 1 }}
